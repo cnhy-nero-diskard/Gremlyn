@@ -78,6 +78,7 @@ any stage is built out fully.
 - [x] 8.8 Capture stdout, stderr, exit code, session id, reasoning effort, and timings to attempt records with bulk output written to `output_ref` files, and verify output is retained after a non-zero exit
 - [x] 8.9 Implement the agent version check at startup and verify an unexpected CLI version surfaces as a clear configuration error
 - [x] 8.10 Verify the orchestrator never passes the agent's own worktree flag and always supplies the prepared workspace as the working directory
+- [x] 8.11 Terminate Cline option parsing before the review prompt and verify a prompt beginning with hyphens is delivered as opaque positional content
 
 ## 9. Validation and publication
 

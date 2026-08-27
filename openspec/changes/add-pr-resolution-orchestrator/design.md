@@ -315,11 +315,11 @@ interface AgentExecutor {
 `ClineExecutor` maps that onto the probed surface from Context:
 
 ```
-spawn("cline", [prompt, "-c", cwd, "-m", model, "-P", provider,
+spawn("cline", ["-c", cwd, "-m", model, "-P", provider,
                 "--json", "-t", String(timeoutSec),
                 "--thinking", effort,
                 "--data-dir", <attempt-scoped dir>,
-                "--auto-approve", "true"],
+                "--auto-approve", "true", "--", prompt],
       { env: sanitizedEnv, shell: false })
 ```
 
