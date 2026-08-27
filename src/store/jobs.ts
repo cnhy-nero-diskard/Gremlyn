@@ -52,6 +52,14 @@ export interface AttemptRow {
   output_ref: string | null;
 }
 
+export interface StatusEventRow {
+  id: number;
+  job_id: number;
+  attempt_id: number | null;
+  status: JobStatus;
+  at: string;
+}
+
 export interface NewJob {
   repoId: number;
   prNumber: number;
@@ -137,6 +145,7 @@ export class JobStore {
       this.db
         .prepare("UPDATE processed_commands SET job_id = ? WHERE id = ?")
         .run(jobId, processed.lastInsertRowid);
+      this.insertStatusEvent(jobId, null, "queued", createdAt);
       return { kind: "created", jobId };
     });
 
@@ -166,8 +175,8 @@ export class JobStore {
     })();
   }
 
-  setStatus(jobId: number, status: JobStatus): void {
-    this.db.prepare("UPDATE jobs SET status = ? WHERE id = ?").run(status, jobId);
+  setStatus(jobId: number, status: JobStatus, attemptId?: number): void {
+    this.db.transaction(() => this.transition(jobId, status, attemptId ?? null))();
   }
 
   recordPreparation(attemptId: number, workspacePath: string, headShaAtPrepare: string): void {
@@ -212,9 +221,7 @@ export class JobStore {
            WHERE id = ?`,
         )
         .run(finishedAt, attemptId);
-      this.db
-        .prepare("UPDATE jobs SET status = 'succeeded', finished_at = ? WHERE id = ?")
-        .run(finishedAt, jobId);
+      this.transition(jobId, "succeeded", attemptId, finishedAt);
     })();
   }
 
@@ -229,10 +236,85 @@ export class JobStore {
            WHERE id = ?`,
         )
         .run(stage, reason, finishedAt, attemptId);
-      this.db
-        .prepare("UPDATE jobs SET status = 'failed', finished_at = ? WHERE id = ?")
-        .run(finishedAt, jobId);
+      this.transition(jobId, "failed", attemptId, finishedAt);
     })();
+  }
+
+  cancelJob(jobId: number, attemptId: number | null, hasUncommittedChanges: boolean): void {
+    const finishedAt = now();
+    this.db.transaction(() => {
+      if (attemptId !== null) {
+        this.db
+          .prepare(
+            `UPDATE attempts
+             SET outcome = 'cancelled', ended_at = COALESCE(ended_at, ?),
+                 has_uncommitted_changes = ?
+             WHERE id = ?`,
+          )
+          .run(finishedAt, hasUncommittedChanges ? 1 : 0, attemptId);
+      }
+      this.transition(jobId, "cancelled", attemptId, finishedAt);
+    })();
+  }
+
+  interruptIncompleteJobs(): number[] {
+    return this.db.transaction(() => {
+      const rows = this.db
+        .prepare(
+          `SELECT id, current_attempt FROM jobs
+           WHERE status NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+           ORDER BY id`,
+        )
+        .all() as { id: number; current_attempt: number }[];
+      const interruptedAt = now();
+      for (const row of rows) {
+        const attempt = this.db
+          .prepare("SELECT id FROM attempts WHERE job_id = ? AND attempt_number = ?")
+          .get(row.id, row.current_attempt) as { id: number } | undefined;
+        if (attempt) {
+          this.db
+            .prepare(
+              `UPDATE attempts
+               SET outcome = 'interrupted', ended_at = COALESCE(ended_at, ?)
+               WHERE id = ?`,
+            )
+            .run(interruptedAt, attempt.id);
+        }
+        this.transition(row.id, "interrupted", attempt?.id ?? null, interruptedAt);
+      }
+      return rows.map((row) => row.id);
+    })();
+  }
+
+  retryJob(input: NewAttempt): { attemptId: number; attemptNumber: number } {
+    return this.db.transaction(() => {
+      const job = this.getJob(input.jobId);
+      if (!TERMINAL_RETRY_STATUSES.includes(job.status)) {
+        throw new Error(`job ${input.jobId} cannot be retried from ${job.status}`);
+      }
+      const queuedAt = now();
+      this.db
+        .prepare("UPDATE jobs SET status = 'queued', finished_at = NULL WHERE id = ?")
+        .run(input.jobId);
+      this.insertStatusEvent(input.jobId, null, "queued", queuedAt);
+      return this.createAttempt(input);
+    })();
+  }
+
+  setAttemptOutputRef(attemptId: number, outputRef: string): void {
+    this.db.prepare("UPDATE attempts SET output_ref = ? WHERE id = ?").run(outputRef, attemptId);
+  }
+
+  getTimeline(jobId: number): StatusEventRow[] {
+    return this.db
+      .prepare("SELECT * FROM status_events WHERE job_id = ? ORDER BY id")
+      .all(jobId) as StatusEventRow[];
+  }
+
+  listAttempts(jobId: number): AttemptRow[] {
+    return this.db
+      .prepare("SELECT * FROM attempts WHERE job_id = ? ORDER BY attempt_number")
+      .all(jobId) as AttemptRow[];
   }
 
   getJob(jobId: number): JobRow {
@@ -247,4 +329,43 @@ export class JobStore {
     if (!row) throw new Error(`attempt ${attemptId} not found`);
     return row;
   }
+
+  private transition(jobId: number, status: JobStatus, attemptId: number | null, at = now()): void {
+    const job = this.getJob(jobId);
+    if (!ALLOWED_TRANSITIONS[job.status].includes(status)) {
+      throw new Error(`invalid job transition: ${job.status} -> ${status}`);
+    }
+    const terminal = TERMINAL_JOB_STATUSES.includes(status);
+    this.db
+      .prepare("UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?")
+      .run(status, terminal ? at : null, jobId);
+    this.insertStatusEvent(jobId, attemptId, status, at);
+  }
+
+  private insertStatusEvent(
+    jobId: number,
+    attemptId: number | null,
+    status: JobStatus,
+    at: string,
+  ): void {
+    this.db
+      .prepare("INSERT INTO status_events (job_id, attempt_id, status, at) VALUES (?, ?, ?, ?)")
+      .run(jobId, attemptId, status, at);
+  }
 }
+
+const TERMINAL_JOB_STATUSES: JobStatus[] = ["succeeded", "failed", "cancelled", "interrupted"];
+const TERMINAL_RETRY_STATUSES: JobStatus[] = ["failed", "cancelled", "interrupted"];
+
+const ALLOWED_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
+  queued: ["preparing", "failed", "cancelled", "interrupted"],
+  preparing: ["running", "failed", "cancelled", "interrupted"],
+  running: ["validating", "failed", "cancelled", "interrupted"],
+  validating: ["publishing", "failed", "cancelled", "interrupted"],
+  publishing: ["reporting", "failed", "cancelled", "interrupted"],
+  reporting: ["succeeded", "failed", "cancelled", "interrupted"],
+  succeeded: [],
+  failed: [],
+  cancelled: [],
+  interrupted: [],
+};

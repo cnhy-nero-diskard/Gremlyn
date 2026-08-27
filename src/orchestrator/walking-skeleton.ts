@@ -5,6 +5,7 @@ import type { AgentExecutor, FailureStage, NormalizedEvent, ReasoningEffort } fr
 import type { GitHubClient } from "../github/client.js";
 import { commitAll, pushHead, type CommitAuthor } from "../publish/gitops.js";
 import { JobStore } from "../store/jobs.js";
+import { statusEntries } from "../workspace/gitops.js";
 import { prepareWorkspace } from "../workspace/worktree.js";
 
 export interface WalkingSkeletonRepository {
@@ -29,10 +30,12 @@ export interface WalkingSkeletonOptions {
   commitAuthor: CommitAuthor;
   timeoutSec?: number;
   retries?: number;
+  signal?: AbortSignal;
 }
 
 export type WalkingSkeletonResult =
   | { kind: "duplicate" }
+  | { kind: "cancelled"; jobId: number; attemptId: number }
   | { kind: "succeeded"; jobId: number; attemptId: number; commitSha: string };
 
 /**
@@ -64,9 +67,12 @@ export async function runWalkingSkeleton(
     effort: options.repository.effort,
   });
   let stage: FailureStage = "preparing";
+  let workspacePath: string | null = null;
+  const signal = options.signal ?? new AbortController().signal;
 
   try {
-    jobs.setStatus(jobId, stage);
+    throwIfAborted(signal);
+    jobs.setStatus(jobId, stage, attemptId);
     const pr = await options.github.getPullRequest(
       options.event.owner,
       options.event.repo,
@@ -79,10 +85,11 @@ export async function runWalkingSkeleton(
       headBranch: pr.headBranch,
       headSha: pr.headSha,
     });
+    workspacePath = workspace.path;
     jobs.recordPreparation(attemptId, workspace.path, workspace.headSha);
 
     stage = "running";
-    jobs.setStatus(jobId, stage);
+    jobs.setStatus(jobId, stage, attemptId);
     const attemptDataDir = join(options.dataDir, "attempts", String(attemptId));
     mkdirSync(attemptDataDir, { recursive: true });
     const agentResult = await options.executor.run({
@@ -95,28 +102,31 @@ export async function runWalkingSkeleton(
       timeoutSec: options.timeoutSec ?? 300,
       retries: options.retries ?? 0,
       dataDir: attemptDataDir,
-      signal: new AbortController().signal,
+      signal,
     });
     jobs.recordAgentResult(attemptId, agentResult);
+    throwIfAborted(signal);
     if (agentResult.timedOut) throw new Error("agent-timeout");
     if (agentResult.exitCode !== 0) throw new Error("agent-nonzero-exit");
 
     stage = "validating";
-    jobs.setStatus(jobId, stage);
+    jobs.setStatus(jobId, stage, attemptId);
+    throwIfAborted(signal);
 
     stage = "publishing";
-    jobs.setStatus(jobId, stage);
+    jobs.setStatus(jobId, stage, attemptId);
     const commitSha = await commitAll(
       workspace.path,
       `Resolve review feedback (comment ${options.event.commentId})`,
       options.commitAuthor,
     );
     if (commitSha === null) throw new Error("no-changes");
+    throwIfAborted(signal);
     await pushHead(workspace.path, pr.headBranch);
     jobs.recordPublication(attemptId, commitSha);
 
     stage = "reporting";
-    jobs.setStatus(jobId, stage);
+    jobs.setStatus(jobId, stage, attemptId);
     await options.github.postReviewReply(
       options.event.owner,
       options.event.repo,
@@ -127,9 +137,19 @@ export async function runWalkingSkeleton(
     jobs.finishSuccess(jobId, attemptId);
     return { kind: "succeeded", jobId, attemptId, commitSha };
   } catch (err) {
+    if (signal.aborted) {
+      const hasChanges =
+        workspacePath === null ? false : (await statusEntries(workspacePath)).length > 0;
+      jobs.cancelJob(jobId, attemptId, hasChanges);
+      return { kind: "cancelled", jobId, attemptId };
+    }
     jobs.finishFailure(jobId, attemptId, stage, failureReason(err));
     throw err;
   }
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new Error("job-cancelled");
 }
 
 function walkingSkeletonPrompt(event: NormalizedEvent): string {
