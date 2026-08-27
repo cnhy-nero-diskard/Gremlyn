@@ -68,47 +68,47 @@ any stage is built out fully.
 
 ## 8. Agent execution
 
-- [ ] 8.1 Implement review-context reconstruction (thread in order, anchored file, diff hunk) and verify assembled context includes the whole thread and excludes the full PR diff
-- [ ] 8.2 Implement deterministic prompt assembly per design D11 and verify the instruction block is constant and untrusted text appears only in the delimited context region
-- [ ] 8.3 Implement `ClineExecutor` over the argv surface in design D10 with `shell: false`, and verify a prompt containing shell metacharacters reaches the agent intact with no shell interpretation
-- [ ] 8.4 Pass the configured reasoning effort via `--thinking`, defaulting to the agent's highest supported tier (`xhigh` for Cline), and verify an effort above the agent's ceiling is rejected at startup rather than at invocation
-- [ ] 8.5 Implement per-attempt `--data-dir` isolation and verify two concurrent attempts do not share or corrupt agent session state
-- [ ] 8.6 Implement the allowlist-built child environment and verify the orchestrator GitHub token is absent from the agent process environment
-- [ ] 8.7 Implement timeout and cancellation via `-t` plus `AbortSignal` and verify an over-running agent is terminated, the attempt fails with a timeout reason, and nothing is published
-- [ ] 8.8 Capture stdout, stderr, exit code, session id, reasoning effort, and timings to attempt records with bulk output written to `output_ref` files, and verify output is retained after a non-zero exit
-- [ ] 8.9 Implement the agent version check at startup and verify an unexpected CLI version surfaces as a clear configuration error
-- [ ] 8.10 Verify the orchestrator never passes the agent's own worktree flag and always supplies the prepared workspace as the working directory
+- [x] 8.1 Implement review-context reconstruction (thread in order, anchored file, diff hunk) and verify assembled context includes the whole thread and excludes the full PR diff
+- [x] 8.2 Implement deterministic prompt assembly per design D11 and verify the instruction block is constant and untrusted text appears only in the delimited context region
+- [x] 8.3 Implement `ClineExecutor` over the argv surface in design D10 with `shell: false`, and verify a prompt containing shell metacharacters reaches the agent intact with no shell interpretation
+- [x] 8.4 Pass the configured reasoning effort via `--thinking`, defaulting to the agent's highest supported tier (`xhigh` for Cline), and verify an effort above the agent's ceiling is rejected at startup rather than at invocation
+- [x] 8.5 Implement per-attempt `--data-dir` isolation and verify two concurrent attempts do not share or corrupt agent session state
+- [x] 8.6 Implement the allowlist-built child environment and verify the orchestrator GitHub token is absent from the agent process environment
+- [x] 8.7 Implement timeout and cancellation via `-t` plus `AbortSignal` and verify an over-running agent is terminated, the attempt fails with a timeout reason, and nothing is published
+- [x] 8.8 Capture stdout, stderr, exit code, session id, reasoning effort, and timings to attempt records with bulk output written to `output_ref` files, and verify output is retained after a non-zero exit
+- [x] 8.9 Implement the agent version check at startup and verify an unexpected CLI version surfaces as a clear configuration error
+- [x] 8.10 Verify the orchestrator never passes the agent's own worktree flag and always supplies the prepared workspace as the working directory
 
 ## 9. Validation and publication
 
-- [ ] 9.1 Implement per-repository validation command execution with `shell: false` and verify each command's exit code, duration, and output are recorded separately and order is respected
-- [ ] 9.2 Verify an empty validation command list performs inspection only and records that no commands were configured, with no built-in fallback
-- [ ] 9.3 Implement independent worktree inspection (modified, valid, expected branch, no conflicts) and verify a wrong checked-out branch and a conflicted state each block publication with their own reason
-- [ ] 9.4 Implement the six publication preconditions and verify each one failing independently prevents commit and push and names the failed precondition
-- [ ] 9.5 Verify an agent that exits successfully having changed nothing publishes nothing and records a no-changes outcome
-- [ ] 9.6 Implement the deterministic commit message referencing the originating comment id and verify the resulting commit SHA is recorded on the attempt
-- [ ] 9.7 Verify a rejected push fails the attempt with a rejection reason and attempts no force-push and no history rewrite
-- [ ] 9.8 Implement outcome reporting for success, failure, and agent-declined cases and verify each reply matches its required content and contains no transcript and no secret
-- [ ] 9.9 Verify review-thread resolution state is never modified by a successful attempt
-- [ ] 9.10 Implement separate recording of reporting failure and verify a failed reply after a successful push leaves the commit in place
+- [x] 9.1 Implement per-repository validation command execution with `shell: false` and verify each command's exit code, duration, and output are recorded separately and order is respected
+- [x] 9.2 Verify an empty validation command list performs inspection only and records that no commands were configured, with no built-in fallback
+- [x] 9.3 Implement independent worktree inspection (modified, valid, expected branch, no conflicts) and verify a wrong checked-out branch and a conflicted state each block publication with their own reason
+- [x] 9.4 Implement the six publication preconditions and verify each one failing independently prevents commit and push and names the failed precondition
+- [x] 9.5 Verify an agent that exits successfully having changed nothing publishes nothing and records a no-changes outcome
+- [x] 9.6 Implement the deterministic commit message referencing the originating comment id and verify the resulting commit SHA is recorded on the attempt
+- [x] 9.7 Verify a rejected push fails the attempt with a rejection reason and attempts no force-push and no history rewrite
+- [x] 9.8 Implement outcome reporting for success, failure, and agent-declined cases and verify each reply matches its required content and contains no transcript and no secret
+- [x] 9.9 Verify review-thread resolution state is never modified by a successful attempt
+- [x] 9.10 Implement separate recording of reporting failure and verify a failed reply after a successful push leaves the commit in place
 
 ## 10. Console
 
-- [ ] 10.1 Implement the Fastify server with loopback-only default binding and mandatory token auth, and verify an unauthenticated request to every route is rejected with no data disclosed and no action performed
-- [ ] 10.2 Implement the dashboard view (orchestrator status, repositories with enablement, running, queued, recent successes and failures) and verify running and queued jobs appear with repository and PR
-- [ ] 10.3 Implement the job detail view covering every field required by the `operator-console` spec and verify a failed job's stage, reason, agent output, and validation results are all present
-- [ ] 10.4 Verify a retried job shows each attempt's output and outcome separately
-- [ ] 10.5 Implement SSE live updates and verify status transitions and new agent output appear without a manual reload
-- [ ] 10.6 Implement operator actions (retry, cancel, repository toggle, links to PR and comment) and verify each is recorded with time and effect
-- [ ] 10.7 Implement the workspace-reset action as visually and structurally separated with a required confirmation step, and verify it does not execute without explicit confirmation
-- [ ] 10.8 Apply secret redaction across job detail, agent output, configuration views, and error traces, and verify a configured secret present in captured output is redacted in every view
-- [ ] 10.9 Expose the structured log filtered by job id and verify a job's full lifecycle entries are returned without reading a terminal
+- [x] 10.1 Implement the Fastify server with loopback-only default binding and mandatory token auth, and verify an unauthenticated request to every route is rejected with no data disclosed and no action performed
+- [x] 10.2 Implement the dashboard view (orchestrator status, repositories with enablement, running, queued, recent successes and failures) and verify running and queued jobs appear with repository and PR
+- [x] 10.3 Implement the job detail view covering every field required by the `operator-console` spec and verify a failed job's stage, reason, agent output, and validation results are all present
+- [x] 10.4 Verify a retried job shows each attempt's output and outcome separately
+- [x] 10.5 Implement SSE live updates and verify status transitions and new agent output appear without a manual reload
+- [x] 10.6 Implement operator actions (retry, cancel, repository toggle, links to PR and comment) and verify each is recorded with time and effect
+- [x] 10.7 Implement the workspace-reset action as visually and structurally separated with a required confirmation step, and verify it does not execute without explicit confirmation
+- [x] 10.8 Apply secret redaction across job detail, agent output, configuration views, and error traces, and verify a configured secret present in captured output is redacted in every view
+- [x] 10.9 Expose the structured log filtered by job id and verify a job's full lifecycle entries are returned without reading a terminal
 
 ## 11. Hardening and documentation
 
-- [ ] 11.1 Verify the Layer1 §34 security behaviors as explicit tests: unauthorized rejected, duplicate not executed twice, same PR not concurrent, failed agent does not push, restart does not duplicate work, malformed GitHub data executes no shell
-- [ ] 11.2 Map each Layer1 §27 failure mode to a distinct reason code and verify no failure path produces a generic message
-- [ ] 11.3 Verify every job failure records stage, whether files changed, whether a commit exists, and whether anything was pushed
-- [ ] 11.4 Write the README covering install, configure, GitHub auth, repository registration, agent and model setup, start, and verify connectivity — Windows and PowerShell friendly, no WSL requirement
-- [ ] 11.5 Document development, test, and build commands plus troubleshooting notes, and verify a clean clone can be brought to a running orchestrator by following them
+- [x] 11.1 Verify the Layer1 §34 security behaviors as explicit tests: unauthorized rejected, duplicate not executed twice, same PR not concurrent, failed agent does not push, restart does not duplicate work, malformed GitHub data executes no shell
+- [x] 11.2 Map each Layer1 §27 failure mode to a distinct reason code and verify no failure path produces a generic message
+- [x] 11.3 Verify every job failure records stage, whether files changed, whether a commit exists, and whether anything was pushed
+- [x] 11.4 Write the README covering install, configure, GitHub auth, repository registration, agent and model setup, start, and verify connectivity — Windows and PowerShell friendly, no WSL requirement
+- [x] 11.5 Document development, test, and build commands plus troubleshooting notes, and verify a clean clone can be brought to a running orchestrator by following them
 - [ ] 11.6 Run the full Layer1 §39 acceptance scenario against a real repository with a real agent invocation and verify all fifteen steps, ending with the developer's normal checkout untouched
