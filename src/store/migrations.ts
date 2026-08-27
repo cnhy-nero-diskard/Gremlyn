@@ -138,4 +138,10 @@ CREATE TABLE operator_actions (
 );
 `,
   },
+  {
+    id: "0003_console_review_context",
+    sql: `
+ALTER TABLE jobs ADD COLUMN review_context TEXT;
+`,
+  },
 ];
