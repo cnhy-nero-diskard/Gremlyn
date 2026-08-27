@@ -26,6 +26,7 @@ export interface JobRow {
   created_at: string;
   finished_at: string | null;
   current_attempt: number;
+  review_context: string | null;
 }
 
 export interface AttemptRow {
@@ -211,6 +212,27 @@ export class JobStore {
       .run(commitSha, attemptId);
   }
 
+  recordReportStatus(attemptId: number, status: "posted" | "failed"): void {
+    this.db.prepare("UPDATE attempts SET report_status = ? WHERE id = ?").run(status, attemptId);
+  }
+
+  recordFailureDetail(
+    attemptId: number,
+    input: {
+      stage: FailureStage;
+      reason: string;
+      hasUncommittedChanges: boolean;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE attempts
+         SET failure_stage = ?, failure_reason = ?, has_uncommitted_changes = ?
+         WHERE id = ?`,
+      )
+      .run(input.stage, input.reason, input.hasUncommittedChanges ? 1 : 0, attemptId);
+  }
+
   finishSuccess(jobId: number, attemptId: number): void {
     const finishedAt = now();
     this.db.transaction(() => {
@@ -303,6 +325,12 @@ export class JobStore {
 
   setAttemptOutputRef(attemptId: number, outputRef: string): void {
     this.db.prepare("UPDATE attempts SET output_ref = ? WHERE id = ?").run(outputRef, attemptId);
+  }
+
+  setReviewContext(jobId: number, context: unknown): void {
+    this.db
+      .prepare("UPDATE jobs SET review_context = ? WHERE id = ?")
+      .run(JSON.stringify(context), jobId);
   }
 
   getTimeline(jobId: number): StatusEventRow[] {
