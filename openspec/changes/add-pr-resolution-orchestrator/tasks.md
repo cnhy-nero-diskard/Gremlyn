@@ -59,12 +59,12 @@ any stage is built out fully.
 
 ## 7. Workspace
 
-- [ ] 7.1 Implement deterministic workspace paths from `workspace_root` plus PR number and verify a branch name containing traversal sequences does not influence the resulting path
-- [ ] 7.2 Implement the full prepare sequence from design D9 and verify fresh-create and clean-refresh both end at the current head commit
-- [ ] 7.3 Implement unsafe-state detection (dirty, conflicted, diverged, not a worktree) and verify each fails the job with its specific reason and leaves contents intact
-- [ ] 7.4 Verify a source repository with uncommitted local changes is unaffected by a full job run — working tree, index, and checked-out branch unchanged
-- [ ] 7.5 Implement the explicit workspace-reset action with a path assertion beneath a configured `workspace_root`, and verify a path outside any workspace root is refused and recorded
-- [ ] 7.6 Record `head_sha_at_prepare` and re-verify it before publication, and verify a head change during the run refuses publication with a specific reason
+- [x] 7.1 Implement deterministic workspace paths from `workspace_root` plus PR number and verify a branch name containing traversal sequences does not influence the resulting path
+- [x] 7.2 Implement the full prepare sequence from design D9 and verify fresh-create and clean-refresh both end at the current head commit
+- [x] 7.3 Implement unsafe-state detection (dirty, conflicted, diverged, not a worktree) and verify each fails the job with its specific reason and leaves contents intact
+- [x] 7.4 Verify a source repository with uncommitted local changes is unaffected by a full job run — working tree, index, and checked-out branch unchanged
+- [x] 7.5 Implement the explicit workspace-reset action with a path assertion beneath a configured `workspace_root`, and verify a path outside any workspace root is refused and recorded
+- [x] 7.6 Record `head_sha_at_prepare` and re-verify it before publication, and verify a head change during the run refuses publication with a specific reason
 
 ## 8. Agent execution
 
