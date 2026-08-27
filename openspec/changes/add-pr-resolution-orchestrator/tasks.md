@@ -23,10 +23,10 @@ any stage is built out fully.
 
 ## 3. Walking skeleton — end to end
 
-- [ ] 3.1 Wire a minimal path from a hardcoded normalized event through workspace prepare, `FakeExecutor`, commit, push, and GitHub reply, and verify a fixture-driven run produces a commit on the temp remote and a posted reply
-- [ ] 3.2 Persist a job and a single attempt across that path and verify the job reaches a terminal status with its attempt detail recorded
-- [ ] 3.3 Add the `processed_commands` unique-constraint write inside the job-creation transaction and verify replaying the same event creates no second job
-- [ ] 3.4 Establish the end-to-end test harness (fake agent + real git + fixture GitHub, no network) and verify the Layer1 §39 happy path runs green in CI
+- [x] 3.1 Wire a minimal path from a hardcoded normalized event through workspace prepare, `FakeExecutor`, commit, push, and GitHub reply, and verify a fixture-driven run produces a commit on the temp remote and a posted reply
+- [x] 3.2 Persist a job and a single attempt across that path and verify the job reaches a terminal status with its attempt detail recorded
+- [x] 3.3 Add the `processed_commands` unique-constraint write inside the job-creation transaction and verify replaying the same event creates no second job
+- [x] 3.4 Establish the end-to-end test harness (fake agent + real git + fixture GitHub, no network) and verify the Layer1 §39 happy path runs green in CI
 
 ## 4. Ingestion
 
