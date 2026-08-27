@@ -37,6 +37,9 @@ Never put either token in `gremlyn.yaml`. The file names the environment variabl
 Edit `gremlyn.yaml`:
 
 - Set `github.orchestrator_login` to the login authenticated by `GREMLYN_GITHUB_TOKEN`.
+- Set `git.author_name` and `git.author_email` to the human identity that should
+  receive commit attribution. The email must be verified on that GitHub account;
+  it does not need to belong to the bot account that pushes the commit.
 - Put permitted human GitHub logins in `allowed_authors`. The bot login must not appear there.
 - For each repository, set its exact `owner`, `name`, local `source_path`, and a separate `workspace_root`.
 - Keep `source_path` and `workspace_root` distinct. Workspaces are created as `<workspace_root>/pr-<number>`.
@@ -45,6 +48,10 @@ Edit `gremlyn.yaml`:
 - Leave `effort` unset to use Cline's highest supported tier, `xhigh`.
 
 Confirm the configured source repository has an `origin` remote and that the bot has push access to same-repository PR branches. Fork PRs are deliberately unsupported.
+
+GitHub records the bot as the account that pushed the branch, while the commit's
+configured author name and verified email determine which human profile receives
+commit attribution.
 
 ## Start and verify connectivity
 

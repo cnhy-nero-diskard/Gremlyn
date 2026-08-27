@@ -91,6 +91,7 @@ any stage is built out fully.
 - [x] 9.8 Implement outcome reporting for success, failure, and agent-declined cases and verify each reply matches its required content and contains no transcript and no secret
 - [x] 9.9 Verify review-thread resolution state is never modified by a successful attempt
 - [x] 9.10 Implement separate recording of reporting failure and verify a failed reply after a successful push leaves the commit in place
+- [x] 9.11 Configure commit author attribution independently from the bot's GitHub identity and verify the loader passes the configured human identity to publication
 
 ## 10. Console
 

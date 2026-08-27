@@ -392,6 +392,12 @@ message references the originating comment id for traceability. Push is a plain
 `git push origin HEAD:<branch>` — never `--force`, never a branch create or delete,
 never a merge.
 
+Git commit attribution is configured separately from GitHub authentication. The
+configured `git.author_name` and `git.author_email` are supplied to `git commit`,
+while the dedicated orchestrator token remains responsible for API calls and push
+authorization. This lets GitHub attribute commits to the developer when the email
+is verified on that account without making the developer identity self-triggering.
+
 Reporting failure is recorded separately from publication outcome. A pushed commit
 whose reply failed to post stays pushed; retracting published work to tidy a status
 field would be worse than the inconsistency.

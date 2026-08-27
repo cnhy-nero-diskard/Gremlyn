@@ -79,11 +79,23 @@ identifier SHALL be recorded.
 The system SHALL NOT force-push, SHALL NOT rewrite existing history, SHALL NOT
 create or delete branches, and SHALL NOT merge the pull request.
 
+Commit author name and email SHALL come from explicit configuration independently
+of the dedicated GitHub identity used to authenticate and push. This SHALL permit
+commits pushed by the orchestrator account to be attributed to a configured human
+whose email is verified by GitHub.
+
 #### Scenario: Successful publication
 
 - **WHEN** all publication preconditions hold
 - **THEN** a commit is created and pushed to the pull request head branch and its
   identifier is recorded on the attempt
+
+#### Scenario: Human attribution with bot publication
+
+- **WHEN** the orchestrator publishes using a dedicated bot token and the commit
+  author is configured as a human developer
+- **THEN** the commit records the configured human name and email while the bot
+  remains the identity that authenticates the push
 
 #### Scenario: Push rejected
 
