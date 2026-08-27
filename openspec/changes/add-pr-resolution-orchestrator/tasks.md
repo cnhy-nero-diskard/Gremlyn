@@ -48,14 +48,14 @@ any stage is built out fully.
 
 ## 6. Orchestration
 
-- [ ] 6.1 Implement the D7 state machine with a `status_events` row per transition and verify a completed job's timeline is reconstructable in order with timestamps
-- [ ] 6.2 Implement the per-PR lock and global concurrency semaphore and verify two commands for one PR serialize while two commands for different PRs run concurrently
-- [ ] 6.3 Verify the lock is released on success, failure, timeout, and cancellation, and that queued work for that PR then proceeds
-- [ ] 6.4 Implement dequeue-time PR re-verification and verify a job whose PR closed while queued fails with a PR-state reason before any workspace is touched
-- [ ] 6.5 Implement cancellation for queued and running jobs and verify a cancelled running job terminates the agent, publishes nothing, and records whether the workspace holds uncommitted changes
-- [ ] 6.6 Implement the startup interrupted-job sweep and verify a job left in a non-terminal status is marked interrupted, retains its output, and does not re-execute
-- [ ] 6.7 Implement operator retry as a new attempt under the same job and verify prior attempt records are preserved unchanged
-- [ ] 6.8 Implement the single-instance startup check on the data directory and verify a second orchestrator against the same directory refuses to start
+- [x] 6.1 Implement the D7 state machine with a `status_events` row per transition and verify a completed job's timeline is reconstructable in order with timestamps
+- [x] 6.2 Implement the per-PR lock and global concurrency semaphore and verify two commands for one PR serialize while two commands for different PRs run concurrently
+- [x] 6.3 Verify the lock is released on success, failure, timeout, and cancellation, and that queued work for that PR then proceeds
+- [x] 6.4 Implement dequeue-time PR re-verification and verify a job whose PR closed while queued fails with a PR-state reason before any workspace is touched
+- [x] 6.5 Implement cancellation for queued and running jobs and verify a cancelled running job terminates the agent, publishes nothing, and records whether the workspace holds uncommitted changes
+- [x] 6.6 Implement the startup interrupted-job sweep and verify a job left in a non-terminal status is marked interrupted, retains its output, and does not re-execute
+- [x] 6.7 Implement operator retry as a new attempt under the same job and verify prior attempt records are preserved unchanged
+- [x] 6.8 Implement the single-instance startup check on the data directory and verify a second orchestrator against the same directory refuses to start
 
 ## 7. Workspace
 
