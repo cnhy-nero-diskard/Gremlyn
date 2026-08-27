@@ -1,0 +1,79 @@
+# Gremlyn configuration example.
+#
+# Copy to gremlyn.yaml and edit. This file never contains secret values:
+# secrets are read from the environment variables named by `token_env` fields.
+
+# Directory holding the SQLite database, captured output, and per-attempt
+# agent state. Created on first start.
+data_dir: .gremlyn
+
+# debug | info | warn | error
+log_level: info
+
+# How often each enabled repository is polled for new review comments.
+poll_interval_seconds: 60
+
+# Maximum number of agent attempts running simultaneously.
+concurrency: 2
+
+github:
+  # Name of the environment variable holding the GitHub token.
+  # The token value itself NEVER appears in this file.
+  token_env: GREMLYN_GITHUB_TOKEN
+  # Login of the dedicated GitHub identity the orchestrator acts as.
+  # Must be distinct from every entry in allowed_authors.
+  orchestrator_login: gremlyn-bot
+
+console:
+  # Loopback by default. Binding anything else exposes a control surface;
+  # the token is still required either way.
+  host: 127.0.0.1
+  port: 4780
+  # Name of the environment variable holding the console auth token.
+  token_env: GREMLYN_CONSOLE_TOKEN
+
+agent_defaults:
+  # Hard limit per agent invocation, in seconds.
+  timeout_seconds: 1800
+  # Bounded consecutive-mistake allowance passed to the agent.
+  retries: 2
+
+# GitHub logins permitted to issue commands. Case-insensitive. The
+# orchestrator_login must NOT appear here.
+allowed_authors:
+  - your-github-login
+
+# Agents available for repositories to reference. `efforts` lists the
+# supported reasoning-effort tiers from lowest to highest; the last entry is
+# the ceiling and the default for repositories that do not specify one.
+agents:
+  cline:
+    binary: cline
+    efforts: [none, low, medium, high, xhigh]
+
+repositories:
+  - owner: your-github-login
+    name: your-repo
+    # Local source repository. Never mutated: fetch and worktree add only.
+    source_path: D:/code/your-repo
+    # Root under which per-PR disposable worktrees are created.
+    # Must not be inside the source repository.
+    workspace_root: D:/code/gremlyn-workspaces/your-repo
+    agent: cline
+    provider: your-provider
+    model: your-provider/lune-5.6
+    # Optional; defaults to the agent's highest supported tier.
+    effort: xhigh
+    enabled: true
+    # Models a command argument may select. The configured model must be in
+    # this list when the list is non-empty.
+    allowed_models:
+      - your-provider/lune-5.6
+    # Validation run in the worktree after the agent exits, in order, each as
+    # an argument vector (no shell). Empty list means inspection only.
+    validation_commands:
+      - [npm, run, build]
+      - [npm, test]
+    # Optional repository-specific instructions appended to every prompt.
+    agent_instructions: |
+      Follow the existing code conventions in this repository.

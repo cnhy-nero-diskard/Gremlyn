@@ -7,12 +7,12 @@ any stage is built out fully.
 
 ## 1. Foundation
 
-- [ ] 1.1 Initialize the Node/TypeScript project (strict `tsconfig`, ESM, Node 22 target) and verify `npm run build` and `npm test` both succeed on an empty test suite
-- [ ] 1.2 Add runtime dependencies (`better-sqlite3`, `octokit`, `fastify`, `execa`) and dev tooling (test runner, linter, formatter) and verify a clean install builds and lints
-- [ ] 1.3 Implement the config loader — file plus environment overlay, secrets sourced from environment only — and verify it rejects a config with a missing GitHub token and one naming an unknown agent
-- [ ] 1.4 Write `config.example.yaml` covering every field in design.md D6 with no real credentials, and verify the loader parses it successfully
-- [ ] 1.5 Implement the SQLite store with an ordered startup migration runner, applying the D6 schema, and verify migrations run idempotently against a fresh and an already-migrated database
-- [ ] 1.6 Implement structured logging with job/attempt correlation fields and a configured-secret redaction filter, and verify a log call containing a secret value emits it redacted
+- [x] 1.1 Initialize the Node/TypeScript project (strict `tsconfig`, ESM, Node 22 target) and verify `npm run build` and `npm test` both succeed on an empty test suite
+- [x] 1.2 Add runtime dependencies (`better-sqlite3`, `octokit`, `fastify`, `execa`) and dev tooling (test runner, linter, formatter) and verify a clean install builds and lints
+- [x] 1.3 Implement the config loader — file plus environment overlay, secrets sourced from environment only — and verify it rejects a config with a missing GitHub token and one naming an unknown agent
+- [x] 1.4 Write `config.example.yaml` covering every field in design.md D6 with no real credentials, and verify the loader parses it successfully
+- [x] 1.5 Implement the SQLite store with an ordered startup migration runner, applying the D6 schema, and verify migrations run idempotently against a fresh and an already-migrated database
+- [x] 1.6 Implement structured logging with job/attempt correlation fields and a configured-secret redaction filter, and verify a log call containing a secret value emits it redacted
 
 ## 2. Walking skeleton — mechanics
 
