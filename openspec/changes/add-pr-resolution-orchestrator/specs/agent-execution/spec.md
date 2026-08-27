@@ -32,9 +32,9 @@ inspect the checked-out workspace directly.
 ### Requirement: Replaceable executor abstraction
 
 Agent invocation SHALL occur behind an executor interface that receives the working
-directory, model, prompt, execution options, environment, and a cancellation
-signal. Adding or substituting an executor SHALL NOT require changes to the job
-lifecycle, workspace management, validation, or reporting.
+directory, model, reasoning effort, prompt, execution options, environment, and a
+cancellation signal. Adding or substituting an executor SHALL NOT require changes
+to the job lifecycle, workspace management, validation, or reporting.
 
 The system SHALL provide an executor for the configured coding agent CLI and a
 fake executor usable in tests.

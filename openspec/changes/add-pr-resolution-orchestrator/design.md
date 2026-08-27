@@ -29,6 +29,7 @@ cline "<prompt>"                positional argv — no shell string construction
       --retries <n>             bounded consecutive-mistake allowance
       --data-dir <path>         isolated mutable state per invocation
       -s, --system <prompt>     system prompt override
+      --thinking <level>        none|low|medium|high|xhigh — reasoning effort
 ```
 
 Three consequences Layer1 did not anticipate:
@@ -175,7 +176,7 @@ kept only where it clarifies.
 
 ```
 repositories        id · owner · name · source_path · workspace_root
-                    agent · model · provider · enabled
+                    agent · model · provider · effort · enabled
                     validation_commands (json) · agent_instructions
                     allowed_models (json)
 
@@ -187,7 +188,7 @@ jobs                id · repo_id · pr_number · comment_id · command
                     thread_id · status · created_at · finished_at
                     current_attempt
 
-attempts            id · job_id · attempt_number · agent · model
+attempts            id · job_id · attempt_number · agent · model · effort
                     workspace_path · head_sha_at_prepare
                     started_at · ended_at · agent_exit_code
                     agent_session_id · outcome · failure_stage
@@ -299,9 +300,12 @@ after a full agent run.
 ### D10 — Agent execution
 
 ```ts
+type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh"
+
 interface AgentExecutor {
   run(opts: {
     cwd: string; model: string; provider: string;
+    effort: ReasoningEffort;
     prompt: string; env: Record<string, string>;
     timeoutSec: number; signal: AbortSignal;
   }): Promise<AgentResult>   // stdout, stderr, exitCode, sessionId?, times
@@ -313,10 +317,23 @@ interface AgentExecutor {
 ```
 spawn("cline", [prompt, "-c", cwd, "-m", model, "-P", provider,
                 "--json", "-t", String(timeoutSec),
+                "--thinking", effort,
                 "--data-dir", <attempt-scoped dir>,
                 "--auto-approve", "true"],
       { env: sanitizedEnv, shell: false })
 ```
+
+**Reasoning effort is configuration, not a constant.** Review-feedback resolution is
+the kind of work that rewards deliberation over throughput — a wrong fix pushed to a
+PR branch costs far more than a slow one — so the default is the highest tier the
+CLI offers. Cline's ceiling is `xhigh`; it exposes no tier above it, so `xhigh` is
+the effective maximum and the shipped default.
+
+Effort is a per-repository registry field for the same reason model is (Layer1 §13
+forbids hard-coding the model, and the argument is identical): a repository with a
+fast test suite and mechanical review comments may not warrant `xhigh` on every job.
+It is validated against the enumerated tiers, and an unrecognized value is a
+configuration error at startup rather than a flag the CLI rejects mid-attempt.
 
 `shell: false` with an argv array is the whole of Layer1 §25's "no arbitrary shell
 execution" — untrusted comment text is a single argument no shell ever parses.
@@ -521,6 +538,8 @@ established from the first migration so the pattern exists before it is needed.
 - **Agent transcript retention.** Deferred by the proposal. When it becomes a real
   problem, the shape of the answer (an age or count cap over `output_ref` files) does
   not change any decision here.
-- **Provider/model identifiers.** Layer1 names "Luna"; these are opaque configured
-  strings validated against `allowed_models`, resolved by the operator through
-  `cline auth`. No design dependency on their values.
+- **Exact model identifier for Lune 5.6.** Layer1 §13 writes "Luna"; the intended
+  model is Lune 5.6, run at the highest available reasoning effort. Cline exposes no
+  tier above `xhigh`, so `xhigh` is the shipped default (D10). The provider-qualified
+  model string is an opaque configured value validated against `allowed_models` and
+  resolved by the operator through `cline auth` — no design decision depends on it.

@@ -11,8 +11,8 @@ that every job for that repository inherits.
 The system SHALL maintain a registry of managed repositories. Each entry SHALL
 carry the GitHub owner and repository name, the local source repository path, the
 workspace root for disposable worktrees, the agent identifier, the model
-identifier, an enabled flag, an ordered list of validation commands, and optional
-repository-specific agent instructions.
+identifier, the reasoning effort level, an enabled flag, an ordered list of
+validation commands, and optional repository-specific agent instructions.
 
 Repository entries SHALL be the sole source of filesystem paths used by any job.
 No path used for checkout, worktree creation, or agent execution may originate
@@ -21,8 +21,8 @@ from GitHub-supplied text.
 #### Scenario: Registry supplies job configuration
 
 - **WHEN** a job is created for a registered repository
-- **THEN** the job records the agent, model, workspace root, and validation
-  commands resolved from that repository's entry at creation time
+- **THEN** the job records the agent, model, reasoning effort, workspace root, and
+  validation commands resolved from that repository's entry at creation time
 
 #### Scenario: Path never derives from GitHub content
 
@@ -101,3 +101,32 @@ executor is available.
 - **WHEN** a repository entry names an agent with no registered executor
 - **THEN** the entry is reported as invalid at startup and the repository produces
   no jobs
+
+### Requirement: Reasoning effort is configured and bounded
+
+Each registry entry SHALL carry a reasoning effort level drawn from the tiers the
+configured agent supports. The system SHALL default to the highest tier the agent
+offers when an entry does not specify one.
+
+The system SHALL validate the configured level against the agent's supported tiers
+at startup, and SHALL reject an unrecognized or unsupported level as a
+configuration error rather than passing it to the agent at execution time.
+
+#### Scenario: Default is the highest supported tier
+
+- **WHEN** a repository entry omits the reasoning effort level
+- **THEN** jobs for that repository run at the highest tier the configured agent
+  supports
+
+#### Scenario: Level above the agent's ceiling
+
+- **WHEN** a repository entry specifies a reasoning effort level higher than any
+  tier the configured agent offers
+- **THEN** the entry is reported as invalid at startup and the repository produces
+  no jobs
+
+#### Scenario: Effort is recorded per attempt
+
+- **WHEN** an attempt runs
+- **THEN** the reasoning effort used is recorded on that attempt and is visible
+  alongside the agent and model

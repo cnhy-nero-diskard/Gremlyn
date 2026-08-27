@@ -71,12 +71,13 @@ any stage is built out fully.
 - [ ] 8.1 Implement review-context reconstruction (thread in order, anchored file, diff hunk) and verify assembled context includes the whole thread and excludes the full PR diff
 - [ ] 8.2 Implement deterministic prompt assembly per design D11 and verify the instruction block is constant and untrusted text appears only in the delimited context region
 - [ ] 8.3 Implement `ClineExecutor` over the argv surface in design D10 with `shell: false`, and verify a prompt containing shell metacharacters reaches the agent intact with no shell interpretation
-- [ ] 8.4 Implement per-attempt `--data-dir` isolation and verify two concurrent attempts do not share or corrupt agent session state
-- [ ] 8.5 Implement the allowlist-built child environment and verify the orchestrator GitHub token is absent from the agent process environment
-- [ ] 8.6 Implement timeout and cancellation via `-t` plus `AbortSignal` and verify an over-running agent is terminated, the attempt fails with a timeout reason, and nothing is published
-- [ ] 8.7 Capture stdout, stderr, exit code, session id, and timings to attempt records with bulk output written to `output_ref` files, and verify output is retained after a non-zero exit
-- [ ] 8.8 Implement the agent version check at startup and verify an unexpected CLI version surfaces as a clear configuration error
-- [ ] 8.9 Verify the orchestrator never passes the agent's own worktree flag and always supplies the prepared workspace as the working directory
+- [ ] 8.4 Pass the configured reasoning effort via `--thinking`, defaulting to the agent's highest supported tier (`xhigh` for Cline), and verify an effort above the agent's ceiling is rejected at startup rather than at invocation
+- [ ] 8.5 Implement per-attempt `--data-dir` isolation and verify two concurrent attempts do not share or corrupt agent session state
+- [ ] 8.6 Implement the allowlist-built child environment and verify the orchestrator GitHub token is absent from the agent process environment
+- [ ] 8.7 Implement timeout and cancellation via `-t` plus `AbortSignal` and verify an over-running agent is terminated, the attempt fails with a timeout reason, and nothing is published
+- [ ] 8.8 Capture stdout, stderr, exit code, session id, reasoning effort, and timings to attempt records with bulk output written to `output_ref` files, and verify output is retained after a non-zero exit
+- [ ] 8.9 Implement the agent version check at startup and verify an unexpected CLI version surfaces as a clear configuration error
+- [ ] 8.10 Verify the orchestrator never passes the agent's own worktree flag and always supplies the prepared workspace as the working directory
 
 ## 9. Validation and publication
 
