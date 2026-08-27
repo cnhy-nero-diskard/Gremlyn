@@ -4,10 +4,10 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitAll, pushHead } from "../src/publish/gitops.js";
 import { prepareWorkspace } from "../src/workspace/worktree.js";
-import { headSha, isAncestor } from "../src/workspace/gitops.js";
+import { git, headSha, isAncestor } from "../src/workspace/gitops.js";
 import { createTempRepo, pushCommit, remoteSha } from "./helpers/gitrepo.js";
 
-const AUTHOR = { name: "Gremlyn", email: "gremlyn@localhost" };
+const AUTHOR = { name: "Human Developer", email: "developer@example.com" };
 
 test("commit and non-force push land on the PR head branch without rewriting history", async () => {
   const repo = await createTempRepo();
@@ -33,6 +33,10 @@ test("commit and non-force push land on the PR head branch without rewriting his
   // The commit landed on the remote branch...
   const remoteAfter = await remoteSha(repo.remotePath, repo.headBranch);
   assert.equal(remoteAfter, commitSha);
+  const attribution = await git(["show", "-s", "--format=%an <%ae>", remoteAfter], {
+    cwd: prepared.path,
+  });
+  assert.equal(attribution.stdout, `${AUTHOR.name} <${AUTHOR.email}>`);
   // ...and history was extended, not rewritten: the old head is an ancestor.
   assert.equal(await isAncestor(repo.sourcePath, baseSha, remoteAfter), true);
 });

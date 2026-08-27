@@ -62,10 +62,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     logger,
     secrets: [config.githubToken, config.consoleToken],
     concurrency: config.concurrency,
-    commitAuthor: {
-      name: "Gremlyn",
-      email: `${config.orchestratorLogin}@users.noreply.github.com`,
-    },
+    commitAuthor: config.commitAuthor,
   });
   for (const repository of repositories) orchestrator.registerRepository(repository);
   const eventSource = new PollingEventSource(github, store.db);

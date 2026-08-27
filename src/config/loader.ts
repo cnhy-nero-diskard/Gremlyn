@@ -51,6 +51,10 @@ export interface AppConfig {
   concurrency: number;
   githubToken: string;
   orchestratorLogin: string;
+  commitAuthor: {
+    name: string;
+    email: string;
+  };
   consoleHost: string;
   consolePort: number;
   consoleToken: string;
@@ -69,6 +73,10 @@ interface RawConfig {
   github?: {
     token_env?: unknown;
     orchestrator_login?: unknown;
+  };
+  git?: {
+    author_name?: unknown;
+    author_email?: unknown;
   };
   console?: {
     host?: unknown;
@@ -253,6 +261,12 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   const orchestratorLogin = asString(raw.github?.orchestrator_login);
   if (!orchestratorLogin) problems.push("github.orchestrator_login is required");
 
+  // Git attribution is independent of the GitHub identity used to push.
+  const commitAuthorName = asString(raw.git?.author_name);
+  const commitAuthorEmail = asString(raw.git?.author_email);
+  if (!commitAuthorName) problems.push("git.author_name is required");
+  if (!commitAuthorEmail) problems.push("git.author_email is required");
+
   // Console.
   const consoleHost =
     asString(env.GREMLYN_CONSOLE_HOST) ?? asString(raw.console?.host) ?? "127.0.0.1";
@@ -320,6 +334,10 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     concurrency,
     githubToken: githubToken as string,
     orchestratorLogin: orchestratorLogin as string,
+    commitAuthor: {
+      name: commitAuthorName as string,
+      email: commitAuthorEmail as string,
+    },
     consoleHost,
     consolePort,
     consoleToken: consoleToken as string,

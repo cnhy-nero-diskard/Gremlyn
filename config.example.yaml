@@ -24,6 +24,12 @@ github:
   # Must be distinct from every entry in allowed_authors.
   orchestrator_login: gremlyn-bot
 
+# Commit attribution is independent of the bot account that authenticates,
+# comments, and pushes. Use an email verified on the desired GitHub author account.
+git:
+  author_name: Your Name
+  author_email: your-github-verified-email@example.com
+
 console:
   # Loopback by default. Binding anything else exposes a control surface;
   # the token is still required either way.

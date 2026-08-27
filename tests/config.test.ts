@@ -14,6 +14,9 @@ const VALID_CONFIG = `
 data_dir: .gremlyn-test
 github:
   orchestrator_login: gremlyn-bot
+git:
+  author_name: Human Developer
+  author_email: developer@example.com
 allowed_authors: [someuser]
 agents:
   cline:
@@ -42,6 +45,10 @@ test("loads a valid config", () => {
   const config = loadConfig(writeConfig(VALID_CONFIG), VALID_ENV);
   assert.equal(config.githubToken, "ghp_test_token");
   assert.equal(config.consoleToken, "console_test_token");
+  assert.deepEqual(config.commitAuthor, {
+    name: "Human Developer",
+    email: "developer@example.com",
+  });
   assert.equal(config.repositories.length, 1);
   const repo = config.repositories[0]!;
   assert.equal(repo.agent, "cline");
@@ -103,6 +110,22 @@ test("rejects the orchestrator identity inside allowed_authors", () => {
     "allowed_authors: [someuser, Gremlyn-Bot]",
   );
   assert.throws(() => loadConfig(writeConfig(config), VALID_ENV), ConfigError);
+});
+
+test("requires explicit git commit attribution", () => {
+  const config = VALID_CONFIG.replace(
+    "git:\n  author_name: Human Developer\n  author_email: developer@example.com\n",
+    "",
+  );
+  assert.throws(
+    () => loadConfig(writeConfig(config), VALID_ENV),
+    (err: unknown) => {
+      assert.ok(err instanceof ConfigError);
+      assert.ok(err.problems.includes("git.author_name is required"));
+      assert.ok(err.problems.includes("git.author_email is required"));
+      return true;
+    },
+  );
 });
 
 test("rejects a model outside allowed_models", () => {

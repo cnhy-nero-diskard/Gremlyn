@@ -10,6 +10,10 @@ test("config.example.yaml parses successfully with no real credentials", () => {
     GREMLYN_CONSOLE_TOKEN: "placeholder",
   } as NodeJS.ProcessEnv);
   assert.equal(config.orchestratorLogin, "gremlyn-bot");
+  assert.deepEqual(config.commitAuthor, {
+    name: "Your Name",
+    email: "your-github-verified-email@example.com",
+  });
   assert.equal(config.repositories.length, 1);
   assert.equal(config.repositories[0]!.effort, "xhigh");
 });
