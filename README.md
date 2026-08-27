@@ -10,7 +10,10 @@ Gremlyn is a local PR-resolution orchestrator. It polls configured GitHub reposi
 - Cline CLI 3.0.60, already authenticated with the provider used by your configured model
 - A dedicated GitHub account and token for Gremlyn
 
-The GitHub token should have only the repository permissions needed to read pull requests and review comments, post review replies, and push to existing PR branches. Do not use your personal token if a dedicated bot identity is available.
+The GitHub token should have only the repository permissions needed to read pull
+requests and review comments and post review replies. Git pushes use the host's
+existing Git credential configuration. Do not use your personal API token if a
+dedicated bot identity is available.
 
 ## Install
 
@@ -47,11 +50,14 @@ Edit `gremlyn.yaml`:
 - Set validation commands as argument arrays, for example `[npm, test]`. An empty list intentionally performs git inspection only; Gremlyn never invents fallback commands.
 - Leave `effort` unset to use Cline's highest supported tier, `xhigh`.
 
-Confirm the configured source repository has an `origin` remote and that the bot has push access to same-repository PR branches. Fork PRs are deliberately unsupported.
+Confirm the configured source repository has an `origin` remote and that the host's
+existing Git credentials can push to same-repository PR branches. Fork PRs are
+deliberately unsupported.
 
-GitHub records the bot as the account that pushed the branch, while the commit's
-configured author name and verified email determine which human profile receives
-commit attribution.
+The bot identity polls and replies through GitHub's API. Git transport remains
+separate: the host's Git credentials authenticate the push, while the configured
+author name and verified email determine which human profile receives commit
+attribution.
 
 ## Start and verify connectivity
 

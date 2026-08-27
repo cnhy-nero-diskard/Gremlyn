@@ -80,9 +80,9 @@ The system SHALL NOT force-push, SHALL NOT rewrite existing history, SHALL NOT
 create or delete branches, and SHALL NOT merge the pull request.
 
 Commit author name and email SHALL come from explicit configuration independently
-of the dedicated GitHub identity used to authenticate and push. This SHALL permit
-commits pushed by the orchestrator account to be attributed to a configured human
-whose email is verified by GitHub.
+of both the dedicated GitHub API identity and the Git transport credentials used
+to push. This SHALL permit published commits to be attributed to a configured
+human whose email is verified by GitHub.
 
 #### Scenario: Successful publication
 
@@ -92,10 +92,10 @@ whose email is verified by GitHub.
 
 #### Scenario: Human attribution with bot publication
 
-- **WHEN** the orchestrator publishes using a dedicated bot token and the commit
-  author is configured as a human developer
+- **WHEN** the orchestrator uses a dedicated bot for GitHub API operations and the
+  commit author is configured as a human developer
 - **THEN** the commit records the configured human name and email while the bot
-  remains the identity that authenticates the push
+  remains the identity that polls and reports through the GitHub API
 
 #### Scenario: Push rejected
 
