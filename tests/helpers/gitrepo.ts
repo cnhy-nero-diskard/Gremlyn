@@ -50,7 +50,11 @@ export async function remoteSha(remotePath: string, branch: string): Promise<str
   return stdout.trim();
 }
 
-/** Commit a file change in the source clone and push it to the remote. */
+/**
+ * Commit a file change on a branch and push it to the remote. Uses a
+ * throwaway worktree so it works even when the branch is checked out in
+ * another worktree (git forbids a second checkout of the same branch).
+ */
 export async function pushCommit(
   sourcePath: string,
   branch: string,
@@ -58,11 +62,17 @@ export async function pushCommit(
   content: string,
   message: string,
 ): Promise<string> {
-  await git(["checkout", branch], { cwd: sourcePath });
-  writeFileSync(join(sourcePath, file), content, "utf8");
-  await git(["add", "-A"], { cwd: sourcePath });
-  await git([...AUTHOR, "commit", "-m", message], { cwd: sourcePath });
-  await git(["push", "origin", branch], { cwd: sourcePath });
-  const { stdout } = await git(["rev-parse", "HEAD"], { cwd: sourcePath });
-  return stdout.trim();
+  const scratch = join(mkdtempSync(join(tmpdir(), "gremlyn-scratch-")), "wt");
+  // Detached: the branch itself may already be checked out in a worktree.
+  await git(["worktree", "add", "--detach", scratch, branch], { cwd: sourcePath });
+  try {
+    writeFileSync(join(scratch, file), content, "utf8");
+    await git(["add", "-A"], { cwd: scratch });
+    await git([...AUTHOR, "commit", "-m", message], { cwd: scratch });
+    await git(["push", "origin", `HEAD:${branch}`], { cwd: scratch });
+    const { stdout } = await git(["rev-parse", "HEAD"], { cwd: scratch });
+    return stdout.trim();
+  } finally {
+    await git(["worktree", "remove", "--force", scratch], { cwd: sourcePath });
+  }
 }

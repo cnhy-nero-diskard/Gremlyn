@@ -16,10 +16,10 @@ any stage is built out fully.
 
 ## 2. Walking skeleton — mechanics
 
-- [ ] 2.1 Implement the `GitHubClient` seam (fetch PR, fetch review thread, fetch diff hunk, post reply) over Octokit, and verify each call against recorded fixtures
-- [ ] 2.2 Implement `FakeExecutor` covering all six outcomes from design D10 (success, failure, timeout, no-changes, files-modified, validation-failure) and verify each outcome is selectable and observable
-- [ ] 2.3 Implement worktree create/refresh for a single PR against a temp git repository and verify the worktree ends on the expected branch at the expected commit
-- [ ] 2.4 Implement commit and non-force push to a PR head branch and verify against a temp bare remote that the commit lands and no history is rewritten
+- [x] 2.1 Implement the `GitHubClient` seam (fetch PR, fetch review thread, fetch diff hunk, post reply) over Octokit, and verify each call against recorded fixtures
+- [x] 2.2 Implement `FakeExecutor` covering all six outcomes from design D10 (success, failure, timeout, no-changes, files-modified, validation-failure) and verify each outcome is selectable and observable
+- [x] 2.3 Implement worktree create/refresh for a single PR against a temp git repository and verify the worktree ends on the expected branch at the expected commit
+- [x] 2.4 Implement commit and non-force push to a PR head branch and verify against a temp bare remote that the commit lands and no history is rewritten
 
 ## 3. Walking skeleton — end to end
 

@@ -27,6 +27,8 @@ test("all six outcomes from design D10 are selectable and observable", async () 
     const executor = new FakeExecutor({
       outcome,
       edits: { "changed.txt": "new content\n" },
+      // Keep the timeout simulation short in tests.
+      delayMs: 25,
     });
     const result = await executor.run(opts(cwd));
     assert.equal(executor.runs.length, 1, `${outcome}: run not recorded`);
