@@ -26,11 +26,7 @@ export class OctokitGitHubClient implements GitHubClient {
     return data.login;
   }
 
-  async getPullRequest(
-    owner: string,
-    repo: string,
-    prNumber: number,
-  ): Promise<PullRequestInfo> {
+  async getPullRequest(owner: string, repo: string, prNumber: number): Promise<PullRequestInfo> {
     const { data } = await this.octokit.rest.pulls.get({
       owner,
       repo,
@@ -44,10 +40,14 @@ export class OctokitGitHubClient implements GitHubClient {
     repo: string,
     prNumber: number,
   ): Promise<ReviewCommentPayload[]> {
-    const comments = await this.octokit.paginate(
-      this.octokit.rest.pulls.listReviewComments,
-      { owner, repo, pull_number: prNumber, per_page: 100, sort: "created", direction: "asc" },
-    );
+    const comments = await this.octokit.paginate(this.octokit.rest.pulls.listReviewComments, {
+      owner,
+      repo,
+      pull_number: prNumber,
+      per_page: 100,
+      sort: "created",
+      direction: "asc",
+    });
     return comments.map(mapReviewComment);
   }
 
@@ -77,6 +77,21 @@ export class OctokitGitHubClient implements GitHubClient {
     return data.id;
   }
 
+  async postConversationReply(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    body: string,
+  ): Promise<number> {
+    const { data } = await this.octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    });
+    return data.id;
+  }
+
   async pollReviewComments(
     owner: string,
     repo: string,
@@ -85,18 +100,15 @@ export class OctokitGitHubClient implements GitHubClient {
     const headers: Record<string, string> = {};
     if (options.etag) headers["if-none-match"] = options.etag;
     try {
-      const response = await this.octokit.request(
-        "GET /repos/{owner}/{repo}/pulls/comments",
-        {
-          owner,
-          repo,
-          per_page: 100,
-          sort: "created",
-          direction: "asc",
-          ...(options.since ? { since: options.since } : {}),
-          headers,
-        },
-      );
+      const response = await this.octokit.request("GET /repos/{owner}/{repo}/pulls/comments", {
+        owner,
+        repo,
+        per_page: 100,
+        sort: "created",
+        direction: "asc",
+        ...(options.since ? { since: options.since } : {}),
+        headers,
+      });
       const etag = response.headers.etag ?? null;
       const comments = (response.data as unknown[]).map(mapReviewComment);
       return { status: 200, etag, comments };
@@ -124,10 +136,7 @@ function isRequestError(err: unknown): err is { status: number } {
  * Reconstruct the thread containing `commentId` from a PR's review comments.
  * Thread members chain through `inReplyToId` back to the root comment.
  */
-export function buildThread(
-  comments: ReviewCommentPayload[],
-  commentId: number,
-): ReviewThread {
+export function buildThread(comments: ReviewCommentPayload[], commentId: number): ReviewThread {
   const byId = new Map(comments.map((c) => [c.id, c]));
   const target = byId.get(commentId);
   if (!target) {

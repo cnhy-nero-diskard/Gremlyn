@@ -20,6 +20,10 @@ export class FixtureGitHubClient implements GitHubClient {
   private readonly comments = new Map<string, ReviewCommentPayload[]>();
   /** Every reply posted through this client, in order. */
   readonly replies: { prNumber: number; inReplyTo: number; body: string }[] = [];
+  /** Top-level pull-request conversation replies posted by the fixture. */
+  readonly conversationReplies: { prNumber: number; body: string }[] = [];
+  /** Fixture-observable count of requests that consumed rate limit. */
+  rateLimitConsumed = 0;
   private nextCommentId = 1;
   private etagCounter = 1;
 
@@ -83,9 +87,7 @@ export class FixtureGitHubClient implements GitHubClient {
     prNumber: number,
     commentId: number,
   ): Promise<ReviewThread> {
-    return Promise.resolve(
-      buildThread(this.comments.get(`${prNumber}`) ?? [], commentId),
-    );
+    return Promise.resolve(buildThread(this.comments.get(`${prNumber}`) ?? [], commentId));
   }
 
   postReviewReply(
@@ -99,20 +101,29 @@ export class FixtureGitHubClient implements GitHubClient {
     return Promise.resolve(this.nextCommentId++);
   }
 
+  postConversationReply(
+    _owner: string,
+    _repo: string,
+    prNumber: number,
+    body: string,
+  ): Promise<number> {
+    this.conversationReplies.push({ prNumber, body });
+    return Promise.resolve(this.nextCommentId++);
+  }
+
   pollReviewComments(
     _owner: string,
     _repo: string,
     options: PollCommentsOptions,
   ): Promise<PollCommentsResult> {
     const all = [...this.comments.values()].flat();
-    const fresh = options.since
-      ? all.filter((c) => c.createdAt > (options.since as string))
-      : all;
+    const fresh = options.since ? all.filter((c) => c.createdAt > (options.since as string)) : all;
     // ETag derives from the comment set, so adding a comment invalidates it.
     const etag = `W/"fixture-${all.length}"`;
     if (options.etag === etag) {
       return Promise.resolve({ status: 304, etag, comments: [] });
     }
+    this.rateLimitConsumed += 1;
     return Promise.resolve({ status: 200, etag, comments: fresh });
   }
 }

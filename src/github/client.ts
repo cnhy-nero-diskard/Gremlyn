@@ -87,6 +87,13 @@ export interface GitHubClient {
     inReplyToCommentId: number,
     body: string,
   ): Promise<number>;
+  /** Post a top-level pull-request conversation comment. */
+  postConversationReply(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    body: string,
+  ): Promise<number>;
   /**
    * Repository-level review-comment poll with `since` and ETag conditional
    * request support (design D4). A 304 result consumes no rate limit.
