@@ -73,7 +73,6 @@ export class ClineExecutor implements AgentExecutor {
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const startedAt = new Date().toISOString();
     const args = [
-      opts.prompt,
       "-c",
       opts.cwd,
       "-m",
@@ -91,6 +90,8 @@ export class ClineExecutor implements AgentExecutor {
       "true",
       "--retries",
       String(opts.retries),
+      "--",
+      opts.prompt,
     ];
     const result = await this.runProcess(this.binary, args, {
       cwd: opts.cwd,

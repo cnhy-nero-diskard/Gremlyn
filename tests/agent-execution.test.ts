@@ -103,7 +103,7 @@ function options(root: string, overrides: Partial<AgentRunOptions> = {}): AgentR
     model: "provider/model",
     provider: "provider",
     effort: "xhigh",
-    prompt: 'fix "this"; $(never-run) & echo nope',
+    prompt: '----- BEGIN UNTRUSTED REVIEW CONTEXT -----\nfix "this"; $(never-run) & echo nope',
     env: { PATH: "test-path" },
     timeoutSec: 45,
     retries: 2,
@@ -132,7 +132,8 @@ test("Cline executor passes prompt and controls as argv with no worktree flag", 
   assert.equal(calls.length, 1);
   const [binary, args, runOptions] = calls[0]!;
   assert.equal(binary, "cline-test");
-  assert.equal(args[0], opts.prompt);
+  assert.equal(args.at(-2), "--");
+  assert.equal(args.at(-1), opts.prompt);
   assert.equal(args[args.indexOf("-c") + 1], opts.cwd);
   assert.equal(args[args.indexOf("--thinking") + 1], "xhigh");
   assert.equal(args[args.indexOf("--data-dir") + 1], opts.dataDir);
