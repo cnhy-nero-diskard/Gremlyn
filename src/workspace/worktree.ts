@@ -1,7 +1,14 @@
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { currentBranch, git, headSha, statusEntries } from "./gitops.js";
+import {
+  currentBranch,
+  git,
+  headSha,
+  mergeInProgress,
+  statusEntries,
+  unmergedEntries,
+} from "./gitops.js";
 
 /**
  * Worktree management (design D9, workspace-isolation spec).
@@ -15,9 +22,11 @@ import { currentBranch, git, headSha, statusEntries } from "./gitops.js";
 export type WorkspaceFailureReason =
   | "workspace-dirty"
   | "workspace-conflicted"
+  | "workspace-detached"
   | "workspace-diverged"
   | "workspace-not-worktree"
-  | "workspace-outside-root";
+  | "workspace-outside-root"
+  | "head-changed";
 
 export class WorkspaceError extends Error {
   readonly reason: WorkspaceFailureReason;
@@ -86,6 +95,17 @@ export async function prepareWorkspace(options: {
       );
     }
   } else {
+    await assertValidWorktree(path);
+    if ((await unmergedEntries(path)).length > 0 || (await mergeInProgress(path))) {
+      throw new WorkspaceError(
+        "workspace-conflicted",
+        `workspace ${path} contains unresolved conflicts`,
+      );
+    }
+    const branch = await currentBranch(path);
+    if (branch === "HEAD") {
+      throw new WorkspaceError("workspace-detached", `workspace ${path} has a detached HEAD`);
+    }
     // Refresh: dirty means stop (design D9) — never discard.
     const dirty = (await statusEntries(path)).length > 0;
     if (dirty) {
@@ -94,14 +114,15 @@ export async function prepareWorkspace(options: {
         `workspace ${path} has uncommitted modifications`,
       );
     }
-    const branch = await currentBranch(path).catch(() => {
-      throw new WorkspaceError(
-        "workspace-not-worktree",
-        `workspace ${path} is not a valid git worktree`,
-      );
-    });
     if (branch !== headBranch) {
-      await git(["checkout", headBranch], { cwd: path });
+      try {
+        await git(["checkout", headBranch], { cwd: path });
+      } catch {
+        throw new WorkspaceError(
+          "workspace-diverged",
+          `workspace ${path} cannot switch safely to ${headBranch}`,
+        );
+      }
     }
     // Fast-forward only; divergence means stop, not rewrite.
     try {
@@ -124,11 +145,41 @@ export async function prepareWorkspace(options: {
   return { path, branch: headBranch, headSha: actualSha, created: !existed };
 }
 
-async function createWorktree(
-  sourcePath: string,
-  path: string,
-  branch: string,
-): Promise<void> {
+/** Re-read the remote branch immediately before publication. */
+export async function verifyRemoteHead(options: {
+  workspacePath: string;
+  headBranch: string;
+  expectedSha: string;
+}): Promise<void> {
+  const { stdout } = await git(
+    ["ls-remote", "--exit-code", "origin", `refs/heads/${options.headBranch}`],
+    { cwd: options.workspacePath },
+  );
+  const actualSha = stdout.trim().split(/\s+/u)[0];
+  if (actualSha !== options.expectedSha) {
+    throw new WorkspaceError(
+      "head-changed",
+      `pull request head changed from ${options.expectedSha} to ${actualSha ?? "unknown"}`,
+    );
+  }
+}
+
+async function assertValidWorktree(path: string): Promise<void> {
+  try {
+    const inside = await git(["rev-parse", "--is-inside-work-tree"], { cwd: path });
+    const top = await git(["rev-parse", "--show-toplevel"], { cwd: path });
+    if (inside.stdout.trim() !== "true" || resolve(top.stdout.trim()) !== resolve(path)) {
+      throw new Error("not worktree root");
+    }
+  } catch {
+    throw new WorkspaceError(
+      "workspace-not-worktree",
+      `workspace ${path} is not a valid git worktree`,
+    );
+  }
+}
+
+async function createWorktree(sourcePath: string, path: string, branch: string): Promise<void> {
   const localExists = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {
     cwd: sourcePath,
   })

@@ -125,4 +125,17 @@ CREATE INDEX idx_log_entries_job ON log_entries(job_id);
 CREATE INDEX idx_attempts_job ON attempts(job_id);
 `,
   },
+  {
+    id: "0002_operator_actions",
+    sql: `
+CREATE TABLE operator_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL,
+  effect TEXT,
+  detail TEXT
+);
+`,
+  },
 ];

@@ -6,7 +6,7 @@ import type { GitHubClient } from "../github/client.js";
 import { commitAll, pushHead, type CommitAuthor } from "../publish/gitops.js";
 import { JobStore } from "../store/jobs.js";
 import { statusEntries } from "../workspace/gitops.js";
-import { prepareWorkspace } from "../workspace/worktree.js";
+import { prepareWorkspace, verifyRemoteHead, WorkspaceError } from "../workspace/worktree.js";
 
 export interface WalkingSkeletonRepository {
   id: number;
@@ -115,6 +115,11 @@ export async function runWalkingSkeleton(
 
     stage = "publishing";
     jobs.setStatus(jobId, stage, attemptId);
+    await verifyRemoteHead({
+      workspacePath: workspace.path,
+      headBranch: pr.headBranch,
+      expectedSha: workspace.headSha,
+    });
     const commitSha = await commitAll(
       workspace.path,
       `Resolve review feedback (comment ${options.event.commentId})`,
@@ -162,6 +167,7 @@ function walkingSkeletonPrompt(event: NormalizedEvent): string {
 }
 
 function failureReason(err: unknown): string {
+  if (err instanceof WorkspaceError) return err.reason;
   if (err instanceof Error && err.message.length > 0) return err.message;
   return "unknown-error";
 }

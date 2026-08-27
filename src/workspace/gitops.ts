@@ -52,8 +52,30 @@ export async function statusEntries(cwd: string): Promise<string[]> {
   return stdout.split("\n").filter((line) => line.length > 0);
 }
 
+const UNMERGED_CODES = new Set(["UU", "AA", "DD", "AU", "UA", "DU", "UD"]);
+
+/** Entries in a conflicted (unmerged) merge state, from porcelain status. */
+export async function unmergedEntries(cwd: string): Promise<string[]> {
+  const entries = await statusEntries(cwd);
+  return entries.filter((entry) => UNMERGED_CODES.has(entry.slice(0, 2)));
+}
+
+/** True while a merge is in progress (MERGE_HEAD present). */
+export async function mergeInProgress(cwd: string): Promise<boolean> {
+  try {
+    await git(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** True when `ancestor` is an ancestor of `descendant` (no history rewrite). */
-export async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+export async function isAncestor(
+  cwd: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
   try {
     await git(["merge-base", "--is-ancestor", ancestor, descendant], { cwd });
     return true;
