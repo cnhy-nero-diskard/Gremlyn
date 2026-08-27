@@ -12,12 +12,12 @@ Autonomous commit-and-push agent that groups uncommitted/unstaged changes into m
 
 ## Commands
 
-| Command | Action |
-|---|---|
-| `$autocmt on` | Enable auto-commit mode. From now on, after each completed work unit, automatically commit and push changes in meaningful chunks. |
-| `$autocmt checkpoint` | Run a one-time commit-and-push of all current uncommitted changes, grouped into meaningful chunks. |
-| `$autocmt off` | Disable auto-commit mode. Stop automatically committing/pushing. |
-| `$autocmt status` | Show current mode, branch, and pending uncommitted changes summary. |
+| Command               | Action                                                                                                                            |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `$autocmt on`         | Enable auto-commit mode. From now on, after each completed work unit, automatically commit and push changes in meaningful chunks. |
+| `$autocmt checkpoint` | Run a one-time commit-and-push of all current uncommitted changes, grouped into meaningful chunks.                                |
+| `$autocmt off`        | Disable auto-commit mode. Stop automatically committing/pushing.                                                                  |
+| `$autocmt status`     | Show current mode, branch, and pending uncommitted changes summary.                                                               |
 
 ## Core Principles
 
@@ -31,18 +31,18 @@ Autonomous commit-and-push agent that groups uncommitted/unstaged changes into m
 
 Use the most specific type that fits the chunk:
 
-| Type | When to use |
-|---|---|
-| `feat` | New feature or user-facing capability |
-| `fix` | Bug fix |
-| `refactor` | Code restructuring without behavior change |
-| `docs` | Documentation-only changes |
-| `style` | Formatting, whitespace, lint fixes (no logic change) |
-| `test` | Adding or updating tests |
-| `chore` | Maintenance, tooling, dependency updates |
-| `build` | Build system or CI configuration changes |
-| `perf` | Performance improvements |
-| `revert` | Reverting a previous commit |
+| Type       | When to use                                          |
+| ---------- | ---------------------------------------------------- |
+| `feat`     | New feature or user-facing capability                |
+| `fix`      | Bug fix                                              |
+| `refactor` | Code restructuring without behavior change           |
+| `docs`     | Documentation-only changes                           |
+| `style`    | Formatting, whitespace, lint fixes (no logic change) |
+| `test`     | Adding or updating tests                             |
+| `chore`    | Maintenance, tooling, dependency updates             |
+| `build`    | Build system or CI configuration changes             |
+| `perf`     | Performance improvements                             |
+| `revert`   | Reverting a previous commit                          |
 
 ## Workflow
 
@@ -87,20 +87,25 @@ Group changes into **coherent chunks** by asking:
 For each chunk, in order:
 
 1. **Stage only the files in this chunk:**
+
    ```bash
    git add <file1> <file2> ...
    ```
+
    Never use `git add -A` or `git add .` unless ALL changes belong to a single coherent chunk.
 
 2. **Verify what's staged:**
+
    ```bash
    git diff --cached --stat
    ```
 
 3. **Create the commit** with a one-line message:
+
    ```bash
    git commit -m "feat: (add collection detail screen)"
    ```
+
    Message format: `committype: (message here)` — lowercase type, colon, space, parenthesized message. The message should be a concise imperative phrase (e.g., "add", "fix", "update").
 
 4. **Confirm the commit succeeded** before moving to the next chunk.
@@ -160,17 +165,17 @@ When auto-commit mode is **on**:
 
 ## Edge Cases
 
-| Situation | Handling |
-|---|---|
-| No changes to commit | Report "No uncommitted changes." and stop. |
-| Only untracked files | Treat them as a chunk (or chunks) and commit them. |
-| Deleted files | Stage deletions with `git add -u <path>` or `git rm <path>`. |
-| Renamed files | `git add -A <old-path> <new-path>` to stage the rename. |
-| Large number of files | Group by directory/concern; don't create one giant commit. |
-| Merge conflicts in progress | STOP. Do not commit. Report that a merge/rebase is in progress. |
-| Detached HEAD | STOP. Report that HEAD is detached; suggest checking out a branch. |
-| Push rejected | STOP. Report and ask user how to proceed. Never force-push. |
-| No remote configured | Commit locally, skip push, report. |
-| Protected branch | STOP. Report and suggest a feature branch. |
-| File mid-edit / incomplete | Exclude from commits, report it. |
-| Binary files | Commit them if they are intentional (e.g., assets), but note them in the report. |
+| Situation                   | Handling                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| No changes to commit        | Report "No uncommitted changes." and stop.                                       |
+| Only untracked files        | Treat them as a chunk (or chunks) and commit them.                               |
+| Deleted files               | Stage deletions with `git add -u <path>` or `git rm <path>`.                     |
+| Renamed files               | `git add -A <old-path> <new-path>` to stage the rename.                          |
+| Large number of files       | Group by directory/concern; don't create one giant commit.                       |
+| Merge conflicts in progress | STOP. Do not commit. Report that a merge/rebase is in progress.                  |
+| Detached HEAD               | STOP. Report that HEAD is detached; suggest checking out a branch.               |
+| Push rejected               | STOP. Report and ask user how to proceed. Never force-push.                      |
+| No remote configured        | Commit locally, skip push, report.                                               |
+| Protected branch            | STOP. Report and suggest a feature branch.                                       |
+| File mid-edit / incomplete  | Exclude from commits, report it.                                                 |
+| Binary files                | Commit them if they are intentional (e.g., assets), but note them in the report. |

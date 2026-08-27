@@ -69,6 +69,7 @@ Otherwise:
 
 Commit and push after **each** sync and **each** archive occurrence — they are separate
 operations and each must be recorded on the branch:
+
 ```bash
 git add openspec/
 git commit -m "chore: sync specs for <name>"

@@ -10,27 +10,33 @@ metadata:
 # OpenSpec Worktree Operator Skill
 
 ## Overview
+
 This skill manages isolated Git worktrees for applying OpenSpec proposals. All implementation
 work is isolated to the worktree, protecting the original repository state.
 
 ## Supported Commands
 
 ### 1. Create & Apply a Worktree
+
 **Syntax:**
+
 - `start branch <branch> apply proposal <proposal>`
 - `start branch <branch> from current apply proposal <proposal>`
 - `start branch <branch> from <base>`
 
 **Flow:**
+
 1. Run planning gate (detect repo-root, current branch, worktree list, status)
 2. Create isolated worktree at sibling path: `<parent>/<repo-name>-<sanitized-branch>`
 3. If proposal specified: apply OpenSpec changes
 4. Report worktree path, branch, base clearly
 
 ### 2. Status Check
+
 **Syntax:** `status`
 
 **Actions:**
+
 - Detect repo root (`git rev-parse --show-toplevel`)
 - Show current branch (`git branch --show-current`)
 - List worktrees (`git worktree list --porcelain`)
@@ -38,9 +44,11 @@ work is isolated to the worktree, protecting the original repository state.
 - Do NOT mutate anything
 
 ### 3. Handoff Prompt
+
 **Syntax:** `handoff branch <branch>`
 
 **Output format:**
+
 ```
 Open <worktree-path>. Use $openspec-apply-change to apply proposal <proposal>
 on branch <branch>. Stay inside this worktree. Use $auto-commit-agent checkpoint
@@ -48,12 +56,15 @@ after coherent increments if available. Do not switch branches in the original r
 ```
 
 ### 4. Draft PR Creation
+
 **Syntax:**
+
 - `pr branch <branch>`
 - `create pr branch <branch>`
 - `ready pr branch <branch>`
 
 **Before creating:**
+
 1. Verify branch is NOT master/main
 2. Verify branch is pushed to `origin/<branch>`
 3. Inspect PR templates in `.github/`
@@ -64,11 +75,14 @@ after coherent increments if available. Do not switch branches in the original r
 8. Report PR URL, title, base, head, draft status
 
 ### 5. Cleanup Worktree
+
 **Syntax:**
+
 - `cleanup branch <branch>`
 - `cleanup branch <branch> force`
 
 **Flow:**
+
 1. Fetch origin for fresh remote-tracking refs
 2. Verify branch is merged into origin/master or origin/main
 3. Check `git status --short --branch` in worktree
@@ -107,12 +121,15 @@ Never switch branches in the original worktree.
 ## Worktree Creation
 
 **Path derivation:**
+
 ```
 <parent-of-repo-root>/<repo-name>-<sanitized-branch>
 ```
+
 Sanitize `<branch>` for folder names: replace `/`, `\`, `:`, whitespace with `-`.
 
 **Fetch before creating:**
+
 ```bash
 git fetch origin
 ```
@@ -120,14 +137,19 @@ git fetch origin
 **Creation paths (choose exactly one):**
 
 New local branch:
+
 ```bash
 git worktree add <worktree-path> -b <branch> <base>
 ```
+
 Existing local branch (not checked out elsewhere):
+
 ```bash
 git worktree add <worktree-path> <branch>
 ```
+
 Existing origin branch (when clearly intended):
+
 ```bash
 git worktree add <worktree-path> -b <branch> origin/<branch>
 ```

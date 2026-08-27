@@ -1,6 +1,11 @@
 ---
 name: auto-commit-agent
-description: Guarded autonomous commit-and-push workflow for Git feature branches. Use when the user invokes `$auto-commit-agent on`, `$auto-commit-agent checkpoint`, `$auto-commit-agent off`, or `$auto-commit-agent status`, or asks Cline to make incremental local commits and normal pushes while working in a non-protected branch.
+description: >-
+  Guarded autonomous commit-and-push workflow for Git feature branches. Use when
+  the user invokes `$auto-commit-agent on`, `$auto-commit-agent checkpoint`,
+  `$auto-commit-agent off`, or `$auto-commit-agent status`, or asks Cline to
+  make incremental local commits and normal pushes while working in a
+  non-protected branch.
 allowed-tools: Bash(git:*), Bash(powershell:*)
 license: MIT
 compatibility: Requires Git and PowerShell.
@@ -31,7 +36,6 @@ Track auto mode state in conversation only. When the user invokes commands:
 - **`status`**: Report current state without changing it.
 - **`checkpoint`**: Perform one-time checkpoint without changing auto mode state.
 
-
 ## Safety Gate
 
 Before every commit or push, run the following checks:
@@ -55,6 +59,7 @@ git branch --show-current
 ### 3. Branch Protection Check
 
 **Refuse commits or pushes to protected branches:**
+
 - `master`
 - `main`
 - `release/*`
@@ -70,6 +75,7 @@ git status --short --branch
 ```
 
 Parse the output to understand:
+
 - Current branch and upstream tracking
 - Staged changes (lines starting with `A`, `M`, `D`, `R`, `C`)
 - Unstaged changes (lines starting with ` M`, ` D`, `??`)
@@ -89,9 +95,11 @@ git diff --cached --check --
 ```
 
 Review the file paths and content to determine:
+
 - Are changes related to the active task?
 - Are there whitespace or merge conflict issues? (`git diff --check`)
 - Is the diff coherent and reviewable?
+
 ## Staging Rules
 
 **Stage only files clearly related to the active task.**
@@ -103,6 +111,7 @@ git add -- path/to/file1 path/to/file2 path/to/file3
 ```
 
 ### Never Stage:
+
 - Unrelated user changes
 - Ignored files
 - Likely secrets, credentials, or keystores
@@ -112,6 +121,7 @@ git add -- path/to/file1 path/to/file2 path/to/file3
 - Files matching these patterns:
   - `.env`, `.env.*`
   - `*.jks`, `*.keystore`, `*.p12`, `*.pem`, `*.key`
+
 ## Commit Workflow
 
 **Commit only when the staged diff is a coherent checkpoint.**
@@ -119,6 +129,7 @@ git add -- path/to/file1 path/to/file2 path/to/file3
 ### 1. Run Practical Checks
 
 Before committing, run checks appropriate to the touched code and repo conventions:
+
 - Targeted unit tests
 - Build checks
 - Linting
@@ -138,6 +149,7 @@ git diff --cached --check --
 ```
 
 Confirm:
+
 - Only intended files are staged
 - No whitespace or merge issues
 - Diff is coherent
@@ -158,17 +170,21 @@ Confirm:
 ### Push Commands
 
 **If no upstream exists:**
+
 ```bash
 git push -u origin <current-branch>
 ```
 
 **If upstream exists and matches `origin/<current-branch>`:**
+
 ```bash
 git push
 ```
 
 ### Refuse to Push If:
+
 - Upstream points anywhere other than `origin/<current-branch>` → Report: "Upstream is <upstream>, not origin/<branch>. Refusing to push."
+
 ## Reporting
 
 ### For Checkpoint and Auto-Mode Checkpoints
@@ -317,14 +333,13 @@ Use concise conventional commit messages in **lowercase imperative form**:
 
 **Do NOT amend, squash, or rebase automatically.** Report the commit hash and message.
 
-  - `local.properties`
-  - `.gradle/`, `build/`, `out/`, `dist/`, `node_modules/`
-  - `.idea/workspace.xml`
+- `local.properties`
+- `.gradle/`, `build/`, `out/`, `dist/`, `node_modules/`
+- `.idea/workspace.xml`
 
 ### When in Doubt
 
 If changes appear unrelated to the current task or are ambiguous, **ask the user before staging**. Skip committing when changes are mixed, ambiguous, or unsafe.
-
 
 **Helper Script (Optional):**
 

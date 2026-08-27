@@ -13,19 +13,22 @@
 ## Skill Features
 
 ### Command Modes
+
 - `on` - Enable guarded checkpoint behavior
 - `checkpoint` - One-time evaluation and commit/push
 - `off` - Disable autonomous behavior
 - `status` - Report repository state
 
 ### Safety Gate (5 checks)
+
 1. Detect repository root
 2. Detect current branch (refuse detached HEAD)
-3. Branch protection (master, main, release/*, hotfix/*, prod/*)
+3. Branch protection (master, main, release/_, hotfix/_, prod/*)
 4. Inspect repository state
 5. Inspect changes (unstaged and staged)
 
 ### Key Features
+
 - Path-specific staging only
 - Conventional commit messages
 - Automatic push with safety conditions
@@ -45,6 +48,7 @@ $auto-commit-agent status
 ## Testing
 
 Test the helper script:
+
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-AutoCommitSafety.ps1 -RepoRoot .
 ```
