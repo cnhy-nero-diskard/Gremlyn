@@ -39,12 +39,12 @@ any stage is built out fully.
 
 ## 5. Authorization
 
-- [ ] 5.1 Implement the author allowlist with case-insensitive login matching and verify an allowlisted login passes, a non-allowlisted login is rejected, and a spoofed display name does not pass
-- [ ] 5.2 Exclude the orchestrator identity from authorization and verify a command token in an orchestrator-authored comment creates no job
-- [ ] 5.3 Implement the full precondition set from the `command-authorization` spec and verify each precondition fails independently with its own specific reason
-- [ ] 5.4 Implement fork-PR detection and verify a fork PR is rejected with reason `fork-pull-request` and an explanatory reply
-- [ ] 5.5 Implement command-argument validation against `allowed_models` and verify an out-of-allowlist model argument is rejected before any agent invocation
-- [ ] 5.6 Persist authorization outcomes for both executed and rejected commands and verify each is traceable to login, repository, PR, comment, and time
+- [x] 5.1 Implement the author allowlist with case-insensitive login matching and verify an allowlisted login passes, a non-allowlisted login is rejected, and a spoofed display name does not pass
+- [x] 5.2 Exclude the orchestrator identity from authorization and verify a command token in an orchestrator-authored comment creates no job
+- [x] 5.3 Implement the full precondition set from the `command-authorization` spec and verify each precondition fails independently with its own specific reason
+- [x] 5.4 Implement fork-PR detection and verify a fork PR is rejected with reason `fork-pull-request` and an explanatory reply
+- [x] 5.5 Implement command-argument validation against `allowed_models` and verify an out-of-allowlist model argument is rejected before any agent invocation
+- [x] 5.6 Persist authorization outcomes for both executed and rejected commands and verify each is traceable to login, repository, PR, comment, and time
 
 ## 6. Orchestration
 
