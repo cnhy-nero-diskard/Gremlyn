@@ -26,7 +26,11 @@ export function mapPullRequest(payload: any): PullRequestInfo {
 
 export function mapReviewComment(payload: any): ReviewCommentPayload {
   // pull_request_url ends with /pulls/<number>.
-  const prNumber = Number(String(payload.pull_request_url ?? "").split("/").pop());
+  const prNumber = Number(
+    String(payload.pull_request_url ?? "")
+      .split("/")
+      .pop(),
+  );
   return {
     id: payload.id,
     inReplyToId: payload.in_reply_to_id ?? null,

@@ -24,15 +24,7 @@ export async function commitAll(
   if ((await statusEntries(workspacePath)).length === 0) return null;
   await git(["add", "-A"], { cwd: workspacePath });
   await git(
-    [
-      "-c",
-      `user.name=${author.name}`,
-      "-c",
-      `user.email=${author.email}`,
-      "commit",
-      "-m",
-      message,
-    ],
+    ["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "-m", message],
     { cwd: workspacePath },
   );
   return headSha(workspacePath);

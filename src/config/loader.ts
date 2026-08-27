@@ -214,7 +214,6 @@ function parseRepositories(
   return repositories;
 }
 
-
 /**
  * Load and validate configuration. Throws {@link ConfigError} listing every
  * problem found. Secrets arrive only through the process environment.
@@ -236,18 +235,13 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     asString(raw.log_level) ??
     "info"
   ).toLowerCase();
-  const logLevel = (["debug", "info", "warn", "error"] as const).find(
-    (l) => l === logLevelRaw,
-  );
+  const logLevel = (["debug", "info", "warn", "error"] as const).find((l) => l === logLevelRaw);
   if (!logLevel) {
     problems.push(`log_level must be one of debug|info|warn|error, got "${logLevelRaw}"`);
   }
   const pollIntervalSec =
-    numberFromEnv(env.GREMLYN_POLL_INTERVAL_SECONDS) ??
-    asNumber(raw.poll_interval_seconds) ??
-    60;
-  const concurrency =
-    numberFromEnv(env.GREMLYN_CONCURRENCY) ?? asNumber(raw.concurrency) ?? 2;
+    numberFromEnv(env.GREMLYN_POLL_INTERVAL_SECONDS) ?? asNumber(raw.poll_interval_seconds) ?? 60;
+  const concurrency = numberFromEnv(env.GREMLYN_CONCURRENCY) ?? asNumber(raw.concurrency) ?? 2;
   if (concurrency < 1) problems.push("concurrency must be at least 1");
 
   // GitHub: the secret value comes from the environment only.
@@ -336,4 +330,3 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     repositories,
   };
 }
-

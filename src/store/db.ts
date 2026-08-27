@@ -46,9 +46,7 @@ export class Store {
         (r) => r.id,
       ),
     );
-    const record = this.db.prepare(
-      "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
-    );
+    const record = this.db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)");
     for (const migration of MIGRATIONS) {
       if (applied.has(migration.id)) continue;
       this.db.transaction(() => {

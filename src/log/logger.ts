@@ -29,11 +29,7 @@ export class Logger {
   private readonly redact: Redactor;
   private readonly db: Database.Database | undefined;
 
-  constructor(options: {
-    level: LogLevel;
-    secrets: readonly string[];
-    db?: Database.Database;
-  }) {
+  constructor(options: { level: LogLevel; secrets: readonly string[]; db?: Database.Database }) {
     this.minLevel = options.level;
     this.redact = createRedactor(options.secrets);
     this.db = options.db;
@@ -43,9 +39,7 @@ export class Logger {
     if (LEVEL_RANK[level] < LEVEL_RANK[this.minLevel]) return;
     const at = new Date().toISOString();
     const { jobId, attemptId, ...rest } = fields;
-    const sanitized = JSON.parse(
-      this.redact(JSON.stringify(rest)),
-    ) as Record<string, unknown>;
+    const sanitized = JSON.parse(this.redact(JSON.stringify(rest))) as Record<string, unknown>;
     const line = JSON.stringify({
       at,
       level,
