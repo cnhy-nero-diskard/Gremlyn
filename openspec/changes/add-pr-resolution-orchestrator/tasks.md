@@ -30,12 +30,12 @@ any stage is built out fully.
 
 ## 4. Ingestion
 
-- [ ] 4.1 Implement the `EventSource` interface and the polling source with `since` plus ETag conditional requests, and verify an unchanged repository returns `304` and consumes no rate limit
-- [ ] 4.2 Implement event normalization to the shape required by the `command-ingestion` spec and verify normalized events carry every required field
-- [ ] 4.3 Persist and restore ingestion progress per repository and verify a stop/post/restart cycle observes the posted command exactly once
-- [ ] 4.4 Implement the command parser and registry, and verify the table-driven cases: start-of-line match, fenced code block ignored, inline code ignored, block quote ignored, unknown token ignored
-- [ ] 4.5 Implement command placement eligibility and verify a review-thread `!RESOLVE` is accepted while a top-level conversation `!RESOLVE` is rejected with an explanatory reply and no job
-- [ ] 4.6 Verify a second registered command can be added without modifying ingestion, gate, or orchestrator code
+- [x] 4.1 Implement the `EventSource` interface and the polling source with `since` plus ETag conditional requests, and verify an unchanged repository returns `304` and consumes no rate limit
+- [x] 4.2 Implement event normalization to the shape required by the `command-ingestion` spec and verify normalized events carry every required field
+- [x] 4.3 Persist and restore ingestion progress per repository and verify a stop/post/restart cycle observes the posted command exactly once
+- [x] 4.4 Implement the command parser and registry, and verify the table-driven cases: start-of-line match, fenced code block ignored, inline code ignored, block quote ignored, unknown token ignored
+- [x] 4.5 Implement command placement eligibility and verify a review-thread `!RESOLVE` is accepted while a top-level conversation `!RESOLVE` is rejected with an explanatory reply and no job
+- [x] 4.6 Verify a second registered command can be added without modifying ingestion, gate, or orchestrator code
 
 ## 5. Authorization
 
