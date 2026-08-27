@@ -77,5 +77,5 @@ test("a rejected push surfaces as an error and no force-push is attempted", asyn
 
   // The remote head is the racing commit, unchanged — no rewrite happened.
   assert.equal(await remoteSha(repo.remotePath, repo.headBranch), newerSha);
-  assert.equal(await headSha(prepared.path) !== newerSha, true);
+  assert.equal((await headSha(prepared.path)) !== newerSha, true);
 });

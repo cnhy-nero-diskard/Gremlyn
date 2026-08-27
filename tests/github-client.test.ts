@@ -168,8 +168,5 @@ test("mappers shape recorded GitHub payloads", () => {
 
 test("fork detection distinguishes same-repo from fork PRs", () => {
   assert.equal(isForkPullRequest(PR), false);
-  assert.equal(
-    isForkPullRequest({ ...PR, headRepoOwner: "someone-else" }),
-    true,
-  );
+  assert.equal(isForkPullRequest({ ...PR, headRepoOwner: "someone-else" }), true);
 });

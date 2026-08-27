@@ -41,6 +41,9 @@ test("log level filters lower-severity entries", () => {
   const rows = store.db.prepare("SELECT event FROM log_entries").all() as {
     event: string;
   }[];
-  assert.deepEqual(rows.map((r) => r.event), ["stored"]);
+  assert.deepEqual(
+    rows.map((r) => r.event),
+    ["stored"],
+  );
   store.close();
 });

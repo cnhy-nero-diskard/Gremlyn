@@ -106,10 +106,7 @@ test("rejects the orchestrator identity inside allowed_authors", () => {
 });
 
 test("rejects a model outside allowed_models", () => {
-  const config = VALID_CONFIG.replace(
-    "model: test-provider/model-1",
-    "model: test-provider/other",
-  );
+  const config = VALID_CONFIG.replace("model: test-provider/model-1", "model: test-provider/other");
   assert.throws(() => loadConfig(writeConfig(config), VALID_ENV), ConfigError);
 });
 
