@@ -123,14 +123,59 @@ export function extractVersion(output: string): string | undefined {
   return output.match(/\d+\.\d+\.\d+/u)?.[0];
 }
 
+/**
+ * The correlation id Cline actually emits on its `--json` stream.
+ *
+ * Verified against cline 3.0.60: the stream carries `taskId` ("conv_<n>_<rand>")
+ * and `agentId` ("agent_<n>_<rand>") on hook events. It does NOT carry
+ * `sessionId` in any form. Note that `cline history export <sessionId>` takes a
+ * *different* identifier shape ("<epoch>_<rand>") recorded in the data dir's
+ * session history, so this id correlates attempts to stream output but is not
+ * yet an export handle.
+ */
 export function extractSessionId(output: string): string | undefined {
   for (const line of output.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
     try {
-      const value = JSON.parse(line) as Record<string, unknown>;
-      const id = value.sessionId ?? value.session_id;
+      const value = JSON.parse(trimmed) as Record<string, unknown>;
+      const id = value.taskId ?? value.sessionId ?? value.session_id;
       if (typeof id === "string" && id.length > 0) return id;
     } catch {
-      // Non-JSON output is still retained verbatim; it simply has no session id.
+      // Non-JSON output is still retained verbatim; it simply has no id.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Effort tiers the model advertised on its `run_result` metadata.
+ *
+ * Cline validates reasoning effort per *model*, not per agent: a model may
+ * accept only a subset of the CLI's tiers (deepseek-v4-flash advertises
+ * `["high","xhigh"]`). An unsupported tier is accepted silently, so the only
+ * signal is this metadata. Returns undefined when the model advertised nothing.
+ */
+export function extractSupportedEfforts(output: string): string[] | undefined {
+  for (const line of output.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const value = JSON.parse(trimmed) as {
+        type?: unknown;
+        model?: { info?: { reasoningOptions?: unknown } };
+      };
+      if (value.type !== "run_result") continue;
+      const options = value.model?.info?.reasoningOptions;
+      if (!Array.isArray(options)) continue;
+      for (const option of options) {
+        const entry = option as { type?: unknown; values?: unknown };
+        if (entry.type !== "effort" || !Array.isArray(entry.values)) continue;
+        const values = entry.values.filter((v): v is string => typeof v === "string");
+        if (values.length > 0) return values;
+      }
+    } catch {
+      // A malformed line simply carries no metadata.
     }
   }
   return undefined;

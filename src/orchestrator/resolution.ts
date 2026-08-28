@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
+import { extractSupportedEfforts } from "../agent/cline.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { writeAgentOutput } from "../agent/output.js";
 import { buildResolutionPrompt } from "../agent/prompt.js";
@@ -250,6 +251,20 @@ export class ResolutionOrchestrator {
         dataDir: attemptDataDir,
         signal,
       });
+      // Reasoning effort is validated per agent at startup, but the CLI enforces
+      // it per *model* and accepts an unsupported tier silently. The model's own
+      // metadata on the result stream is the only signal, so surface a mismatch
+      // rather than let the configured effort quietly not apply.
+      const supportedEfforts = extractSupportedEfforts(agentResult.stdout);
+      if (supportedEfforts && !supportedEfforts.includes(repository.effort)) {
+        this.options.logger.warn("configured effort is unsupported by the model", {
+          jobId,
+          attemptId,
+          model: input.model,
+          configured: repository.effort,
+          supported: supportedEfforts.join(", "),
+        });
+      }
       const outputRef = writeAgentOutput(this.options.dataDir, attemptId, agentResult, this.redact);
       this.jobs.recordAgentResult(attemptId, agentResult);
       this.jobs.setAttemptOutputRef(attemptId, outputRef);

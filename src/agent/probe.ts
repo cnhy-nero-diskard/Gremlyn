@@ -272,11 +272,11 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     out(
       sessionFound
         ? "session id   extractSessionId() matched real output"
-        : "session id   NOT FOUND — extractSessionId() expects a top-level",
+        : "session id   NOT FOUND — no taskId on the stream",
     );
     if (!sessionFound) {
-      out("             `sessionId` or `session_id`. Compare against the json keys");
-      out("             listed above; the console's transcript link depends on it.");
+      out("             Compare against the json keys listed above; the");
+      out("             console's transcript link depends on this id.");
     }
     return bothOk ? 0 : 1;
   } finally {

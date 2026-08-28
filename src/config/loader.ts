@@ -281,6 +281,20 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   // Agent defaults.
   const agentTimeoutSec = asNumber(raw.agent_defaults?.timeout_seconds) ?? 1800;
   const agentRetries = asNumber(raw.agent_defaults?.retries) ?? 2;
+  // Cline rejects a retry budget below 1 with a warning and silently falls back
+  // to its own default, so an out-of-range value here would not be the value
+  // that runs. Verified against cline 3.0.60.
+  if (!Number.isInteger(agentRetries) || agentRetries < 1) {
+    problems.push(
+      `agent_defaults.retries must be an integer >= 1 (got ${String(agentRetries)}); ` +
+        "the agent CLI ignores anything lower and substitutes its own default",
+    );
+  }
+  if (!Number.isFinite(agentTimeoutSec) || agentTimeoutSec <= 0) {
+    problems.push(
+      `agent_defaults.timeout_seconds must be a positive number (got ${String(agentTimeoutSec)})`,
+    );
+  }
 
   // Author allowlist. The orchestrator identity must never self-authorize.
   const allowedAuthors = asStringList(raw.allowed_authors) ?? [];
