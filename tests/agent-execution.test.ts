@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ClineExecutor, AgentVersionError, type ProcessRunner } from "../src/agent/cline.js";
 import { buildAgentEnvironment } from "../src/agent/environment.js";
 import { writeAgentOutput } from "../src/agent/output.js";
@@ -11,6 +11,7 @@ import {
   CONTEXT_END,
   CONTEXT_START,
   RESOLUTION_INSTRUCTIONS,
+  RESOLUTION_PREAMBLE,
 } from "../src/agent/prompt.js";
 import { reconstructReviewContext } from "../src/context/review.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
@@ -88,6 +89,8 @@ test("prompt assembly is deterministic and confines GitHub text to the context r
   const first = buildResolutionPrompt(context);
   const second = buildResolutionPrompt(context);
   assert.equal(first, second);
+  assert.equal(first.startsWith("-"), false);
+  assert.ok(first.startsWith(RESOLUTION_PREAMBLE));
   assert.ok(first.endsWith(RESOLUTION_INSTRUCTIONS));
   const start = first.indexOf(CONTEXT_START);
   const end = first.indexOf(CONTEXT_END);
@@ -103,7 +106,7 @@ function options(root: string, overrides: Partial<AgentRunOptions> = {}): AgentR
     model: "provider/model",
     provider: "provider",
     effort: "xhigh",
-    prompt: '----- BEGIN UNTRUSTED REVIEW CONTEXT -----\nfix "this"; $(never-run) & echo nope',
+    prompt: `${CONTEXT_START}\nfix "this"; $(never-run) & echo nope`,
     env: { PATH: "test-path" },
     timeoutSec: 45,
     retries: 2,
@@ -141,6 +144,25 @@ test("Cline executor passes prompt and controls as argv with no worktree flag", 
   assert.equal(args.includes("--worktree"), false);
   assert.equal(runOptions.cwd, opts.cwd);
   assert.equal(result.sessionId, "session-7");
+});
+
+test("Cline receives an absolute data dir when its cwd differs from Gremlyn's", async () => {
+  let passedDataDir: string | undefined;
+  const runner: ProcessRunner = (_binary, args) => {
+    passedDataDir = args[args.indexOf("--data-dir") + 1];
+    return Promise.resolve({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      isCanceled: false,
+    });
+  };
+  const relativeDataDir = join(".gremlyn", "attempts", "7");
+  await new ClineExecutor("cline-test", runner).run(
+    options(mkdtempSync(join(tmpdir(), "gremlyn-cline-")), { dataDir: relativeDataDir }),
+  );
+  assert.equal(passedDataDir, resolve(relativeDataDir));
 });
 
 test("attempt data directories remain distinct across concurrent invocations", async () => {

@@ -1,4 +1,5 @@
 import { execa } from "execa";
+import { resolve } from "node:path";
 import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 
 export interface ProcessResult {
@@ -92,7 +93,10 @@ export class ClineExecutor implements AgentExecutor {
       "--thinking",
       opts.effort,
       "--data-dir",
-      opts.dataDir,
+      // Cline resolves relative paths from opts.cwd, while Gremlyn seeds the
+      // directory from its own process cwd. Pass an absolute path so both
+      // processes refer to the same credential-seeded attempt directory.
+      resolve(opts.dataDir),
       "--auto-approve",
       "true",
       "--retries",
