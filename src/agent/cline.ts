@@ -26,6 +26,10 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     env: options.env,
     extendEnv: false,
     shell: false,
+    // Reads must hit EOF immediately. execa's default is an open pipe that is
+    // never written to, so an agent that prompts for input would block until
+    // the timeout instead of failing fast.
+    stdin: "ignore",
     reject: false,
     ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
     ...(options.signal === undefined ? {} : { cancelSignal: options.signal }),

@@ -109,6 +109,10 @@ async function runOnce(input: {
   const cwd = mkdtempSync(join(input.scratch, "work-"));
   const sink: { argv?: readonly string[] } = {};
   const executor = new ClineExecutor(input.binary, recordingRunner(sink));
+  heading(`Run: ${input.label}`);
+  out(`data-dir     ${dataDir}`);
+  out(`cwd          ${cwd}`);
+  out(`waiting      up to ${String(input.timeoutSec)}s for the agent to exit...`);
   const startedAt = Date.now();
   const result = await executor.run({
     cwd,
@@ -132,8 +136,6 @@ async function runOnce(input: {
 }
 
 function reportRun(run: ProbeRun): void {
-  heading(`Run: ${run.label}`);
-  out(`data-dir     ${run.dataDir}`);
   out(`argv         ${JSON.stringify(run.argv)}`);
   out(`exit code    ${String(run.result.exitCode)}`);
   out(`timed out    ${String(run.result.timedOut)}`);
@@ -144,6 +146,10 @@ function reportRun(run: ProbeRun): void {
   out(`json keys    ${keys.length > 0 ? keys.join(", ") : "(no JSON object lines)"}`);
   block("stdout", run.result.stdout);
   block("stderr", run.result.stderr);
+  if (run.result.timedOut && run.result.stdout.trim() === "") {
+    out("hint         timed out having written nothing — the agent is likely");
+    out("             waiting on input or on a network call that never returns");
+  }
 }
 
 export async function probe(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
