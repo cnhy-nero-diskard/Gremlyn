@@ -42,27 +42,45 @@ export class StageFailure extends Error {
 /**
  * Detect provider authentication failure from the agent result.
  *
- * Cline 3.0.60 surfaces this as `Unauthorized` on a `run_result` with
- * `finishReason: "error"` and `durationMs ~333`, plus exit 1. The probe
- * fixtures carry it as `"text":"Unauthorized"`. We detect it from the raw
- * stdout/stderr so a transcript-free `Unauthorized` in either stream maps to
- * the dedicated reason rather than `agent-nonzero-exit`.
+ * Cline 3.0.60 surfaces this as a `run_result` with `finishReason: "error"` and
+ * a `text` beginning "Unauthorized: ...", plus a `{"type":"error"}` line on
+ * stderr carrying the same message.
+ *
+ * Detection is deliberately narrow. A substring search over the whole stream
+ * would misfire on this tool's own subject matter: resolving review feedback on
+ * code containing `401 Unauthorized`, `UnauthorizedError`, or an HTTP fixture
+ * would classify a genuine agent failure as an auth failure — a reason that is
+ * reported to the reviewer and tells the operator every later job will fail
+ * identically. Only the agent's own terminal status counts.
  */
 export function isAgentAuthenticationFailure(
   result: Pick<AgentResult, "stdout" | "stderr">,
 ): boolean {
-  const haystack = `${result.stdout}\n${result.stderr}`;
-  if (/Unauthorized/iu.test(haystack)) return true;
-  // Also detect JSON structured form: look for run_result with text Unauthorized
-  for (const line of haystack.split(/\r?\n/u)) {
+  const unauthorized = /^Unauthorized\b/u;
+  const combined = `${result.stdout}\n${result.stderr}`;
+  for (const line of combined.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
+    let value: { type?: unknown; finishReason?: unknown; text?: unknown; message?: unknown };
     try {
-      const value = JSON.parse(trimmed) as Record<string, unknown>;
-      if (value.type === "run_result" && value.text === "Unauthorized") return true;
-      if (typeof value.text === "string" && /Unauthorized/iu.test(value.text)) return true;
+      value = JSON.parse(trimmed) as typeof value;
     } catch {
-      // Ignore malformed JSON
+      continue;
+    }
+    if (
+      value.type === "run_result" &&
+      value.finishReason === "error" &&
+      typeof value.text === "string" &&
+      unauthorized.test(value.text)
+    ) {
+      return true;
+    }
+    if (
+      value.type === "error" &&
+      typeof value.message === "string" &&
+      unauthorized.test(value.message)
+    ) {
+      return true;
     }
   }
   return false;
