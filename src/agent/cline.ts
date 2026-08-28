@@ -20,7 +20,7 @@ export type ProcessRunner = (
   },
 ) => Promise<ProcessResult>;
 
-const defaultRunner: ProcessRunner = async (binary, args, options) => {
+export const defaultRunner: ProcessRunner = async (binary, args, options) => {
   const result = await execa(binary, args, {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     env: options.env,
@@ -38,6 +38,9 @@ const defaultRunner: ProcessRunner = async (binary, args, options) => {
     isCanceled: result.isCanceled,
   };
 };
+
+/** The single Cline release whose argv surface design D10 was probed against. */
+export const EXPECTED_CLINE_VERSION = "3.0.60";
 
 export class AgentVersionError extends Error {
   constructor(message: string) {
@@ -112,11 +115,11 @@ export class ClineExecutor implements AgentExecutor {
   }
 }
 
-function extractVersion(output: string): string | undefined {
+export function extractVersion(output: string): string | undefined {
   return output.match(/\d+\.\d+\.\d+/u)?.[0];
 }
 
-function extractSessionId(output: string): string | undefined {
+export function extractSessionId(output: string): string | undefined {
   for (const line of output.split(/\r?\n/u)) {
     try {
       const value = JSON.parse(line) as Record<string, unknown>;

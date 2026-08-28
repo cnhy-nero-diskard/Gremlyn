@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "probe:agent": "node --import tsx src/agent/probe.ts",
     "start": "node --import tsx src/index.ts",
     "start:built": "node dist/index.js"
   },

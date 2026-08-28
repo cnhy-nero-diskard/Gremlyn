@@ -1,5 +1,5 @@
 import { pathToFileURL } from "node:url";
-import { ClineExecutor } from "./agent/cline.js";
+import { ClineExecutor, EXPECTED_CLINE_VERSION } from "./agent/cline.js";
 import { buildAgentEnvironment } from "./agent/environment.js";
 import { buildConsoleServer, consoleListenOptions } from "./console/server.js";
 import { loadConfig } from "./config/loader.js";
@@ -15,8 +15,6 @@ import { JobStore } from "./store/jobs.js";
 import type { AgentExecutor } from "./types.js";
 import { syncRepositories } from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
-
-const EXPECTED_CLINE_VERSION = "3.0.60";
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const configPath = argv[0] ?? process.env.GREMLYN_CONFIG ?? "gremlyn.yaml";
