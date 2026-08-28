@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
   CREDENTIAL_SEED_FILES,
+  persistRotatedCredentials,
   removeAttemptDataDir,
   seedAgentCredentials,
   verifyCredentialSource,
@@ -183,6 +184,55 @@ test("startup verification catches a missing nested credential file", () => {
   assert.throws(
     () => verifyCredentialSource("cline", source),
     /missing required file "settings\/providers\.json"/u,
+  );
+});
+
+/**
+ * Write-back: the OAuth half of the seed set is *stateful*. These tests pin the
+ * property that seeding alone cannot provide — a token the agent rotated inside
+ * the ephemeral attempt dir must survive the dir's deletion.
+ */
+test("a rotated OAuth token is written back to the source", () => {
+  const source = makeSource();
+  const dest = makeAttemptDir();
+  seedAgentCredentials(source, dest);
+
+  // The agent redeems the refresh token; the provider issues a replacement and
+  // invalidates the one just used. Only the attempt dir knows the new value.
+  const rotated = '{"openai-codex":{"refreshToken":"rotated-token"}}';
+  writeFileSync(join(dest, "settings", "providers.json"), rotated, "utf8");
+
+  const persisted = persistRotatedCredentials(source, dest);
+  assert.deepEqual(persisted, ["settings/providers.json"]);
+  assert.equal(readFileSync(join(source, "settings", "providers.json"), "utf8"), rotated);
+
+  // Without this, the source would still hold the consumed token and every
+  // later attempt would fail Unauthorized identically, forever.
+  removeAttemptDataDir(dest);
+  assert.equal(readFileSync(join(source, "settings", "providers.json"), "utf8"), rotated);
+});
+
+test("an unrotated credential is left untouched", () => {
+  const source = makeSource();
+  const dest = makeAttemptDir();
+  seedAgentCredentials(source, dest);
+  const before = statSync(join(source, "secrets.json")).mtimeMs;
+
+  // A static API key is identical after the run; the source must not churn.
+  assert.deepEqual(persistRotatedCredentials(source, dest), []);
+  assert.equal(readFileSync(join(source, "secrets.json"), "utf8"), SECRET);
+  assert.equal(statSync(join(source, "secrets.json")).mtimeMs, before);
+});
+
+test("write-back leaves no staging file behind", () => {
+  const source = makeSource();
+  const dest = makeAttemptDir();
+  seedAgentCredentials(source, dest);
+  writeFileSync(join(dest, "secrets.json"), '{"apiKey":"sk-rotated"}', "utf8");
+  persistRotatedCredentials(source, dest);
+  assert.deepEqual(
+    readdirSync(source).filter((name) => name.includes(".tmp")),
+    [],
   );
 });
 

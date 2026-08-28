@@ -3,9 +3,12 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -119,6 +122,79 @@ export function verifyCredentialSource(
       );
     }
   }
+}
+
+/**
+ * Persist credential files the agent rotated during an attempt back to the
+ * source directory (design D3 amendment).
+ *
+ * Seeding alone is correct only for *static* credentials. An API key in
+ * `secrets.json` is a fixed string, so copying it into an isolated per-attempt
+ * data dir and discarding the dir loses nothing. An OAuth credential is not:
+ * `settings/providers.json` holds a PKCE refresh token, and redeeming it makes
+ * the provider issue a replacement and invalidate the one just used.
+ *
+ * Without write-back the sequence is fatal and silent:
+ *   1. the attempt seeds a snapshot of the refresh token
+ *   2. the agent redeems it; the provider invalidates it, issuing a new one
+ *   3. the replacement is written into the ephemeral attempt dir
+ *   4. `removeAttemptDataDir` deletes it
+ * The source keeps the token consumed at step 2, so the first attempt after
+ * each `cline auth` succeeds and every attempt after it fails `Unauthorized`
+ * identically, forever.
+ *
+ * Only files whose contents actually changed are written back, so a static
+ * `secrets.json` is left untouched. The write is atomic (staging file +
+ * rename) because the source is the operator's live `~/.cline/data`, shared
+ * with their interactive CLI: a torn credential file would strand them too.
+ */
+export function persistRotatedCredentials(
+  sourceDir: string,
+  attemptDataDir: string,
+  files: readonly string[] = CREDENTIAL_SEED_FILES,
+): string[] {
+  const rotated: string[] = [];
+  for (const file of files) {
+    const src = join(attemptDataDir, file);
+    const dest = join(sourceDir, file);
+    if (!existsSync(src)) continue;
+    let updated: Buffer;
+    try {
+      updated = readFileSync(src);
+    } catch {
+      // An unreadable attempt file has nothing to teach the source.
+      continue;
+    }
+    // Unchanged content is the common case (static API keys); skipping it
+    // keeps the operator's source directory from churning on every attempt.
+    if (existsSync(dest)) {
+      try {
+        if (readFileSync(dest).equals(updated)) continue;
+      } catch {
+        // Unreadable destination: fall through and replace it.
+      }
+    }
+    const staging = `${dest}.gremlyn-${String(process.pid)}-${String(Date.now())}.tmp`;
+    try {
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(staging, updated);
+      setOwnerOnlyPermissions(staging);
+      renameSync(staging, dest);
+      rotated.push(file);
+    } catch (error) {
+      try {
+        rmSync(staging, { force: true });
+      } catch {
+        // Best effort; a surviving staging file is inert.
+      }
+      throw new Error(
+        `cannot persist rotated credential "${file}" to ${sourceDir}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return rotated;
 }
 
 /**

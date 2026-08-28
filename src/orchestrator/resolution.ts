@@ -3,7 +3,11 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
-import { removeAttemptDataDir, seedAgentCredentials } from "../agent/credentials.js";
+import {
+  persistRotatedCredentials,
+  removeAttemptDataDir,
+  seedAgentCredentials,
+} from "../agent/credentials.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { writeAgentOutput } from "../agent/output.js";
 import { buildResolutionPrompt } from "../agent/prompt.js";
@@ -384,11 +388,11 @@ export class ResolutionOrchestrator {
       this.options.logger.info("GitHub reply posted", { jobId, attemptId });
       this.jobs.finishSuccess(jobId, attemptId);
       this.options.logger.info("job completed", { jobId, attemptId });
-      if (attemptDataDir) removeAttemptDataDir(attemptDataDir);
+      this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       return { commitSha: publication.commitSha };
     } catch (error) {
       if (signal.aborted) {
-        if (attemptDataDir) removeAttemptDataDir(attemptDataDir);
+        this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
         throw error;
       }
       const failure = classifyFailure(error, stage);
@@ -425,8 +429,53 @@ export class ResolutionOrchestrator {
         commitExists: this.jobs.getAttempt(attemptId).commit_sha !== null,
         pushed: this.jobs.getAttempt(attemptId).pushed === 1,
       });
-      if (attemptDataDir) removeAttemptDataDir(attemptDataDir);
+      this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       throw failure;
     }
+  }
+
+  /**
+   * Retire an attempt's isolated data dir, rescuing any credential the agent
+   * rotated before the dir is deleted.
+   *
+   * Ordering is the whole point: an OAuth refresh token redeemed during the
+   * attempt exists *only* inside this directory, so it must reach the source
+   * before `removeAttemptDataDir` destroys it. This runs on the failure paths
+   * as well as the success path — an agent can rotate its token and then fail
+   * validation, and dropping the new token there would poison every later job
+   * exactly as if it had never been saved.
+   *
+   * Write-back is best-effort: losing a rotated token is bad, but throwing
+   * here would mask the real outcome the caller is in the middle of reporting.
+   */
+  private releaseAttemptDataDir(
+    agent: string,
+    attemptDataDir: string | undefined,
+    jobId: number,
+    attemptId: number,
+  ): void {
+    if (!attemptDataDir) return;
+    const credentialSource = this.options.credentialSources?.get(agent);
+    if (credentialSource) {
+      try {
+        const rotated = persistRotatedCredentials(credentialSource, attemptDataDir);
+        if (rotated.length > 0) {
+          this.options.logger.info("credential rotated", {
+            jobId,
+            attemptId,
+            agent,
+            files: rotated.join(", "),
+          });
+        }
+      } catch (error) {
+        this.options.logger.error("credential write-back failed", {
+          jobId,
+          attemptId,
+          agent,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    removeAttemptDataDir(attemptDataDir);
   }
 }
