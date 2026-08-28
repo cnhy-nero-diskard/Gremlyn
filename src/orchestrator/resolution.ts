@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
+import { removeAttemptDataDir, seedAgentCredentials } from "../agent/credentials.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { writeAgentOutput } from "../agent/output.js";
 import { buildResolutionPrompt } from "../agent/prompt.js";
@@ -20,7 +21,12 @@ import { inspectWorkspace } from "../validate/inspection.js";
 import { runValidationCommands } from "../validate/runner.js";
 import { statusEntries } from "../workspace/gitops.js";
 import { prepareWorkspace } from "../workspace/worktree.js";
-import { StageFailure, classifyFailure } from "./failures.js";
+import {
+  agentFailureReason,
+  isAgentAuthenticationFailure,
+  StageFailure,
+  classifyFailure,
+} from "./failures.js";
 import { JobQueue, type QueueResult } from "./queue.js";
 
 export interface RuntimeRepository extends RepoConfig {
@@ -37,6 +43,7 @@ export interface ResolutionOrchestratorOptions {
   github: GitHubClient;
   registry: CommandRegistry;
   executors: ReadonlyMap<string, AgentExecutor>;
+  credentialSources?: ReadonlyMap<string, string>;
   logger: Logger;
   secrets: readonly string[];
   concurrency: number;
@@ -192,6 +199,9 @@ export class ResolutionOrchestrator {
           ? (await statusEntries(attempt.workspace_path)).length > 0
           : false;
         this.jobs.cancelJob(jobId, attemptId, hasChanges);
+        // 4.3: seeded credential must be removed even on cancellation.
+        const attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
+        removeAttemptDataDir(attemptDataDir);
       },
     });
   }
@@ -209,6 +219,7 @@ export class ResolutionOrchestrator {
     const { jobId, attemptId, repository, prNumber, commentId, signal } = input;
     let stage: FailureStage = "preparing";
     let workspacePath: string | undefined;
+    let attemptDataDir: string | undefined;
     try {
       this.jobs.setStatus(jobId, stage, attemptId);
       const context = await reconstructReviewContext(this.options.github, {
@@ -236,8 +247,20 @@ export class ResolutionOrchestrator {
       this.jobs.setStatus(jobId, stage, attemptId);
       const executor = this.options.executors.get(repository.agent);
       if (!executor) throw new StageFailure(stage, "agent-cli-missing");
-      const attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
+      attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
       mkdirSync(attemptDataDir, { recursive: true });
+      // 4.1: seed credential source into the isolated data dir with owner-only perms.
+      // The source is read-only; the destination is the per-attempt ephemeral dir.
+      const credentialSource = this.options.credentialSources?.get(repository.agent);
+      if (credentialSource) {
+        seedAgentCredentials(credentialSource, attemptDataDir);
+        this.options.logger.info("credential seeded", {
+          jobId,
+          attemptId,
+          agent: repository.agent,
+          source: credentialSource,
+        });
+      }
       this.options.logger.info("agent launched", { jobId, attemptId, agent: executor.id });
       const agentResult = await executor.run({
         cwd: workspace.path,
@@ -276,7 +299,12 @@ export class ResolutionOrchestrator {
       });
       if (signal.aborted) throw new Error("job-cancelled");
       if (agentResult.timedOut) throw new StageFailure(stage, "agent-timeout");
-      if (agentResult.exitCode !== 0) throw new StageFailure(stage, "agent-nonzero-exit");
+      if (isAgentAuthenticationFailure(agentResult)) {
+        throw new StageFailure(stage, "agent-auth-failed");
+      }
+      if (agentResult.exitCode !== 0) {
+        throw new StageFailure(stage, agentFailureReason(agentResult));
+      }
 
       stage = "validating";
       this.jobs.setStatus(jobId, stage, attemptId);
@@ -356,9 +384,13 @@ export class ResolutionOrchestrator {
       this.options.logger.info("GitHub reply posted", { jobId, attemptId });
       this.jobs.finishSuccess(jobId, attemptId);
       this.options.logger.info("job completed", { jobId, attemptId });
+      if (attemptDataDir) removeAttemptDataDir(attemptDataDir);
       return { commitSha: publication.commitSha };
     } catch (error) {
-      if (signal.aborted) throw error;
+      if (signal.aborted) {
+        if (attemptDataDir) removeAttemptDataDir(attemptDataDir);
+        throw error;
+      }
       const failure = classifyFailure(error, stage);
       const hasChanges = workspacePath
         ? await statusEntries(workspacePath)
@@ -393,6 +425,7 @@ export class ResolutionOrchestrator {
         commitExists: this.jobs.getAttempt(attemptId).commit_sha !== null,
         pushed: this.jobs.getAttempt(attemptId).pushed === 1,
       });
+      if (attemptDataDir) removeAttemptDataDir(attemptDataDir);
       throw failure;
     }
   }

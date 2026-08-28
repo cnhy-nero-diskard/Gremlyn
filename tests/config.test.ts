@@ -22,6 +22,7 @@ agents:
   cline:
     binary: cline
     efforts: [none, low, medium, high, xhigh]
+    credential_source: C:/Users/test/.cline/data
 repositories:
   - owner: someuser
     name: repo

@@ -47,12 +47,64 @@ Edit `gremlyn.yaml`:
 - For each repository, set its exact `owner`, `name`, local `source_path`, and a separate `workspace_root`.
 - Keep `source_path` and `workspace_root` distinct. Workspaces are created as `<workspace_root>/pr-<number>`.
 - Set `agent: cline`, the provider-qualified `model`, and `allowed_models`.
+- Set `agents.cline.credential_source` to the authenticated Cline data directory
+  (conventional default `C:/Users/<you>/.cline/data` on Windows or `~/.cline/data`
+  elsewhere). This is the directory where `cline auth` stored `secrets.json`. It
+  is read-only, verified at startup, and never written to; a missing or
+  unreadable source refuses startup with a configuration error naming the agent
+  and location rather than failing per-job.
 - Set validation commands as argument arrays, for example `[npm, test]`. An empty list intentionally performs git inspection only; Gremlyn never invents fallback commands.
 - Leave `effort` unset to use Cline's highest supported tier, `xhigh`.
 
 Confirm the configured source repository has an `origin` remote and that the host's
 existing Git credentials can push to same-repository PR branches. Fork PRs are
 deliberately unsupported.
+
+### Agent authentication and credential isolation
+
+Cline stores provider credentials under its data directory (`secrets.json`).
+Gremlyn isolates per-attempt agent state behind a fresh `--data-dir` so
+concurrent attempts cannot corrupt each other's session state (`locks.db`,
+`sessions/`). To keep isolation without losing authentication, Gremlyn seeds
+each attempt's `--data-dir` from the configured `credential_source` before
+launching the agent, copying only `secrets.json` with owner-only permissions
+(`0o600`). The seeded copy lives no longer than the attempt: it is removed
+with the attempt directory on success, failure, timeout, and cancellation, and
+stale directories left by a killed process are removed on the next startup.
+No credential value is passed on the argument vector or through the environment,
+and the source directory is never modified.
+
+Authenticate the agent once on the host:
+
+```powershell
+cline auth login
+# or: cline auth --provider cline-pass etc, depending on provider
+```
+
+Verify the credential source exists and contains `secrets.json`:
+
+```powershell
+Get-ChildItem C:/Users/<you>/.cline/data\secrets.json
+```
+
+Re-verify the credential seed set when the pinned Cline version changes
+(`EXPECTED_CLINE_VERSION` in `src/agent/cline.ts`):
+
+```powershell
+# Unseeded should be Unauthorized, seeded should be completed
+npm run probe:agent -- --provider cline-pass --model z-ai/glm-5.3-flash --effort xhigh --seed-source C:/Users/<you>/.cline/data
+# Expected: first run Unauthorized (~300 ms, exit 1), second run completed (exit 0, READY)
+```
+
+If the seed set ever becomes incomplete (e.g. a new Cline version moves
+credentials), the seeded probe will return `Unauthorized` again; widen the
+declared list in `src/agent/credentials.ts:CREDENTIAL_SEED_FILES` and re-run the
+probe until the seeded run reaches `finishReason: "completed"`.
+
+A clean setup can be brought to a first successful agent invocation by
+following Install → Configure → Authenticate → `npm run probe:agent -- --seed-source ...`
+above; `npm start -- .\gremlyn.yaml` will then refuse startup only on a bad
+credential source and otherwise run jobs with per-attempt isolation.
 
 The bot identity polls and replies through GitHub's API. Git transport remains
 separate: the host's Git credentials authenticate the push, while the configured
@@ -88,6 +140,8 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `github token missing` or `console token missing`: define the named environment variable in the same PowerShell process before starting.
 - `token authenticates as ..., expected ...`: correct `github.orchestrator_login` or use the dedicated account's token.
 - `unsupported Cline version`: install Cline 3.0.60; startup refuses a drifting CLI surface rather than failing during a job.
+- `credential source for agent "cline" not found` or `is not readable`: set `agents.cline.credential_source` to the authenticated `~/.cline/data` directory (e.g. `C:/Users/<you>/.cline/data`) and confirm `secrets.json` exists; startup checks this before accepting jobs.
+- `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` and that the credential source still contains `secrets.json`, then retry; this is now distinct from `agent-nonzero-exit`.
 - `another Gremlyn instance is already using data directory`: stop the other process before starting a second instance against the same `data_dir`.
 - `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console.
 - `pull-request-closed`, `head-changed`, or `push-rejected`: refresh the PR state and retry deliberately. Gremlyn never force-pushes.

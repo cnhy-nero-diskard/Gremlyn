@@ -26,6 +26,8 @@ export interface AgentDefinition {
   binary: string;
   /** Supported reasoning-effort tiers ordered ascending; the last is the ceiling. */
   efforts: ReasoningEffort[];
+  /** Directory holding the operator-authenticated cline data (e.g. ~/.cline/data). Read-only. */
+  credentialSource: string;
 }
 
 export interface RepoConfig {
@@ -88,7 +90,7 @@ interface RawConfig {
     retries?: unknown;
   };
   allowed_authors?: unknown;
-  agents?: Record<string, { binary?: unknown; efforts?: unknown }>;
+  agents?: Record<string, { binary?: unknown; efforts?: unknown; credential_source?: unknown }>;
   repositories?: unknown;
 }
 
@@ -315,8 +317,14 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     problems.push("agents must be a map of agent id to definition");
   } else {
     for (const [id, def] of Object.entries(rawAgents as Record<string, unknown>)) {
-      const d = def as { binary?: unknown; efforts?: unknown };
+      const d = def as { binary?: unknown; efforts?: unknown; credential_source?: unknown };
       const binary = asString(d?.binary) ?? id;
+      const credentialSource = asString(d?.credential_source);
+      if (!credentialSource) {
+        problems.push(
+          `agents.${id}.credential_source is required (conventional default: ~/.cline/data)`,
+        );
+      }
       const effortsRaw = asStringList(d?.efforts) ?? [...REASONING_EFFORTS];
       const efforts = effortsRaw.filter((e): e is ReasoningEffort =>
         (REASONING_EFFORTS as readonly string[]).includes(e),
@@ -332,7 +340,8 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
         problems.push(`agents.${id}.efforts must be ordered from lowest to highest`);
         continue;
       }
-      agents[id] = { id, binary, efforts };
+      if (!credentialSource) continue;
+      agents[id] = { id, binary, efforts, credentialSource };
     }
   }
 

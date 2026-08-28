@@ -88,11 +88,18 @@ The seed set is a declared list, not the whole source directory. Copying the who
 directory would drag `locks.db`, `sessions/`, and `db/` along and reintroduce
 exactly the sharing D10 removed.
 
-The evidence says `secrets.json` holds the credential, but it is not yet confirmed
-that it alone is sufficient — `globalState.json` may carry provider selection that
-authentication depends on. Task 1 determines this empirically before anything is
-built on the assumption. If the minimal set turns out to be broader, the set grows;
-the design does not change.
+Empirically verified against cline 3.0.60 via `npm run probe:agent -- --seed-source`
+(task 1.2): a seeded isolated `--data-dir` with `["secrets.json"]` alone reaches
+`finishReason: "completed"` (exit 0, text `READY`, ~1350 ms, `xhigh` effort) where
+an identical unseeded run returns `Unauthorized` (exit 1, ~300 ms, text
+`Unauthorized: Please make sure you're using the latest version of Cline and
+re-authenticate your Cline account.`). The provider/model are supplied explicitly
+via argv, so `globalState.json` was tested and found unnecessary for
+authentication. The declared list is therefore `["secrets.json"]` (see
+`src/agent/credentials.ts:CREDENTIAL_SEED_FILES`). If a future Cline version
+changes storage layout, re-running the probe against the new version is the
+re-verification step (README) and the list grows; the design does not otherwise
+change.
 
 ### D4 — Treat the seeded credential as attempt-scoped
 

@@ -1,5 +1,8 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ClineExecutor, EXPECTED_CLINE_VERSION } from "./agent/cline.js";
+import { removeAttemptDataDir, verifyCredentialSource } from "./agent/credentials.js";
 import { buildAgentEnvironment } from "./agent/environment.js";
 import { buildConsoleServer, consoleListenOptions } from "./console/server.js";
 import { loadConfig } from "./config/loader.js";
@@ -21,7 +24,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const config = loadConfig(configPath);
   const lock = DataDirectoryLock.acquire(config.dataDir);
   const store = new Store({ dataDir: config.dataDir });
-  new JobStore(store.db).interruptIncompleteJobs();
+  const interrupted = new JobStore(store.db).interruptIncompleteJobs();
+  cleanupStaleAttemptDirs(config.dataDir, store.db, interrupted);
+  for (const definition of Object.values(config.agents)) {
+    verifyCredentialSource(definition.id, definition.credentialSource);
+  }
   const logger = new Logger({
     level: config.logLevel,
     secrets: [config.githubToken, config.consoleToken],
@@ -47,6 +54,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 
   const repositories = syncRepositories(store.db, config.repositories);
   const registry = createDefaultCommandRegistry();
+  const credentialSources = new Map(
+    Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
+  );
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
     dataDir: config.dataDir,
@@ -57,6 +67,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     github,
     registry,
     executors,
+    credentialSources,
     logger,
     secrets: [config.githubToken, config.consoleToken],
     concurrency: config.concurrency,
@@ -138,6 +149,51 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   };
   process.once("SIGINT", () => void stop());
   process.once("SIGTERM", () => void stop());
+}
+
+export function cleanupStaleAttemptDirs(
+  dataDir: string,
+  db: import("better-sqlite3").Database,
+  interruptedJobIds?: number[],
+): void {
+  const attemptsRoot = join(dataDir, "attempts");
+  if (!existsSync(attemptsRoot)) return;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(attemptsRoot);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const attemptId = Number(entry);
+    if (!Number.isInteger(attemptId) || attemptId < 1) continue;
+    const dir = join(attemptsRoot, entry);
+    // If this attempt belongs to an interrupted job, remove it.
+    // Otherwise keep it: a running attempt must not be disturbed.
+    try {
+      const attempt = db
+        .prepare("SELECT job_id, outcome FROM attempts WHERE id = ?")
+        .get(attemptId) as { job_id: number; outcome: string | null } | undefined;
+      if (!attempt) {
+        // Orphan directory left by a killed process with no DB record (or old run).
+        removeAttemptDataDir(dir);
+        continue;
+      }
+      const job = db
+        .prepare("SELECT status FROM jobs WHERE id = ?")
+        .get(attempt.job_id) as { status: string } | undefined;
+      if (job?.status === "interrupted" || attempt.outcome === "interrupted") {
+        removeAttemptDataDir(dir);
+        continue;
+      }
+      // Also handle explicit interruptedJobIds list from startup sweep
+      if (interruptedJobIds?.includes(attempt.job_id)) {
+        removeAttemptDataDir(dir);
+      }
+    } catch {
+      // On any DB error, do not delete to avoid disturbing running attempts.
+    }
+  }
 }
 
 const entry = process.argv[1];

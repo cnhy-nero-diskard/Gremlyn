@@ -33,6 +33,7 @@ import {
   extractVersion,
   type ProcessRunner,
 } from "./cline.js";
+import { CREDENTIAL_SEED_FILES, seedAgentCredentials } from "./credentials.js";
 import { AGENT_ENV_ALLOWLIST, buildAgentEnvironment } from "./environment.js";
 import { REASONING_EFFORTS, type AgentResult, type ReasoningEffort } from "../types.js";
 
@@ -94,6 +95,7 @@ interface ProbeRun {
   result: AgentResult;
   argv: readonly string[];
   elapsedMs: number;
+  seededFiles?: readonly string[];
 }
 
 async function runOnce(input: {
@@ -104,6 +106,8 @@ async function runOnce(input: {
   effort: ReasoningEffort;
   timeoutSec: number;
   scratch: string;
+  seedSource: string | undefined;
+  seedFiles: readonly string[] | undefined;
 }): Promise<ProbeRun> {
   const dataDir = mkdtempSync(join(input.scratch, "data-"));
   const cwd = mkdtempSync(join(input.scratch, "work-"));
@@ -112,6 +116,22 @@ async function runOnce(input: {
   heading(`Run: ${input.label}`);
   out(`data-dir     ${dataDir}`);
   out(`cwd          ${cwd}`);
+  let seeded: readonly string[] | undefined;
+  if (input.seedSource) {
+    const files = input.seedFiles ?? CREDENTIAL_SEED_FILES;
+    try {
+      const copied = seedAgentCredentials(input.seedSource, dataDir, files);
+      seeded = copied;
+      out(`seeded       ${copied.join(", ")} from ${input.seedSource}`);
+      // Verify permissions: report that files are owner-only where possible
+      out(`seed list    [${copied.map((f) => `"${f}"`).join(", ")}]`);
+    } catch (error) {
+      out(`seed failed  ${describe(error)}`);
+      throw error;
+    }
+  } else {
+    out(`seeded       (none — fresh isolated dir)`);
+  }
   out(`waiting      up to ${String(input.timeoutSec)}s for the agent to exit...`);
   const startedAt = Date.now();
   const result = await executor.run({
@@ -132,6 +152,7 @@ async function runOnce(input: {
     result,
     argv: sink.argv ?? [],
     elapsedMs: Date.now() - startedAt,
+    ...(seeded ? { seededFiles: seeded } : {}),
   };
 }
 
@@ -140,6 +161,11 @@ function reportRun(run: ProbeRun): void {
   out(`exit code    ${String(run.result.exitCode)}`);
   out(`timed out    ${String(run.result.timedOut)}`);
   out(`elapsed      ${String(run.elapsedMs)} ms`);
+  if (run.seededFiles) {
+    out(`seeded       ${run.seededFiles.join(", ")}`);
+  } else {
+    out(`seeded       (none)`);
+  }
   const sessionId = extractSessionId(run.result.stdout);
   out(`session id   ${sessionId ?? "(not found by extractSessionId)"}`);
   const keys = observedJsonKeys(run.result.stdout);
@@ -149,6 +175,13 @@ function reportRun(run: ProbeRun): void {
   if (run.result.timedOut && run.result.stdout.trim() === "") {
     out("hint         timed out having written nothing — the agent is likely");
     out("             waiting on input or on a network call that never returns");
+  }
+  // Highlight authentication failure distinctly
+  const haystack = `${run.result.stdout}\n${run.result.stderr}`;
+  if (/Unauthorized/iu.test(haystack)) {
+    out(`auth         Unauthorized — provider authentication failed`);
+  } else if (run.result.exitCode === 0) {
+    out(`auth         completed — agent authenticated`);
   }
 }
 
@@ -161,6 +194,8 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       provider: { type: "string" },
       effort: { type: "string" },
       timeout: { type: "string" },
+      "seed-source": { type: "string" },
+      "seed-files": { type: "string" },
     },
     allowPositionals: false,
   });
@@ -170,6 +205,16 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   const provider = values.provider ?? process.env.GREMLYN_PROBE_PROVIDER;
   const effortRaw = values.effort ?? process.env.GREMLYN_PROBE_EFFORT ?? "none";
   const timeoutSec = Number(values.timeout ?? process.env.GREMLYN_PROBE_TIMEOUT ?? "120");
+  const seedSource =
+    (values["seed-source"] as string | undefined) ?? process.env.GREMLYN_PROBE_SEED_SOURCE;
+  const seedFilesRaw =
+    (values["seed-files"] as string | undefined) ?? process.env.GREMLYN_PROBE_SEED_FILES;
+  const seedFiles = seedFilesRaw
+    ? seedFilesRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : undefined;
 
   if (!(REASONING_EFFORTS as readonly string[]).includes(effortRaw)) {
     out(`effort "${effortRaw}" is not a known tier (${REASONING_EFFORTS.join(", ")})`);
@@ -229,8 +274,88 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     return 0;
   }
 
+  // Seeded-run mode: if a credential source is supplied, run one unseeded
+  // and one seeded isolated dir to verify the declared file set suffices.
+  // This directly exercises design D3's empirical claim.
+  if (seedSource) {
+    heading(`Seed configuration`);
+    out(`source       ${seedSource}`);
+    out(`files        ${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).join(", ")}`);
+    out(`note         these files will be copied into the seeded data dir`);
+    out(`             with owner-only perms before invocation`);
+  }
+
   const scratch = mkdtempSync(join(tmpdir(), "gremlyn-probe-"));
   try {
+    if (seedSource) {
+      const first = await runOnce({
+        label: "first — fresh data dir (unseeded)",
+        binary,
+        model,
+        provider,
+        effort,
+        timeoutSec,
+        scratch,
+        seedSource: undefined,
+        seedFiles: undefined,
+      });
+      reportRun(first);
+
+      const second = await runOnce({
+        label: "second — fresh data dir (seeded)",
+        binary,
+        model,
+        provider,
+        effort,
+        timeoutSec,
+        scratch,
+        seedSource: seedSource,
+        seedFiles: seedFiles,
+      });
+      reportRun(second);
+
+      heading("Findings");
+      const unseededFailed = first.result.exitCode !== 0;
+      const seededOk = second.result.exitCode === 0;
+      const unseededUnauthorized = /Unauthorized/iu.test(
+        `${first.result.stdout}\n${first.result.stderr}`,
+      );
+      const seededUnauthorized = /Unauthorized/iu.test(
+        `${second.result.stdout}\n${second.result.stderr}`,
+      );
+      out(`seed list    [${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).map((f) => `"${f}"`).join(", ")}]`);
+      out(
+        seededOk && unseededUnauthorized && !seededUnauthorized
+          ? "auth         seeded run reached completed where unseeded was Unauthorized"
+          : seededOk
+            ? "auth         seeded run succeeded"
+            : "auth         seeded run failed — seed set may be incomplete",
+      );
+      if (unseededFailed && seededOk) {
+        out("             --data-dir isolation with seeding restores credentials");
+      } else if (!unseededFailed) {
+        out("             NOTE: unseeded run succeeded — --data-dir may not have isolated credentials");
+        out("             (check that the provider uses the data dir for auth)");
+      } else if (!seededOk) {
+        out("             HINT: try widening seed files (e.g. add globalState.json)");
+      }
+      const sessionFound =
+        extractSessionId(first.result.stdout) !== undefined ||
+        extractSessionId(second.result.stdout) !== undefined;
+      out(
+        sessionFound
+          ? "session id   extractSessionId() matched real output"
+          : "session id   NOT FOUND — no taskId on the stream",
+      );
+      if (!sessionFound) {
+        out("             Compare against the json keys listed above; the");
+        out("             console's transcript link depends on this id.");
+      }
+      // Success criteria for seeded mode: unseeded Unauthorized + seeded completed
+      const seededModeOk = unseededUnauthorized && seededOk;
+      return seededModeOk ? 0 : 1;
+    }
+
     const first = await runOnce({
       label: "first — fresh data dir",
       binary,
@@ -239,6 +364,8 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       effort,
       timeoutSec,
       scratch,
+      seedSource: undefined,
+      seedFiles: undefined,
     });
     reportRun(first);
 
@@ -250,6 +377,8 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       effort,
       timeoutSec,
       scratch,
+      seedSource: undefined,
+      seedFiles: undefined,
     });
     reportRun(second);
 

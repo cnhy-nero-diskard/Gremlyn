@@ -52,10 +52,14 @@ allowed_authors:
 # Agents available for repositories to reference. `efforts` lists the
 # supported reasoning-effort tiers from lowest to highest; the last entry is
 # the ceiling and the default for repositories that do not specify one.
+# `credential_source` is the read-only directory holding the operator's
+# authenticated cline installation (where `cline auth` stored credentials).
+# It is scoped per-agent, verified at startup, and never written to.
 agents:
   cline:
     binary: cline
     efforts: [none, low, medium, high, xhigh]
+    credential_source: C:/Users/you/.cline/data
 
 repositories:
   - owner: your-github-login
