@@ -36,6 +36,7 @@ import {
 import { CREDENTIAL_SEED_FILES, seedAgentCredentials } from "./credentials.js";
 import { AGENT_ENV_ALLOWLIST, buildAgentEnvironment } from "./environment.js";
 import { REASONING_EFFORTS, type AgentResult, type ReasoningEffort } from "../types.js";
+import { isAgentAuthenticationFailure } from "../orchestrator/failures.js";
 
 /** A read-only instruction: the probe tests the invocation surface, not editing. */
 const PROBE_PROMPT =
@@ -177,9 +178,8 @@ function reportRun(run: ProbeRun): void {
     out("             waiting on input or on a network call that never returns");
   }
   // Highlight authentication failure distinctly
-  const haystack = `${run.result.stdout}\n${run.result.stderr}`;
-  if (/Unauthorized/iu.test(haystack)) {
-    out(`auth         Unauthorized — provider authentication failed`);
+  if (isAgentAuthenticationFailure(run.result)) {
+    out(`auth         provider authentication failed`);
   } else if (run.result.exitCode === 0) {
     out(`auth         completed — agent authenticated`);
   }

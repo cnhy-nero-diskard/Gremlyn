@@ -164,7 +164,7 @@ function parseRepositories(
     const sourcePath = asString(r.source_path);
     const workspaceRoot = asString(r.workspace_root);
     const agent = asString(r.agent);
-    const provider = asString(r.provider) ?? "";
+    const provider = asString(r.provider);
     const model = asString(r.model);
     const enabled = asBoolean(r.enabled) ?? true;
     const validationCommands = asCommandList(r.validation_commands);
@@ -176,6 +176,7 @@ function parseRepositories(
       ["source_path", sourcePath],
       ["workspace_root", workspaceRoot],
       ["agent", agent],
+      ["provider", provider],
       ["model", model],
     ] as const) {
       if (!value) problems.push(`${label}.${field} is required`);
@@ -204,7 +205,7 @@ function parseRepositories(
     if (model && allowedModels.length > 0 && !allowedModels.includes(model)) {
       problems.push(`${label}.model "${model}" is not in its allowed_models list`);
     }
-    if (owner && name && sourcePath && workspaceRoot && agent && model && effort) {
+    if (owner && name && sourcePath && workspaceRoot && agent && provider && model && effort) {
       repositories.push({
         owner,
         name,

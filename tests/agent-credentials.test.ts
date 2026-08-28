@@ -9,6 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -71,6 +72,46 @@ test("the seeded credential is owner-only", { skip: process.platform === "win32"
   const mode = statSync(join(dest, "secrets.json")).mode & 0o777;
   assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
 });
+
+test(
+  "the seeded credential ACL grants access only to the current Windows user",
+  { skip: process.platform !== "win32" },
+  () => {
+    const dest = makeAttemptDir();
+    seedAgentCredentials(makeSource(), dest);
+    const target = join(dest, "secrets.json");
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$acl = Get-Acl -LiteralPath $env:GREMLYN_TEST_ACL_TARGET",
+      "$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+      "$rules = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })",
+      "[pscustomobject]@{ current = $current; protected = $acl.AreAccessRulesProtected; rules = $rules } | ConvertTo-Json -Compress -Depth 3",
+    ].join("; ");
+    const result = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GREMLYN_TEST_ACL_TARGET: target,
+        },
+        windowsHide: true,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const acl = JSON.parse(result.stdout) as {
+      current: string;
+      protected: boolean;
+      rules: string | string[];
+    };
+    assert.equal(acl.protected, true);
+    assert.deepEqual(
+      [...new Set(Array.isArray(acl.rules) ? acl.rules : [acl.rules])],
+      [acl.current],
+    );
+  },
+);
 
 test("seeding never writes to the operator's source directory", () => {
   const source = makeSource();

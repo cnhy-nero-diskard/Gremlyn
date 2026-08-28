@@ -7,6 +7,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 
 /**
@@ -69,13 +70,7 @@ export function seedAgentCredentials(
     mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(src, dest);
     seeded.push(file);
-    try {
-      chmodSync(dest, 0o600);
-    } catch {
-      // Windows may not honor POSIX permissions; the file is still copied.
-      // The attempt directory is already under Gremlyn-managed storage and
-      // is removed with the attempt, so lifetime remains the mitigation.
-    }
+    setOwnerOnlyPermissions(dest);
   }
   return seeded;
 }
@@ -127,27 +122,6 @@ export function verifyCredentialSource(
 }
 
 /**
- * Remove seeded credential files from an attempt directory. Used on every
- * terminal path (success, failure, timeout, cancellation) and for stale
- * directories on startup.
- *
- * The function is tolerant of missing files/directories.
- */
-export function clearSeededCredentials(
-  destDir: string,
-  files: readonly string[] = CREDENTIAL_SEED_FILES,
-): void {
-  for (const file of files) {
-    const target = join(destDir, file);
-    try {
-      rmSync(target, { force: true });
-    } catch {
-      // Ignore missing file.
-    }
-  }
-}
-
-/**
  * Remove the entire attempt data directory (which also removes any seeded
  * credential). Tolerant of missing directory.
  */
@@ -156,5 +130,42 @@ export function removeAttemptDataDir(attemptDataDir: string): void {
     rmSync(attemptDataDir, { recursive: true, force: true });
   } catch {
     // Ignore.
+  }
+}
+
+function setOwnerOnlyPermissions(path: string): void {
+  if (process.platform !== "win32") {
+    chmodSync(path, 0o600);
+    return;
+  }
+
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  const powershell = systemRoot
+    ? join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "powershell.exe";
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+    "$acl = New-Object System.Security.AccessControl.FileSecurity",
+    "$acl.SetOwner($identity)",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')",
+    "$acl.AddAccessRule($rule)",
+    "[System.IO.File]::SetAccessControl($env:GREMLYN_ACL_TARGET, $acl)",
+  ].join("; ");
+  const env: Record<string, string> = { GREMLYN_ACL_TARGET: path };
+  for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP"]) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8",
+    env,
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) {
+    const detail =
+      result.error?.message ?? (result.stderr.trim() || `exit ${String(result.status)}`);
+    throw new Error(`cannot restrict credential file ACL ${path}: ${detail}`);
   }
 }
