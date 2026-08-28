@@ -113,4 +113,4 @@ any stage is built out fully.
 - [x] 11.3 Verify every job failure records stage, whether files changed, whether a commit exists, and whether anything was pushed
 - [x] 11.4 Write the README covering install, configure, GitHub auth, repository registration, agent and model setup, start, and verify connectivity — Windows and PowerShell friendly, no WSL requirement
 - [x] 11.5 Document development, test, and build commands plus troubleshooting notes, and verify a clean clone can be brought to a running orchestrator by following them
-- [ ] 11.6 Run the full Layer1 §39 acceptance scenario against a real repository with a real agent invocation and verify all fifteen steps, ending with the developer's normal checkout untouched
+- [x] 11.6 Run the full Layer1 §39 acceptance scenario against a real repository with a real agent invocation and verify all fifteen steps, ending with the developer's normal checkout untouched
