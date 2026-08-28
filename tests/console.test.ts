@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request as httpRequest } from "node:http";
 import {
   buildConsoleServer,
   consoleListenOptions,
@@ -10,6 +11,17 @@ import {
 } from "../src/console/server.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
+import { readHealth } from "../src/console/queries.js";
+import { SharedChangeTicker } from "../src/console/stream.js";
+import { assetHash, clientScriptPath, stylesheetPath } from "../src/console/assets.js";
+import {
+  dangerZone,
+  duration,
+  escapeHtml,
+  keyValueTable,
+  relativeTimestamp,
+  statusPill,
+} from "../src/console/views/components.js";
 
 const TOKEN = "console-token";
 const SECRET = "super-secret";
@@ -173,7 +185,8 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   const app = buildConsoleServer(data.options);
   const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /Orchestrator status: <strong>running<\/strong>/);
+  assert.match(response.body, /Orchestrator/);
+  assert.match(response.body, /no poll recorded/);
   assert.match(response.body, /acme\/widgets/);
   assert.match(response.body, /Running/);
   assert.match(response.body, /Queued/);
@@ -205,7 +218,7 @@ test("job detail separates attempts and shows context, failure, output, validati
     "validation failed: [redacted]",
     "Structured log",
     "Destructive actions",
-    "typing RESET",
+    "Confirmation",
     "discussion_r101",
   ]) {
     assert.ok(response.body.includes(expected), expected);
@@ -293,4 +306,217 @@ test("job-filtered structured log returns only the selected lifecycle with redac
   assert.equal(response.body.includes("other job"), false);
   await app.close();
   data.store.close();
+});
+
+test("presentation assets and sign-in are available without a token while data routes remain protected", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  for (const asset of ["/assets/app.css", "/assets/app.js", stylesheetPath, clientScriptPath]) {
+    const response = await app.inject({ method: "GET", url: asset });
+    assert.equal(response.statusCode, 200, asset);
+    assert.equal(response.body.includes(SECRET), false);
+  }
+  assert.match(stylesheetPath, new RegExp(`app\\.${assetHash}\\.css`));
+  assert.match(clientScriptPath, new RegExp(`app\\.${assetHash}\\.js`));
+  assert.match((await app.inject({ method: "GET", url: "/auth" })).body, /stylesheet/);
+  assert.equal((await app.inject({ method: "GET", url: "/commands" })).statusCode, 401);
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/auth", payload: { token: "wrong" } })).statusCode,
+    401,
+  );
+  const signedIn = await app.inject({ method: "POST", url: "/auth", payload: { token: TOKEN } });
+  assert.equal(signedIn.statusCode, 200);
+  assert.match(signedIn.headers["set-cookie"] as string, /HttpOnly/);
+  await app.close();
+  data.store.close();
+});
+
+test("health projection distinguishes fresh, stale, and missing polling", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  store.db
+    .prepare(
+      `INSERT INTO repositories
+         (owner, name, source_path, workspace_root, agent, model, provider, effort)
+       VALUES ('health', 'fixture', 'source', 'workspace', 'cline', 'model', 'provider', 'high')`,
+    )
+    .run();
+  const now = "2026-08-28T00:00:10.000Z";
+  const fresh = readHealth(store.db, 60, 3, now);
+  assert.equal(fresh.status, "unknown");
+  store.db
+    .prepare("INSERT INTO ingestion_state (repo_id, last_polled_at) VALUES (1, ?)")
+    .run("2026-08-28T00:00:00.000Z");
+  store.db
+    .prepare(
+      "INSERT INTO jobs (repo_id, pr_number, comment_id, command, status, created_at) VALUES (1, 1, 1, 'RESOLVE', 'queued', ?)",
+    )
+    .run(now);
+  store.db
+    .prepare(
+      "INSERT INTO jobs (repo_id, pr_number, comment_id, command, status, created_at) VALUES (1, 2, 2, 'RESOLVE', 'running', ?)",
+    )
+    .run(now);
+  const freshWithWork = readHealth(store.db, 60, 3, now);
+  assert.deepEqual(
+    {
+      status: freshWithWork.status,
+      queue: freshWithWork.queueDepth,
+      active: freshWithWork.inFlight,
+      concurrency: freshWithWork.concurrency,
+    },
+    { status: "running", queue: 1, active: 1, concurrency: 3 },
+  );
+  const stale = readHealth(store.db, 5, 3, now);
+  assert.equal(stale.status, "stale");
+  store.close();
+});
+
+test("commands and audit views expose outcomes and redacted action details", async () => {
+  const data = fixture();
+  data.store.db
+    .prepare(
+      "INSERT INTO processed_commands (repo_id, pr_number, comment_id, command, author_login, observed_at, outcome, reason) VALUES (?, 99, 901, 'RESOLVE', 'operator', ?, 'rejected', ?)",
+    )
+    .run(data.repoId, "2026-08-27T00:00:00.000Z", `secret ${SECRET}`);
+  data.store.db
+    .prepare(
+      "INSERT INTO processed_commands (repo_id, pr_number, comment_id, command, author_login, observed_at, outcome, job_id) VALUES (?, 12, 902, 'RESOLVE', 'operator', ?, 'executed', ?)",
+    )
+    .run(data.repoId, "2026-08-27T00:00:00.000Z", data.jobId);
+  data.options.operatorActions.record({
+    action: "workspace-reset",
+    target: "repository:1/pr:12",
+    effect: "recreated",
+    detail: { secret: SECRET },
+  });
+  const app = buildConsoleServer(data.options);
+  const commands = await app.inject({ method: "GET", url: "/commands", headers: AUTH });
+  const audit = await app.inject({ method: "GET", url: "/audit", headers: AUTH });
+  assert.match(commands.body, /secret \[redacted\]/);
+  assert.match(commands.body, new RegExp(`/jobs/${data.jobId}`));
+  assert.match(audit.body, /workspace-reset/);
+  assert.match(audit.body, /recreated/);
+  assert.equal(commands.body.includes(SECRET), false);
+  assert.equal(audit.body.includes(SECRET), false);
+  await app.close();
+  data.store.close();
+});
+
+test("ticker lifecycle is shared and held-open SSE emits a second event on one connection", async () => {
+  const data = fixture();
+  const ticker = new SharedChangeTicker(data.store.db, 20);
+  assert.equal(ticker.isRunning, false);
+  const unsubscribe = ticker.subscribe(() => undefined);
+  assert.equal(ticker.subscriberCount, 1);
+  assert.equal(ticker.isRunning, true);
+  unsubscribe();
+  assert.equal(ticker.subscriberCount, 0);
+  assert.equal(ticker.isRunning, false);
+
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const port = address.port;
+  const chunks: string[] = [];
+  await new Promise<void>((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path: `/jobs/${data.jobId}/stream`,
+      headers: AUTH,
+    });
+    const timeout = setTimeout(() => {
+      req.destroy();
+      reject(new Error("held-open stream timed out"));
+    }, 3_000);
+    req.on("response", (response) => {
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => {
+        chunks.push(chunk);
+        if (chunks.join("").match(/event: job-update/g)?.length === 1) {
+          writeFileSync(data.outputPath, "output appended while running\n", "utf8");
+        }
+        if (chunks.join("").match(/event: job-update/g)?.length === 2) {
+          clearTimeout(timeout);
+          req.destroy();
+          resolve();
+        }
+      });
+      response.on("error", reject);
+    });
+    req.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+    });
+    req.end();
+  });
+  assert.equal(chunks.join("").match(/event: job-update/g)?.length, 2);
+  await app.close();
+  data.store.close();
+});
+
+test("job actions are state-gated and successful jobs expose neither routine action", async () => {
+  const data = fixture();
+  const succeeded = Number(
+    data.store.db
+      .prepare(
+        "INSERT INTO jobs (repo_id, pr_number, comment_id, command, status, created_at, finished_at) VALUES (?, 15, 104, 'RESOLVE', 'succeeded', ?, ?)",
+      )
+      .run(data.repoId, "2026-08-27T00:00:00.000Z", "2026-08-27T00:01:00.000Z").lastInsertRowid,
+  );
+  const app = buildConsoleServer(data.options);
+  const succeededBody = (
+    await app.inject({ method: "GET", url: `/jobs/${succeeded}`, headers: AUTH })
+  ).body;
+  assert.doesNotMatch(succeededBody, /data-action="retry"/);
+  assert.doesNotMatch(succeededBody, /data-action="cancel"/);
+  const queuedBody = (
+    await app.inject({ method: "GET", url: `/jobs/${data.queuedJobId}`, headers: AUTH })
+  ).body;
+  assert.match(queuedBody, /data-action="cancel"/);
+  await app.close();
+  data.store.close();
+});
+
+test("pure view helpers escape values and render absent values safely", () => {
+  assert.equal(
+    escapeHtml(`<script>alert('x')</script>`),
+    "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;",
+  );
+  assert.match(statusPill("failed"), /status-failed/);
+  assert.ok(statusPill("failed").includes(">failed</span>"));
+  assert.equal(duration(null, null), "—");
+  assert.equal(relativeTimestamp(null), "never");
+  assert.match(keyValueTable({ "<unsafe>": null, value: "<script>" }), /&lt;unsafe&gt;/);
+  assert.match(keyValueTable({ "<unsafe>": null, value: "<script>" }), /class="muted">—/);
+  assert.match(keyValueTable({ "<unsafe>": null, value: "<script>" }), /&lt;script&gt;/);
+  assert.match(dangerZone(1, 12), /data-reset-submit/);
+  assert.match(dangerZone(1, 12), /disabled/);
+});
+
+test("terminal status treatments use distinct classes and non-colour cues", () => {
+  const data = fixture();
+  for (const status of ["succeeded", "failed", "cancelled", "interrupted"]) {
+    data.store.db
+      .prepare(
+        "INSERT INTO jobs (repo_id, pr_number, comment_id, command, status, created_at) VALUES (?, ?, ?, 'RESOLVE', ?, ?)",
+      )
+      .run(
+        data.repoId,
+        100 + status.length,
+        200 + status.length,
+        status,
+        "2026-08-27T00:00:00.000Z",
+      );
+  }
+  const app = buildConsoleServer(data.options);
+  return app.inject({ method: "GET", url: "/", headers: AUTH }).then(async (response) => {
+    for (const status of ["succeeded", "failed", "cancelled", "interrupted"]) {
+      assert.match(response.body, new RegExp(`status-${status}`));
+    }
+    assert.match(response.body, /aria-label="Status: succeeded"/);
+    assert.match(response.body, /aria-label="Status: failed"/);
+    await app.close();
+    data.store.close();
+  });
 });
