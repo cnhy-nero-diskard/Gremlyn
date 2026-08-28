@@ -25,40 +25,95 @@ npm run build
 npm test
 ```
 
-Copy the complete example configuration and create local secrets:
+## Configure with the setup CLI
+
+The guided CLI is the recommended first-run path. It keeps token values in the
+process environment, creates `gremlyn.yaml` from `config.example.yaml` only
+when the file is absent, reports host prerequisites, and can register the first
+checkout after the prerequisites pass:
+
+```powershell
+$env:GREMLYN_GITHUB_TOKEN = 'your-dedicated-bot-token'
+$env:GREMLYN_CONSOLE_TOKEN = 'generate-a-long-random-local-token'
+
+npm run setup -- --repo C:/code/your-repo --yes `
+  --provider your-provider `
+  --model your-provider/lune-5.6 `
+  --allowed-model your-provider/lune-5.6 `
+  --no-validation
+```
+
+Omit `--yes` in an interactive PowerShell session to review each proposal. In a
+non-interactive shell, pass `--yes` to accept inferred owner/name, workspace,
+agent, effort, and validation-command proposals, or provide the corresponding
+explicit flags. `--probe` additionally runs the optional seeded Cline probe
+before registration.
+
+After the first repository is registered, add another checkout with the same
+rules:
+
+```powershell
+npm run add-repo -- C:/code/another-repo --yes `
+  --provider your-provider `
+  --model your-provider/lune-5.6 `
+  --allowed-model your-provider/lune-5.6 `
+  --no-validation
+```
+
+`add-repo` derives owner/name only from a GitHub `origin`, proposes a safe
+workspace sibling, and offers recognized `package.json` scripts as literal
+validation argv. It verifies the checkout, origin, workspace boundaries,
+duplicates, agent, and model before writing. The write preserves comments and
+unrelated entries and is rejected atomically if the generated YAML does not
+load through the normal configuration loader.
+
+Run the shared checks against every configured entry without changing files:
+
+```powershell
+npm run verify:config -- --config .\gremlyn.yaml
+```
+
+`verify` is on demand and does not become an `npm start` preflight. Startup
+behavior remains unchanged: `npm start -- .\gremlyn.yaml` performs the existing
+configuration, identity, Cline, data-directory, and console checks only.
+
+The three commands are aliases for the `setup`, `add-repo`, and `verify`
+subcommands in `src/setup/cli.ts`. Common flags are `--config`, `--yes`, and
+`--help`; registration flags are `--owner`, `--name`, `--workspace-root`,
+`--agent`, `--provider`, `--model`, `--effort`, repeated `--allowed-model`,
+repeated `--validation-command`, `--no-validation`, `--agent-instructions`,
+`--enabled`, and `--disabled`. `setup` also accepts `--repo`, `--probe`, and
+`--example`. Use `--enabled` and `--disabled` exclusively; use either
+`--no-validation` or `--validation-command`, not both.
+
+Every setup and verification message is passed through secret redaction. Token
+values are never written to `gremlyn.yaml` or another file. If the console token
+is absent, setup generates a value and prints a PowerShell export line for the
+current process; copy it into the environment and rerun setup.
+
+### Manual YAML alternative
+
+The CLI is additive, not required. To configure by hand, copy the complete
+example and set the environment variables yourself:
 
 ```powershell
 Copy-Item .\config.example.yaml .\gremlyn.yaml
 $env:GREMLYN_GITHUB_TOKEN = 'your-dedicated-bot-token'
-$env:GREMLYN_CONSOLE_TOKEN = 'generate-a-long-random-local-token'
+$env:GREMLYN_CONSOLE_TOKEN = 'your-long-random-local-token'
 ```
 
-Never put either token in `gremlyn.yaml`. The file names the environment variables; secret values come from the environment only.
+Then edit `gremlyn.yaml`: set `github.orchestrator_login`,
+`git.author_name`/`git.author_email`, `allowed_authors`, each repository's exact
+`owner`, `name`, `source_path`, and separate `workspace_root`, the Cline
+`credential_source`, provider-qualified `model`, `allowed_models`, and explicit
+`validation_commands`. Keep the token values out of the file; `token_env` names
+only the environment variables that hold them. Manual edits can be checked with
+`npm run verify:config -- --config .\gremlyn.yaml`.
 
-## Configure
-
-Edit `gremlyn.yaml`:
-
-- Set `github.orchestrator_login` to the login authenticated by `GREMLYN_GITHUB_TOKEN`.
-- Set `git.author_name` and `git.author_email` to the human identity that should
-  receive commit attribution. The email must be verified on that GitHub account;
-  it does not need to belong to the bot account that pushes the commit.
-- Put permitted human GitHub logins in `allowed_authors`. The bot login must not appear there.
-- For each repository, set its exact `owner`, `name`, local `source_path`, and a separate `workspace_root`.
-- Keep `source_path` and `workspace_root` distinct. Workspaces are created as `<workspace_root>/pr-<number>`.
-- Set `agent: cline`, the provider-qualified `model`, and `allowed_models`.
-- Set `agents.cline.credential_source` to the authenticated Cline data directory
-  (conventional default `C:/Users/<you>/.cline/data` on Windows or `~/.cline/data`
-  elsewhere). This is the directory where `cline auth` stored `secrets.json`. It
-  is read-only, verified at startup, and never written to; a missing or
-  unreadable source refuses startup with a configuration error naming the agent
-  and location rather than failing per-job.
-- Set validation commands as argument arrays, for example `[npm, test]`. An empty list intentionally performs git inspection only; Gremlyn never invents fallback commands.
-- Leave `effort` unset to use Cline's highest supported tier, `xhigh`.
-
-Confirm the configured source repository has an `origin` remote and that the host's
-existing Git credentials can push to same-repository PR branches. Fork PRs are
-deliberately unsupported.
+The configured GitHub token should have only the repository permissions needed to
+read pull requests and review comments and post review replies. Git pushes use
+the host's existing Git credential configuration. Do not use a personal API token
+if a dedicated bot identity is available. Fork PRs are deliberately unsupported.
 
 ### Agent authentication and credential isolation
 
@@ -139,6 +194,11 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 
 ## Troubleshooting
 
+- `Setup is incomplete`: inspect every `FAIL` prerequisite, export the named token variables, authenticate the configured agent, or correct the configuration values, then rerun `npm run setup`.
+- `owner and name cannot be derived`: the checkout has no usable GitHub `origin`; supply `--owner` and `--name`, then correct the remote before retrying.
+- `workspace root is the source path or lies inside the source repository`: choose a separate `--workspace-root` outside the checkout and every other configured source path.
+- `registration aborted`: setup leaves the configuration unchanged; apply the remedy printed for each failed check and rerun the command.
+- `missing validation-commands` or `pass --yes to accept the proposal`: use `--yes` for inferred values in automation, or provide explicit flags such as `--validation-command` and `--workspace-root`.
 - `github token missing` or `console token missing`: define the named environment variable in the same PowerShell process before starting.
 - `token authenticates as ..., expected ...`: correct `github.orchestrator_login` or use the dedicated account's token.
 - `unsupported Cline version`: install Cline 3.0.60; startup refuses a drifting CLI surface rather than failing during a job.
