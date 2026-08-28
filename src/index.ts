@@ -81,6 +81,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     token: config.consoleToken,
     secrets: [config.githubToken, config.consoleToken],
     operatorActions,
+    pollIntervalSec: config.pollIntervalSec,
+    concurrency: config.concurrency,
     actions: {
       retry: (jobId) => orchestrator.retry(jobId),
       cancel: (jobId) => orchestrator.cancel(jobId),
