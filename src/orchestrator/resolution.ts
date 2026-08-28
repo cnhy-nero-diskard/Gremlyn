@@ -267,7 +267,7 @@ export class ResolutionOrchestrator {
         model: input.model,
         provider: repository.provider,
         effort: repository.effort,
-        prompt: buildResolutionPrompt(context),
+        prompt: buildResolutionPrompt(context, this.options.orchestratorLogin),
         env: buildAgentEnvironment(),
         timeoutSec: this.options.timeoutSec,
         retries: this.options.retries,

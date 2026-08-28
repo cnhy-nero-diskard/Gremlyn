@@ -77,6 +77,7 @@ test("command parser handles start-of-line, fences, inline code, quotes, and unk
   const registry = createDefaultCommandRegistry();
   const cases: [string, number][] = [
     ["!RESOLVE", 1],
+    ["   !RESOLVE", 1],
     ["context\n!RESOLVE model-a", 1],
     ["```\n!RESOLVE\n```", 0],
     ["Use `!RESOLVE` here", 0],

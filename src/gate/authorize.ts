@@ -58,6 +58,13 @@ export async function authorizeCommand(
     return { kind, reason };
   };
 
+  // Poll checkpoints may intentionally overlap. Deduplicate before any path
+  // writes an authorization outcome or posts guidance, including ignored bot
+  // comments and rejected commands.
+  if (audit.isProcessed(repository.id, event, command)) {
+    return { kind: "ignored", reason: "duplicate-command" };
+  }
+
   if (sameLogin(event.authorLogin, options.orchestratorLogin)) {
     return reject("ignored", "orchestrator-authored");
   }
@@ -76,10 +83,6 @@ export async function authorizeCommand(
     );
     return reject("rejected", "command-placement");
   }
-  if (audit.isProcessed(repository.id, event, command)) {
-    return { kind: "ignored", reason: "duplicate-command" };
-  }
-
   const pullRequest = await options.github.getPullRequest(event.owner, event.repo, event.prNumber);
   if (
     !sameLogin(repository.owner, event.owner) ||
@@ -103,11 +106,27 @@ export async function authorizeCommand(
     return reject("rejected", "fork-pull-request");
   }
   if (command.args.length > 1) {
-    return reject("rejected", "invalid-command-arguments");
+    const result = reject("rejected", "invalid-command-arguments");
+    await options.github.postReviewReply(
+      event.owner,
+      event.repo,
+      event.prNumber,
+      event.commentId,
+      `Gremlyn rejected !${command.name}: expected at most one model argument, but received ${String(command.args.length)}.`,
+    );
+    return result;
   }
   const model = command.args[0] ?? repository.defaultModel;
   if (!repository.allowedModels.includes(model)) {
-    return reject("rejected", "model-not-allowed");
+    const result = reject("rejected", "model-not-allowed");
+    await options.github.postReviewReply(
+      event.owner,
+      event.repo,
+      event.prNumber,
+      event.commentId,
+      `Gremlyn rejected !${command.name}: model "${model}" is not allowed. Allowed models: ${repository.allowedModels.join(", ")}.`,
+    );
+    return result;
   }
   return { kind: "authorized", pullRequest, model };
 }

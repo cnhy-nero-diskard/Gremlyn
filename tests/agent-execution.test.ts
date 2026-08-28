@@ -10,6 +10,7 @@ import {
   buildResolutionPrompt,
   CONTEXT_END,
   CONTEXT_START,
+  ORCHESTRATOR_STATUS_MARKER,
   RESOLUTION_INSTRUCTIONS,
   RESOLUTION_PREAMBLE,
 } from "../src/agent/prompt.js";
@@ -98,6 +99,26 @@ test("prompt assembly is deterministic and confines GitHub text to the context r
   assert.ok(start >= 0 && malicious > start && malicious < end);
   assert.ok(first.indexOf(context.prTitle) < end);
   assert.ok(first.indexOf("Use the repository test command.") > end);
+});
+
+test("orchestrator-authored thread comments are marked as historical status", async () => {
+  const context = await reconstructReviewContext(fixture(), {
+    owner: "acme",
+    repo: "widgets",
+    prNumber: 12,
+    triggeringCommentId: 101,
+  });
+  context.thread.splice(1, 0, {
+    id: 99,
+    authorLogin: "Gremlyn-Bot",
+    body: "Resolved in commit old-sha.",
+    createdAt: "2026-01-01T00:00:30.000Z",
+  });
+  const prompt = buildResolutionPrompt(context, "gremlyn-bot");
+  const marker = prompt.indexOf(ORCHESTRATOR_STATUS_MARKER);
+  const status = prompt.indexOf("Resolved in commit old-sha.");
+  assert.ok(marker >= 0 && marker < status);
+  assert.ok(marker > prompt.indexOf(CONTEXT_START) && status < prompt.indexOf(CONTEXT_END));
 });
 
 function options(root: string, overrides: Partial<AgentRunOptions> = {}): AgentRunOptions {

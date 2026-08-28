@@ -86,6 +86,18 @@ test("rejects a repository naming an unknown agent", () => {
   );
 });
 
+test("rejects a repository with an empty provider", () => {
+  const config = VALID_CONFIG.replace("provider: test-provider", 'provider: ""');
+  assert.throws(
+    () => loadConfig(writeConfig(config), VALID_ENV),
+    (err: unknown) => {
+      assert.ok(err instanceof ConfigError);
+      assert.ok(err.problems.includes("repositories[0].provider is required"));
+      return true;
+    },
+  );
+});
+
 test("rejects an effort above the agent's ceiling", () => {
   const config = VALID_CONFIG.replace(
     "efforts: [none, low, medium, high, xhigh]",

@@ -102,6 +102,10 @@ test("orchestrator-authored commands are ignored and create no job", async () =>
       kind: "ignored",
       reason: "orchestrator-authored",
     });
+    assert.deepEqual(await authorizeCommand(fixture.options), {
+      kind: "ignored",
+      reason: "duplicate-command",
+    });
     assert.equal(countJobs(fixture.store), 0);
   } finally {
     fixture.store.close();
@@ -176,6 +180,24 @@ test("model arguments outside allowed_models are rejected before job or agent wo
       reason: "model-not-allowed",
     });
     assert.equal(countJobs(fixture.store), 0);
+    assert.equal(fixture.github.replies.length, 1);
+    assert.match(fixture.github.replies[0]!.body, /model "unapproved-model" is not allowed/u);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test("invalid command arguments are rejected with review-thread guidance", async () => {
+  const fixture = setup();
+  fixture.options.command = { name: "RESOLVE", args: ["fix", "this"] };
+  try {
+    assert.deepEqual(await authorizeCommand(fixture.options), {
+      kind: "rejected",
+      reason: "invalid-command-arguments",
+    });
+    assert.equal(countJobs(fixture.store), 0);
+    assert.equal(fixture.github.replies.length, 1);
+    assert.match(fixture.github.replies[0]!.body, /expected at most one model argument/u);
   } finally {
     fixture.store.close();
   }
