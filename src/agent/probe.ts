@@ -22,7 +22,7 @@
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -142,7 +142,7 @@ async function runOnce(input: {
     prompt: PROBE_PROMPT,
     env: buildAgentEnvironment(),
     timeoutSec: input.timeoutSec,
-    retries: 0,
+    retries: 1,
     dataDir,
     signal: AbortSignal.timeout((input.timeoutSec + 15) * 1_000),
   });
@@ -268,7 +268,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   if (model === undefined || provider === undefined) {
     heading("Invocation runs: SKIPPED");
     out("Supply a provider and model to exercise the real invocation surface:");
-    out(`  npm run probe:agent -- --provider <id> --model <id>`);
+    out("  npm run probe:agent -- --provider <id> --model <id>");
     out("or set GREMLYN_PROBE_PROVIDER and GREMLYN_PROBE_MODEL.");
     out("Use the same values as the repository entry you intend to run.");
     return 0;
@@ -323,7 +323,9 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       const seededUnauthorized = /Unauthorized/iu.test(
         `${second.result.stdout}\n${second.result.stderr}`,
       );
-      out(`seed list    [${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).map((f) => `"${f}"`).join(", ")}]`);
+      out(
+        `seed list    [${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).map((f) => `"${f}"`).join(", ")}]`,
+      );
       out(
         seededOk && unseededUnauthorized && !seededUnauthorized
           ? "auth         seeded run reached completed where unseeded was Unauthorized"
@@ -334,7 +336,9 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       if (unseededFailed && seededOk) {
         out("             --data-dir isolation with seeding restores credentials");
       } else if (!unseededFailed) {
-        out("             NOTE: unseeded run succeeded — --data-dir may not have isolated credentials");
+        out(
+          "             NOTE: unseeded run succeeded — --data-dir may not have isolated credentials",
+        );
         out("             (check that the provider uses the data dir for auth)");
       } else if (!seededOk) {
         out("             HINT: try widening seed files (e.g. add globalState.json)");
@@ -394,6 +398,29 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     } else if (first.result.exitCode === 0 && second.result.exitCode !== 0) {
       out("             NOTE: run 1 passed and run 2 failed on an identical setup.");
       out("             That is the signature of state cached in the first data dir.");
+    }
+    const bothUnauthorized = [first, second].every((run) =>
+      /Unauthorized/iu.test(`${run.result.stdout}
+${run.result.stderr}`),
+    );
+    if (bothUnauthorized) {
+      // Without --seed-source this mode IS the control: it reproduces the
+      // original defect on purpose. Say so, or the expected result reads as
+      // a regression.
+      out();
+      out("This is the UNSEEDED control and Unauthorized is the expected result:");
+      out("both runs used a fresh --data-dir, which is where cline keeps its");
+      out("credentials. To exercise the fix, re-run with a credential source:");
+      out();
+      out(
+        `  npm run probe:agent -- --provider <id> --model <id> --seed-source "${join(
+          homedir(),
+          ".cline",
+          "data",
+        )}"`,
+      );
+      out();
+      out("That runs one unseeded and one seeded attempt and compares them.");
     }
     const sessionFound =
       extractSessionId(first.result.stdout) !== undefined ||
