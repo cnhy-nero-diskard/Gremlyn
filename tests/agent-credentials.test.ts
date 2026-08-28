@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   CREDENTIAL_SEED_FILES,
   removeAttemptDataDir,
@@ -29,11 +29,15 @@ import {
 import { agentFailureReason } from "../src/orchestrator/failures.js";
 
 const SECRET = '{"apiKey":"sk-not-a-real-key"}';
+const OAUTH = '{"openai-codex":{"refreshToken":"not-a-real-token"}}';
 
 /** An authenticated cline data directory, with the state files that must NOT be copied. */
 function makeSource(): string {
   const dir = mkdtempSync(join(tmpdir(), "gremlyn-credsrc-"));
   writeFileSync(join(dir, "secrets.json"), SECRET, "utf8");
+  // openai-codex keeps its OAuth token here — a nested seed entry.
+  mkdirSync(join(dir, "settings"), { recursive: true });
+  writeFileSync(join(dir, "settings", "providers.json"), OAUTH, "utf8");
   writeFileSync(join(dir, "globalState.json"), '{"provider":"cline-pass"}', "utf8");
   writeFileSync(join(dir, "locks.db"), "lockstate", "utf8");
   mkdirSync(join(dir, "sessions"), { recursive: true });
@@ -53,8 +57,12 @@ test("seeding copies exactly the declared set and nothing more", () => {
 
   assert.deepEqual(seeded, [...CREDENTIAL_SEED_FILES]);
   // The state files D10 isolates must not ride along, or isolation is undone.
-  assert.deepEqual(readdirSync(dest).sort(), ["secrets.json"]);
+  const copied = readdirSync(dest, { recursive: true, encoding: "utf8" })
+    .map((entry) => entry.split(sep).join("/"))
+    .sort();
+  assert.deepEqual(copied, ["secrets.json", "settings", "settings/providers.json"]);
   assert.equal(readFileSync(join(dest, "secrets.json"), "utf8"), SECRET);
+  assert.equal(readFileSync(join(dest, "settings", "providers.json"), "utf8"), OAUTH);
 });
 
 test("the seeded credential is owner-only", { skip: process.platform === "win32" }, () => {
@@ -122,6 +130,18 @@ test("startup verification names the specific file that is missing", () => {
   assert.throws(
     () => verifyCredentialSource("cline", source),
     /missing required file "secrets\.json"/u,
+  );
+});
+
+test("startup verification catches a missing nested credential file", () => {
+  // secrets.json alone authenticates cline-pass but not openai-codex, so a
+  // source missing settings/providers.json must fail at startup rather than
+  // per-job on whichever repository runs the OAuth provider.
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-nonested-"));
+  writeFileSync(join(source, "secrets.json"), SECRET, "utf8");
+  assert.throws(
+    () => verifyCredentialSource("cline", source),
+    /missing required file "settings\/providers\.json"/u,
   );
 });
 

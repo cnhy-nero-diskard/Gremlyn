@@ -179,9 +179,8 @@ export function cleanupStaleAttemptDirs(
         removeAttemptDataDir(dir);
         continue;
       }
-      const job = db
-        .prepare("SELECT status FROM jobs WHERE id = ?")
-        .get(attempt.job_id) as { status: string } | undefined;
+      const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(attempt.job_id) as
+        { status: string } | undefined;
       if (job?.status === "interrupted" || attempt.outcome === "interrupted") {
         removeAttemptDataDir(dir);
         continue;

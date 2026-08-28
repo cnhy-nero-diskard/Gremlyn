@@ -7,7 +7,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Credential seed set (design D3).
@@ -15,21 +15,29 @@ import { join } from "node:path";
  * The data directory layout (see design.md Context):
  *   ~/.cline/
  *     data/
- *       secrets.json     <- credentials (must be shared across attempts)
- *       db, locks.db     <- run state, locks (must be isolated per attempt)
- *       sessions/        <- session history
- *       globalState.json <- provider/model selection (unclassified)
+ *       secrets.json              <- API-key credentials
+ *       settings/providers.json   <- OAuth provider credentials
+ *       db, locks.db              <- run state, locks (isolated per attempt)
+ *       sessions/                 <- session history
+ *       globalState.json          <- provider/model selection (not required)
  *
- * Empirically determined minimal set required to authenticate (see probe:agent
- * seeded-run mode). Starting from secrets.json and widening only as required,
- * a seeded isolated run with this set reaches `finishReason: "completed"` where
- * an unseeded one returns `Unauthorized`.
+ * Empirically determined against cline 3.0.60 via `npm run probe:agent
+ * --seed-source`, widening only as required. Two providers with different
+ * credential shapes were needed to find the whole set:
  *
- * The current minimal set is `secrets.json` alone. `globalState.json` was
- * tested and found not required: the probe supplies provider/model explicitly
- * via argv, and authentication succeeds without it.
+ *   cline-pass (API key)   secrets.json alone suffices.
+ *   openai-codex (OAuth)   secrets.json alone FAILS with "OpenAI API key is
+ *                          missing"; the PKCE refresh token lives in
+ *                          settings/providers.json.
+ *
+ * `globalState.json` was tested and is not required for either: it carries
+ * provider/model selection, which the orchestrator supplies via argv.
+ *
+ * Both providers reach `finishReason: "completed"` on an isolated --data-dir
+ * with the set below, where an unseeded run fails. Entries may name nested
+ * paths; parents are created on seed.
  */
-export const CREDENTIAL_SEED_FILES = ["secrets.json"] as const;
+export const CREDENTIAL_SEED_FILES = ["secrets.json", "settings/providers.json"] as const;
 export type CredentialSeedFile = (typeof CREDENTIAL_SEED_FILES)[number];
 
 /**
@@ -55,6 +63,10 @@ export function seedAgentCredentials(
     if (!stat.isFile()) {
       throw new Error(`credential source entry is not a file: ${src}`);
     }
+    // A seed entry may name a nested path (openai-codex keeps its OAuth
+    // credential in settings/providers.json), so create the parent, not just
+    // the attempt root.
+    mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(src, dest);
     seeded.push(file);
     try {

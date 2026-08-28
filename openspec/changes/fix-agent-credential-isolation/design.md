@@ -88,18 +88,37 @@ The seed set is a declared list, not the whole source directory. Copying the who
 directory would drag `locks.db`, `sessions/`, and `db/` along and reintroduce
 exactly the sharing D10 removed.
 
-Empirically verified against cline 3.0.60 via `npm run probe:agent -- --seed-source`
-(task 1.2): a seeded isolated `--data-dir` with `["secrets.json"]` alone reaches
-`finishReason: "completed"` (exit 0, text `READY`, ~1350 ms, `xhigh` effort) where
-an identical unseeded run returns `Unauthorized` (exit 1, ~300 ms, text
-`Unauthorized: Please make sure you're using the latest version of Cline and
-re-authenticate your Cline account.`). The provider/model are supplied explicitly
-via argv, so `globalState.json` was tested and found unnecessary for
-authentication. The declared list is therefore `["secrets.json"]` (see
-`src/agent/credentials.ts:CREDENTIAL_SEED_FILES`). If a future Cline version
-changes storage layout, re-running the probe against the new version is the
-re-verification step (README) and the list grows; the design does not otherwise
-change.
+Empirically verified against cline 3.0.60 via `npm run probe:agent --seed-source`.
+One provider was not enough to find the set — credential shape varies by provider:
+
+| Provider | Kind | Unseeded | `secrets.json` only | Confirmed set |
+| --- | --- | --- | --- | --- |
+| `cline-pass` | API key | `Unauthorized` | `completed` | sufficient |
+| `openai-codex` | OAuth/PKCE | key missing | **key missing** | needs `settings/providers.json` |
+
+`openai-codex` is the case that corrected the assumption. Seeding `secrets.json`
+alone left it failing with "OpenAI API key is missing … or the `OPENAI_API_KEY`
+environment variable", which reads like a provider that wants its credential from
+the environment — a transport this design deliberately blocks. It is not. Running
+the same argv with **no** `--data-dir` succeeded, proving the credential was on
+disk all along, in `settings/providers.json` (the PKCE refresh token), a file whose
+mtime moves on `cline auth`. That "run it unisolated" check is the reliable way to
+separate an absent credential from an unseeded one, and it is now the probe's
+guidance on a seeded failure.
+
+`globalState.json` was tested for both providers and is not required: it carries
+provider/model selection, which the orchestrator supplies via argv.
+
+The declared list is therefore `["secrets.json", "settings/providers.json"]` (see
+`src/agent/credentials.ts:CREDENTIAL_SEED_FILES`), and both providers reach
+`finishReason: "completed"` on an isolated `--data-dir` with it. Entries may name
+nested paths; seeding creates parent directories. Startup verification requires
+every declared file, so a source missing the OAuth file fails at startup rather
+than per-job on whichever repository happens to use that provider.
+
+If a future Cline version changes storage layout, re-running the probe against the
+new version is the re-verification step (README) and the list grows; the design
+does not otherwise change.
 
 ### D4 — Treat the seeded credential as attempt-scoped
 

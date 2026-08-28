@@ -5,7 +5,17 @@
  * shapes live in `github/client.ts`; persistence rows live in `store/`.
  */
 
-export const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
+/**
+ * Reasoning-effort tiers, ordered ascending.
+ *
+ * `max` is real: gpt-5.6-luna advertises
+ * `reasoningOptions: ["none","low","medium","high","xhigh","max"]`. Cline's
+ * ceiling is per *model*, not global — deepseek-v4-flash advertises only
+ * `["high","xhigh"]`. A repository's configured tier is still validated against
+ * its agent's declared `efforts` list, so widening this enum permits `max`
+ * without granting it to an agent that does not declare it.
+ */
+export const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 export const JOB_STATUSES = [

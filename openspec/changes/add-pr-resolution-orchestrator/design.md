@@ -325,9 +325,26 @@ spawn("cline", ["-c", cwd, "-m", model, "-P", provider,
 
 **Reasoning effort is configuration, not a constant.** Review-feedback resolution is
 the kind of work that rewards deliberation over throughput — a wrong fix pushed to a
-PR branch costs far more than a slow one — so the default is the highest tier the
-CLI offers. Cline's ceiling is `xhigh`; it exposes no tier above it, so `xhigh` is
-the effective maximum and the shipped default.
+PR branch costs far more than a slow one — so the default is the highest tier
+available.
+
+**Correction (verified against cline 3.0.60).** An earlier revision of this design
+stated that Cline exposes no tier above `xhigh` and that `xhigh` is therefore the
+effective maximum. That is false. The ceiling is per *model*, not per CLI, and the
+models disagree: `deepseek-v4-flash` advertises
+`reasoningOptions: ["high","xhigh"]`, while `gpt-5.6-luna` advertises
+`["none","low","medium","high","xhigh","max"]`. `--thinking`'s own help text lists
+`none|low|medium|high|xhigh`, so the CLI's documented surface is itself narrower
+than what a model will accept.
+
+Two consequences. The enumerated tiers must include `max`, or a repository on a
+model that supports it cannot express the design's own stated intent of running at
+the highest available tier. And `agents.<id>.efforts` — whose last entry is the
+default — cannot be widened to `max` for an agent whose repositories run models
+that stop at `xhigh`, since that would silently raise the default past what the
+model accepts. The declared list is therefore per deployment, bounded by the models
+that deployment actually uses, and the runtime warns when a configured tier is
+absent from the model's advertised set (see `extractSupportedEfforts`).
 
 Effort is a per-repository registry field for the same reason model is (Layer1 §13
 forbids hard-coding the model, and the argument is identical): a repository with a
@@ -546,7 +563,8 @@ established from the first migration so the pattern exists before it is needed.
   problem, the shape of the answer (an age or count cap over `output_ref` files) does
   not change any decision here.
 - **Exact model identifier for Lune 5.6.** Layer1 §13 writes "Luna"; the intended
-  model is Lune 5.6, run at the highest available reasoning effort. Cline exposes no
-  tier above `xhigh`, so `xhigh` is the shipped default (D10). The provider-qualified
+  model is Lune 5.6, run at the highest available reasoning effort. The available
+  ceiling is model-specific (see the correction in D10): `xhigh` for the models
+  probed so far, `max` where a model advertises it. The provider-qualified
   model string is an opaque configured value validated against `allowed_models` and
   resolved by the operator through `cline auth` — no design decision depends on it.

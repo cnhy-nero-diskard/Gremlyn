@@ -116,3 +116,88 @@ test("a spawned agent reading stdin gets EOF instead of blocking", async () => {
   assert.equal(result.exitCode, 0);
   assert.equal(result.timedOut, false);
 });
+
+test("the max reasoning tier is expressible and selectable", () => {
+  // gpt-5.6-luna advertises reasoningOptions
+  // ["none","low","medium","high","xhigh","max"]. Design D10 originally claimed
+  // xhigh was the CLI-wide ceiling; the ceiling is per-model and max is real.
+  const dir = mkdtempSync(join(tmpdir(), "gremlyn-maxeffort-"));
+  const path = join(dir, "gremlyn.yaml");
+  writeFileSync(
+    path,
+    `
+data_dir: .gremlyn-test
+github:
+  orchestrator_login: gremlyn-bot
+git:
+  author_name: Human Developer
+  author_email: developer@example.com
+allowed_authors: [someuser]
+agents:
+  cline:
+    binary: cline
+    efforts: [none, low, medium, high, xhigh, max]
+    credential_source: C:/Users/test/.cline/data
+repositories:
+  - owner: someuser
+    name: repo
+    source_path: D:/code/repo
+    workspace_root: D:/code/workspaces/repo
+    agent: cline
+    provider: test-provider
+    model: test-provider/gpt-5.6-luna
+    effort: max
+    allowed_models: [test-provider/gpt-5.6-luna]
+    validation_commands: []
+`,
+    "utf8",
+  );
+  const config = loadConfig(path, {
+    GREMLYN_GITHUB_TOKEN: "ghp_test_token",
+    GREMLYN_CONSOLE_TOKEN: "console_test_token",
+  } as NodeJS.ProcessEnv);
+  assert.equal(config.repositories[0]?.effort, "max");
+});
+
+test("an agent that stops at xhigh still rejects max", () => {
+  // Widening the enum must not grant a tier the agent never declared.
+  const dir = mkdtempSync(join(tmpdir(), "gremlyn-nomax-"));
+  const path = join(dir, "gremlyn.yaml");
+  writeFileSync(
+    path,
+    `
+data_dir: .gremlyn-test
+github:
+  orchestrator_login: gremlyn-bot
+git:
+  author_name: Human Developer
+  author_email: developer@example.com
+allowed_authors: [someuser]
+agents:
+  cline:
+    binary: cline
+    efforts: [none, low, medium, high, xhigh]
+    credential_source: C:/Users/test/.cline/data
+repositories:
+  - owner: someuser
+    name: repo
+    source_path: D:/code/repo
+    workspace_root: D:/code/workspaces/repo
+    agent: cline
+    provider: test-provider
+    model: test-provider/model-1
+    effort: max
+    allowed_models: [test-provider/model-1]
+    validation_commands: []
+`,
+    "utf8",
+  );
+  assert.throws(
+    () =>
+      loadConfig(path, {
+        GREMLYN_GITHUB_TOKEN: "ghp_test_token",
+        GREMLYN_CONSOLE_TOKEN: "console_test_token",
+      } as NodeJS.ProcessEnv),
+    /not supported by agent "cline"/u,
+  );
+});

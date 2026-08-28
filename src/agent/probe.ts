@@ -341,7 +341,28 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
         );
         out("             (check that the provider uses the data dir for auth)");
       } else if (!seededOk) {
-        out("             HINT: try widening seed files (e.g. add globalState.json)");
+        // Do NOT read "OPENAI_API_KEY" in the error as proof the credential
+        // is env-only: cline names the env var as one of two options, and
+        // openai-codex in fact stores an OAuth token at
+        // settings/providers.json. A missing-key error usually means the seed
+        // set is too narrow, and the decisive check is whether the same
+        // invocation works with no --data-dir at all.
+        const seededHay = `${second.result.stdout}\n${second.result.stderr}`;
+        if (/Unauthorized/iu.test(seededHay)) {
+          out("             HINT: the credential was seeded but rejected — present");
+          out("             and invalid (expired, revoked, or wrong account), not");
+          out("             missing. Re-authenticate at the source, then re-run.");
+        } else {
+          out("             HINT: the seed set is probably too narrow for this");
+          out("             provider. Find the file it needs:");
+          out("               1. confirm the credential is on disk at all —");
+          out("                  run the same argv with NO --data-dir; if that");
+          out("                  works, the credential exists and is unseeded");
+          out("               2. `ls -lat <source>` and look for what changed when");
+          out("                  you last ran `cline auth <provider>`");
+          out("               3. re-run with --seed-files including it (nested");
+          out("                  paths are allowed, e.g. settings/providers.json)");
+        }
       }
       const sessionFound =
         extractSessionId(first.result.stdout) !== undefined ||

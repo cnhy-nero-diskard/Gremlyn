@@ -52,6 +52,13 @@ allowed_authors:
 # Agents available for repositories to reference. `efforts` lists the
 # supported reasoning-effort tiers from lowest to highest; the last entry is
 # the ceiling and the default for repositories that do not specify one.
+#
+# Bound this list by the MODELS this deployment runs, not by the CLI. The
+# ceiling is per-model: deepseek-v4-flash accepts only high|xhigh, while
+# gpt-5.6-luna also accepts max. Listing a tier the model does not accept
+# makes it the silent default and the CLI will not reject it — the
+# orchestrator logs a warning when the model's advertised set disagrees.
+# Known tiers: none, low, medium, high, xhigh, max.
 # `credential_source` is the read-only directory holding the operator's
 # authenticated cline installation (where `cline auth` stored credentials).
 # It is scoped per-agent, verified at startup, and never written to.
