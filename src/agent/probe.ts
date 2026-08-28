@@ -317,20 +317,20 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       heading("Findings");
       const unseededFailed = first.result.exitCode !== 0;
       const seededOk = second.result.exitCode === 0;
-      const unseededUnauthorized = /Unauthorized/iu.test(
-        `${first.result.stdout}\n${first.result.stderr}`,
-      );
       const seededUnauthorized = /Unauthorized/iu.test(
         `${second.result.stdout}\n${second.result.stderr}`,
       );
       out(
         `seed list    [${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).map((f) => `"${f}"`).join(", ")}]`,
       );
+      // Providers fail differently when unseeded: cline-pass says
+      // "Unauthorized", openai-codex says "API key is missing". The property
+      // that matters is unseeded-fails-and-seeded-succeeds, not the wording.
       out(
-        seededOk && unseededUnauthorized && !seededUnauthorized
-          ? "auth         seeded run reached completed where unseeded was Unauthorized"
+        seededOk && unseededFailed && !seededUnauthorized
+          ? "auth         seeded run completed where unseeded failed"
           : seededOk
-            ? "auth         seeded run succeeded"
+            ? "auth         seeded run succeeded (but unseeded did too — see below)"
             : "auth         seeded run failed — seed set may be incomplete",
       );
       if (unseededFailed && seededOk) {
@@ -377,7 +377,9 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
         out("             console's transcript link depends on this id.");
       }
       // Success criteria for seeded mode: unseeded Unauthorized + seeded completed
-      const seededModeOk = unseededUnauthorized && seededOk;
+      // Success is "isolation broke it, seeding fixed it" — keyed on the
+      // unseeded run failing at all, not on a provider-specific message.
+      const seededModeOk = unseededFailed && seededOk;
       return seededModeOk ? 0 : 1;
     }
 
