@@ -257,7 +257,19 @@ export class ResolutionOrchestrator {
       // The source is read-only; the destination is the per-attempt ephemeral dir.
       const credentialSource = this.options.credentialSources?.get(repository.agent);
       if (credentialSource) {
-        seedAgentCredentials(credentialSource, attemptDataDir);
+        // Seeding failures are a configuration/environment fault, not the
+        // agent rejecting a credential. They must not fall through to the
+        // generic classifier, which reads any "unauthorized" wording as a
+        // provider auth failure and hides the real cause.
+        try {
+          seedAgentCredentials(credentialSource, attemptDataDir);
+        } catch (error) {
+          throw new StageFailure(
+            stage,
+            "credential-seed-failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
         this.options.logger.info("credential seeded", {
           jobId,
           attemptId,

@@ -18,6 +18,7 @@ export const FAILURE_REASONS = [
   "agent-timeout",
   "agent-nonzero-exit",
   "agent-auth-failed",
+  "credential-seed-failed",
   "validation-failed",
   "push-rejected",
   "comment-post-failed",
@@ -120,7 +121,12 @@ export function classifyFailure(error: unknown, stage: FailureStage): StageFailu
     );
   }
   const message = error instanceof Error ? error.message : String(error);
-  if (/Unauthorized/iu.test(message) && stage === "running") {
+  // Anchored and case-sensitive, matching `isAgentAuthenticationFailure`. A
+  // loose /Unauthorized/i here once swallowed a Windows ACL failure — "Attempted
+  // to perform an unauthorized operation" — and reported it as `agent-auth-failed`,
+  // sending the operator to re-authenticate a provider that was never the
+  // problem. Only the provider's own leading "Unauthorized" counts.
+  if (/^Unauthorized\b/u.test(message) && stage === "running") {
     return new StageFailure(stage, "agent-auth-failed", message);
   }
   if (/ENOENT|not recognized|not found/iu.test(message)) {

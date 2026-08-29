@@ -28,7 +28,7 @@ import {
   seedAgentCredentials,
   verifyCredentialSource,
 } from "../src/agent/credentials.js";
-import { agentFailureReason } from "../src/orchestrator/failures.js";
+import { agentFailureReason, classifyFailure } from "../src/orchestrator/failures.js";
 
 const SECRET = '{"apiKey":"sk-not-a-real-key"}';
 const OAUTH = '{"openai-codex":{"refreshToken":"not-a-real-token"}}';
@@ -185,6 +185,38 @@ test("startup verification catches a missing nested credential file", () => {
     () => verifyCredentialSource("cline", source),
     /missing required file "settings\/providers\.json"/u,
   );
+});
+
+test("a Windows ACL failure is not reported as a provider auth failure", () => {
+  // Regression: the ACL helper fails with "Attempted to perform an unauthorized
+  // operation", which a case-insensitive /Unauthorized/ once matched. Eight jobs
+  // were reported as `agent-auth-failed` while the credential was never seeded
+  // at all, pointing the operator at a provider that was working fine.
+  const failure = classifyFailure(
+    new Error(
+      'cannot restrict credential file ACL .gremlyn\\attempts\\20\\secrets.json: Exception calling "SetAccessControl" with "2" argument(s): "Attempted to perform an unauthorized operation."',
+    ),
+    "running",
+  );
+  assert.notEqual(failure.reason, "agent-auth-failed");
+});
+
+test("the provider's own Unauthorized is still classified as an auth failure", () => {
+  const failure = classifyFailure(new Error("Unauthorized: invalid refresh token"), "running");
+  assert.equal(failure.reason, "agent-auth-failed");
+});
+
+test("seeding into a real project-directory path succeeds", () => {
+  // The ACL helper passed in %TEMP% but failed under the repo's own .gremlyn
+  // dir, so a temp-only fixture cannot catch this. Seed where Gremlyn runs.
+  const source = makeSource();
+  const dest = join(process.cwd(), ".gremlyn", "acl-seed-test", "data");
+  try {
+    assert.deepEqual(seedAgentCredentials(source, dest), [...CREDENTIAL_SEED_FILES]);
+    assert.equal(readFileSync(join(dest, "secrets.json"), "utf8"), SECRET);
+  } finally {
+    removeAttemptDataDir(join(process.cwd(), ".gremlyn", "acl-seed-test"));
+  }
 });
 
 /**

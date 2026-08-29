@@ -219,14 +219,22 @@ function setOwnerOnlyPermissions(path: string): void {
   const powershell = systemRoot
     ? join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     : "powershell.exe";
+  // Read the file's existing descriptor rather than building a fresh
+  // FileSecurity and calling SetOwner. A new descriptor marks its OWNER
+  // section dirty, so applying it asks Windows to *rewrite the owner* — which
+  // a normal user process is refused ("Attempted to perform an unauthorized
+  // operation") even for a file it already owns. Get-Acl returns a descriptor
+  // whose owner is already correct, leaving only the DACL modified.
   const script = [
     "$ErrorActionPreference = 'Stop'",
     "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
-    "$acl = New-Object System.Security.AccessControl.FileSecurity",
-    "$acl.SetOwner($identity)",
+    "$acl = Get-Acl -LiteralPath $env:GREMLYN_ACL_TARGET",
+    // Detach inherited rules, then strip what inheritance already copied in,
+    // so the surviving grant is the one added below and nothing else.
     "$acl.SetAccessRuleProtection($true, $false)",
+    "foreach ($existing in @($acl.Access)) { [void]$acl.RemoveAccessRule($existing) }",
     "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')",
-    "$acl.AddAccessRule($rule)",
+    "$acl.SetAccessRule($rule)",
     "[System.IO.File]::SetAccessControl($env:GREMLYN_ACL_TARGET, $acl)",
   ].join("; ");
   const env: Record<string, string> = { GREMLYN_ACL_TARGET: path };
