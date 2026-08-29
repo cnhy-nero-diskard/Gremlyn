@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { execa } from "execa";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 
 export interface ValidationProcessResult {
   stdout: string;
@@ -15,8 +15,30 @@ export type ValidationProcessRunner = (
   options: { cwd: string; shell: false },
 ) => Promise<ValidationProcessResult>;
 
+/**
+ * Resolve a project-local launcher against the workspace.
+ *
+ * A repository's own wrapper — `gradlew.bat`, `mvnw`, `./scripts/check.sh` —
+ * lives in the checkout, not on PATH. Spawning it by bare name fails with
+ * "'gradlew.bat' is not recognized as an internal or external command" even
+ * though `cwd` is the workspace: Windows resolves the executable before the
+ * child's working directory applies, and prefixing `./` does not help either.
+ * Only an absolute path works.
+ *
+ * Resolution is conditional on the file actually existing in the workspace, so
+ * a PATH tool of the same shape (`npm.cmd`) is left untouched.
+ */
+function resolveWorkspaceExecutable(executable: string, cwd: string): string {
+  if (isAbsolute(executable)) return executable;
+  const candidate = resolvePath(cwd, executable);
+  return existsSync(candidate) ? candidate : executable;
+}
+
 const defaultRunner: ValidationProcessRunner = async (executable, args, options) => {
-  const result = await execa(executable, args, { ...options, reject: false });
+  const result = await execa(resolveWorkspaceExecutable(executable, options.cwd), args, {
+    ...options,
+    reject: false,
+  });
   return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode ?? -1 };
 };
 

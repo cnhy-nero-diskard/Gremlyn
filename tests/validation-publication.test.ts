@@ -286,3 +286,50 @@ test("report failure remains separate after a successful push and thread state i
   assert.equal(github.replies.length, 0);
   store.close();
 });
+
+/**
+ * A repository's own wrapper (`gradlew.bat`) lives in the checkout, not on
+ * PATH. Spawning it by bare name failed with "is not recognized as an internal
+ * or external command" despite `cwd` being the workspace, so every Backlogium
+ * validation failed in ~50ms without running a single test.
+ */
+test("a project-local launcher in the workspace is executable", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "gremlyn-launcher-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-launcher-data-"));
+  const windows = process.platform === "win32";
+  const launcher = windows ? "run-check.bat" : "run-check.sh";
+  writeFileSync(
+    join(cwd, launcher),
+    windows ? "@ECHO off\r\nECHO checked\r\n" : "#!/bin/sh\necho checked\n",
+    { mode: 0o755 },
+  );
+
+  const outcome = await runValidationCommands({
+    commands: [[launcher]],
+    cwd,
+    dataDir,
+    attemptId: 1,
+  });
+
+  assert.equal(outcome.succeeded, true, JSON.stringify(outcome.runs));
+  assert.equal(outcome.runs[0]?.exitCode, 0);
+});
+
+test("a PATH tool absent from the workspace is left to PATH", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "gremlyn-pathtool-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-pathtool-data-"));
+  const seen: string[] = [];
+  const runner: ValidationProcessRunner = (executable) => {
+    seen.push(executable);
+    return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+  };
+  await runValidationCommands({
+    commands: [["npm.cmd", "test"]],
+    cwd,
+    dataDir,
+    attemptId: 2,
+    runner,
+  });
+  // Unchanged: rewriting it to a workspace path would break PATH lookup.
+  assert.deepEqual(seen, ["npm.cmd"]);
+});
