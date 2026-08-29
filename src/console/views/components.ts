@@ -45,6 +45,12 @@ export function relativeTimestamp(value: string | null | undefined, now = Date.n
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** `2026-08-28T18:05:44.524Z` → `18:05:44`, the part that varies while watching. */
+export function clockTime(at: string): string {
+  const match = /T(\d{2}:\d{2}:\d{2})/u.exec(at);
+  return match ? (match[1] ?? at) : at;
+}
+
 export function keyValueTable(values: Record<string, unknown>): string {
   return `<dl class="kv">${Object.entries(values)
     .map(
@@ -55,7 +61,8 @@ export function keyValueTable(values: Record<string, unknown>): string {
 }
 
 export function dangerZone(repoId: number, defaultPr: number): string {
-  return `<section class="panel danger-zone" id="danger-zone"><h2>Destructive actions</h2><p>Workspace reset discards local work. Confirm by typing RESET (the required confirmation) before the action becomes available.</p><label>Pull request <input name="reset-pr" type="number" min="1" value="${defaultPr}"></label> <label>Confirmation <input data-reset-confirm name="reset-confirm" autocomplete="off" placeholder="RESET"></label> <button class="danger" data-action="reset" data-reset-submit data-url="/workspaces/${repoId}/reset" data-body="{&quot;confirm&quot;:&quot;RESET&quot;,&quot;prNumber&quot;:${defaultPr}}" disabled>Reset workspace</button></section>`;
+  const controls = `<div class="actions danger-controls"><label>Pull request <input name="reset-pr" type="number" min="1" value="${defaultPr}"></label><label>Confirmation <input data-reset-confirm name="reset-confirm" autocomplete="off" placeholder="RESET"></label><button class="danger" data-action="reset" data-reset-submit data-url="/workspaces/${repoId}/reset" data-body="{&quot;confirm&quot;:&quot;RESET&quot;,&quot;prNumber&quot;:${defaultPr}}" disabled>Reset workspace</button></div>`;
+  return `<section class="panel danger-zone span-all" id="danger-zone"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}</section>`;
 }
 
 export function timelineStepper(
@@ -66,7 +73,9 @@ export function timelineStepper(
     entries
       .map((entry, index) => {
         const next = entries[index + 1];
-        return `<li>${statusPill(entry.status)} <time datetime="${escapeHtml(entry.at)}">${escapeHtml(entry.at)}</time> <span class="muted">(${duration(entry.at, next?.at ?? finishedAt)})</span></li>`;
+        const at = escapeHtml(entry.at);
+        // The date repeats on every row; the clock is the part that varies.
+        return `<li>${statusPill(entry.status)}<time datetime="${at}" title="${at}">${escapeHtml(clockTime(entry.at))}</time><span class="muted">${duration(entry.at, next?.at ?? finishedAt)}</span></li>`;
       })
       .join("") || '<li class="muted">No status events recorded.</li>'
   }</ol>`;
@@ -87,8 +96,40 @@ function displayCommand(command: string): string {
   }
 }
 
-export function attemptCard(attempt: AttemptDetail, options: { showActivity?: boolean } = {}): string {
-  return `<article><h2>Attempt ${attempt.attempt_number}</h2>${keyValueTable({ Agent: `${attempt.agent} / ${attempt.model} / ${attempt.effort}`, Workspace: attempt.workspace_path ?? "not prepared", Outcome: attempt.outcome ?? "pending", "Failure stage": attempt.failure_stage ?? "none", "Failure reason": attempt.failure_reason ?? "none", Commit: attempt.commit_sha ?? "none", Reporting: attempt.report_status ?? "pending", Started: attempt.started_at ?? null, Ended: attempt.ended_at ?? null, Duration: duration(attempt.started_at, attempt.ended_at), "Agent exit code": attempt.agent_exit_code, Pushed: attempt.pushed === 1 ? "yes" : "no", "Uncommitted changes": attempt.has_uncommitted_changes === 1 ? "yes" : "no", "Head SHA at prepare": attempt.head_sha_at_prepare })}${options.showActivity === false ? "" : `<h3>Agent activity</h3><details class="activity-fold"><summary>Transcript for this attempt</summary>${agentActivity(attempt.activity)}</details>`}<h3>Agent output</h3><details><summary>Raw stream</summary><pre>${escapeHtml(attempt.output)}</pre></details></article>`;
+/**
+ * One attempt as a card rather than a fourteen-row key/value dump.
+ *
+ * The outcome, how long it took and why it failed are what an operator reads;
+ * the rest — workspace paths, SHAs, exit codes — is forensic detail that only
+ * matters once the summary has already pointed at this attempt, so it sits in
+ * a quiet grid underneath and the two output streams stay folded away.
+ */
+export function attemptCard(
+  attempt: AttemptDetail,
+  options: { showActivity?: boolean } = {},
+): string {
+  const head = `<div class="attempt-head"><h3>Attempt ${attempt.attempt_number}</h3>${statusPill(attempt.outcome ?? "pending")}<span class="muted attempt-elapsed">${duration(attempt.started_at, attempt.ended_at)}</span></div>`;
+  const spec = `<p class="attempt-spec"><span class="chip">${escapeHtml(attempt.agent)}</span><span class="chip">${escapeHtml(attempt.model)}</span><span class="chip">${escapeHtml(attempt.effort)}</span></p>`;
+  const failure = attempt.failure_reason
+    ? `<p class="attempt-failure"><strong>${escapeHtml(attempt.failure_stage ?? "failed")}</strong> ${escapeHtml(attempt.failure_reason)}</p>`
+    : "";
+  const facts = keyValueTable({
+    Workspace: attempt.workspace_path ?? "not prepared",
+    Commit: attempt.commit_sha ?? "none",
+    Reporting: attempt.report_status ?? "pending",
+    "Exit code": attempt.agent_exit_code,
+    Pushed: attempt.pushed === 1 ? "yes" : "no",
+    Uncommitted: attempt.has_uncommitted_changes === 1 ? "yes" : "no",
+    Started: attempt.started_at,
+    Ended: attempt.ended_at,
+    "Head SHA at prepare": attempt.head_sha_at_prepare,
+  });
+  const transcript =
+    options.showActivity === false
+      ? ""
+      : `<details class="activity-fold"><summary>Agent transcript</summary>${agentActivity(attempt.activity)}</details>`;
+  const output = `<details><summary>Raw agent output</summary><pre>${escapeHtml(attempt.output)}</pre></details>`;
+  return `<article class="attempt">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
 }
 
 /** `2026-08-28T17:53:05.254Z` → `17:53:05.254`, the part that varies while watching. */
@@ -150,12 +191,6 @@ const ACTIVITY_LABELS: Record<string, string> = {
   tool: "Tool call",
 };
 
-/** `2026-08-28T18:05:44.524Z` -> `18:05:44`, matching the log's clock. */
-function activityClock(at: string): string {
-  const match = /T(\d{2}:\d{2}:\d{2})/u.exec(at);
-  return match ? (match[1] ?? at) : at;
-}
-
 /**
  * A tool block is stored as `name` then its JSON input on following lines.
  * The name is the part worth showing at a glance; the arguments can be long
@@ -181,7 +216,7 @@ export function agentActivity(activity: AgentActivity | null): string {
   if (!activity || activity.blocks.length === 0) {
     return '<p class="muted">No agent activity captured yet.</p>';
   }
-  const summary = `<p class="muted activity-summary"><span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(activityClock(activity.updatedAt))}</p>`;
+  const summary = `<p class="muted activity-summary"><span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(clockTime(activity.updatedAt))}</p>`;
   const blocks = activity.blocks
     .map((block) => {
       const label = ACTIVITY_LABELS[block.kind] ?? block.kind;
@@ -189,7 +224,7 @@ export function agentActivity(activity: AgentActivity | null): string {
       const pending = block.done ? "" : '<span class="activity-open">writing…</span>';
       const head =
         `<span class="activity-kind">${escapeHtml(label)}</span>` +
-        `<time class="activity-time" datetime="${escapeHtml(block.at)}">${escapeHtml(activityClock(block.at))}</time>` +
+        `<time class="activity-time" datetime="${escapeHtml(block.at)}">${escapeHtml(clockTime(block.at))}</time>` +
         pending;
       const shell = (inner: string): string =>
         `<li class="activity-block activity-${escapeHtml(block.kind)}${open}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;

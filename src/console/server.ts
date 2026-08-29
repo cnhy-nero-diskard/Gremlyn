@@ -161,7 +161,13 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
     if (!model) return reply.code(404).send({ error: "job-not-found" });
     return reply
       .type("text/html")
-      .send(layout(`Job ${id}`, jobView(model), { stream: `/jobs/${id}/stream` }));
+      .send(
+        layout(
+          `Job ${id} · ${model.job.owner}/${model.job.name} PR #${String(model.job.pr_number)}`,
+          jobView(model),
+          { stream: `/jobs/${id}/stream`, wide: true },
+        ),
+      );
   });
   app.get<{ Params: { id: string }; Querystring: { snapshot?: string } }>(
     "/jobs/:id/stream",

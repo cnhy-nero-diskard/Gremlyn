@@ -1,9 +1,16 @@
 import { clientScriptPath, stylesheetPath } from "../assets.js";
 import { escapeHtml } from "./components.js";
 
-export function layout(title: string, body: string, options: { stream?: string } = {}): string {
+export function layout(
+  title: string,
+  body: string,
+  options: { stream?: string; wide?: boolean } = {},
+): string {
   const stream = options.stream ? `<div data-stream="${escapeHtml(options.stream)}"></div>` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${stylesheetPath}"></head><body><div class="shell"><header class="site-header"><strong>Gremlyn operator console</strong><nav><a href="/">Dashboard</a><a href="/commands">Commands</a><a href="/audit">Audit</a></nav></header><main>${body}</main>${stream}</div><script src="${clientScriptPath}" defer></script></body></html>`;
+  // The job page runs two live panels side by side and needs the room; the
+  // list pages read better held to a comfortable measure.
+  const shell = options.wide ? "shell shell-wide" : "shell";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${stylesheetPath}"></head><body><div class="${shell}"><header class="site-header"><strong>Gremlyn operator console</strong><nav><a href="/">Dashboard</a><a href="/commands">Commands</a><a href="/audit">Audit</a></nav></header><main>${body}</main>${stream}</div><script src="${clientScriptPath}" defer></script></body></html>`;
 }
 
 export function authLayout(): string {

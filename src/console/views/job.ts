@@ -1,4 +1,4 @@
-import type { JobDetail } from "../queries.js";
+import type { JobDetail, ValidationRun } from "../queries.js";
 import {
   agentActivity,
   attemptCard,
@@ -17,10 +17,10 @@ function reviewContext(raw: string | null): string {
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (typeof value.feedback === "string") {
-      return `<h3>Review feedback</h3><pre>${escapeHtml(value.feedback)}</pre>`;
+      return `<pre>${escapeHtml(value.feedback)}</pre>`;
     }
     const thread = Array.isArray(value.thread) ? value.thread : [];
-    return `${keyValueTable({ "Pull request": value.prTitle ?? value.pr_title, Branch: value.headBranch ?? value.head_branch, "File path": value.filePath ?? value.file_path })}<h3>Diff hunk</h3><pre>${escapeHtml(value.diffHunk ?? value.diff_hunk ?? "No diff hunk recorded")}</pre><h3>Comment thread</h3>${thread.length ? `<ul>${thread.map((comment) => `<li><strong>${escapeHtml((comment as Record<string, unknown>).authorLogin ?? (comment as Record<string, unknown>).author_login)}</strong>: ${escapeHtml((comment as Record<string, unknown>).body)}</li>`).join("")}</ul>` : '<p class="muted">No thread comments recorded.</p>'}`;
+    return `${keyValueTable({ "Pull request": value.prTitle ?? value.pr_title, Branch: value.headBranch ?? value.head_branch, "File path": value.filePath ?? value.file_path })}<h3>Diff hunk</h3><pre>${escapeHtml(value.diffHunk ?? value.diff_hunk ?? "No diff hunk recorded")}</pre><h3>Comment thread</h3>${thread.length ? `<ul class="thread">${thread.map((comment) => `<li><strong>${escapeHtml((comment as Record<string, unknown>).authorLogin ?? (comment as Record<string, unknown>).author_login)}</strong>: ${escapeHtml((comment as Record<string, unknown>).body)}</li>`).join("")}</ul>` : '<p class="muted">No thread comments recorded.</p>'}`;
   } catch {
     return `<pre>${escapeHtml(raw)}</pre>`;
   }
@@ -39,44 +39,116 @@ function logCount(model: JobDetail): string {
   const shown = model.logs.length;
   const total = model.logTotal;
   return total > shown
-    ? `Showing the latest ${String(shown)} of ${String(total)} entries.`
-    : `${String(total)} ${total === 1 ? "entry" : "entries"}.`;
+    ? `latest ${String(shown)} of ${String(total)}`
+    : `${String(total)} ${total === 1 ? "entry" : "entries"}`;
+}
+
+/** A metric tile, the same shape the dashboard uses for orchestrator health. */
+function metric(label: string, value: string, note: string): string {
+  return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${value}</strong><small>${note}</small></div>`;
+}
+
+function validationSummary(runs: ValidationRun[]): { value: string; note: string } {
+  if (runs.length === 0) return { value: "—", note: "no runs recorded" };
+  const failed = runs.filter((run) => run.exit_code !== 0).length;
+  return {
+    value: `${String(runs.length - failed)} / ${String(runs.length)}`,
+    note: failed === 0 ? "all commands passed" : `${String(failed)} failing`,
+  };
 }
 
 /**
- * The agent's current transcript, first on the page.
- *
- * What an operator wants on opening a running job is "what is it doing right
- * now" — which previously sat below the review context, the timeline, and an
- * attempt's whole key/value table. The newest attempt leads; older attempts
- * keep their own transcripts on their cards.
+ * The numbers an operator scans before reading anything: how long it has been
+ * going, how many times it has been tried, how hard the agent is working, and
+ * whether validation is the thing holding it up.
  */
-function activityPanel(model: JobDetail): string {
+function statStrip(model: JobDetail): string {
   const latest = model.attempts.at(-1);
-  if (!latest) return "";
-  const heading = `Agent activity ${liveBadge(model.job.status)} <span class="muted activity-attempt">attempt ${String(latest.attempt_number)}</span>`;
-  return `<section class="panel activity-panel"><h2>${heading}</h2>${agentActivity(latest.activity)}</section>`;
+  const elapsed = durationBetween(
+    model.job.created_at ?? model.timeline[0]?.at,
+    model.job.finished_at ?? undefined,
+  );
+  const validation = validationSummary(model.validation);
+  const activity = latest?.activity ?? null;
+  const steps = activity
+    ? `${String(activity.toolCalls)} tool call${activity.toolCalls === 1 ? "" : "s"} · ${String(activity.iterations)} iteration${activity.iterations === 1 ? "" : "s"}`
+    : "no transcript yet";
+  return `<div class="job-stats">${metric("Elapsed", elapsed, model.job.finished_at ? "finished" : "still running")}${metric("Attempts", String(model.attempts.length), latest ? `latest ${escapeHtml(latest.outcome ?? "in progress")}` : "none started")}${metric("Agent steps", activity ? String(activity.blocks.length) : "—", steps)}${metric("Validation", validation.value, validation.note)}${metric("Log", String(model.logTotal), logCount(model))}</div>`;
 }
 
 function actionControls(model: JobDetail): string {
   const status = model.job.status;
   const retryable = ["failed", "cancelled", "interrupted"].includes(status);
-  const cancellable =
-    status === "queued" ||
-    ["preparing", "running", "validating", "publishing", "reporting"].includes(status);
-  return `<section class="panel"><h2>Routine actions</h2><div class="actions">${retryable ? `<button data-action="retry" data-url="/jobs/${model.job.id}/retry">Retry</button>` : '<span class="muted">Retry unavailable: only failed, cancelled or interrupted jobs can be retried.</span>'}${cancellable ? `<button data-action="cancel" data-url="/jobs/${model.job.id}/cancel">Cancel</button>` : '<span class="muted">Cancel unavailable: this job is not queued or running.</span>'}</div><p class="sr-status" data-live-status role="status"></p></section>`;
+  const cancellable = LIVE_STATUSES.includes(status);
+  const buttons = [
+    retryable
+      ? `<button class="primary" data-action="retry" data-url="/jobs/${model.job.id}/retry">Retry</button>`
+      : "",
+    cancellable
+      ? `<button data-action="cancel" data-url="/jobs/${model.job.id}/cancel">Cancel</button>`
+      : "",
+  ].join("");
+  const none = `<span class="muted">A ${escapeHtml(status)} job can be neither retried nor cancelled.</span>`;
+  return `<div class="job-actions">${buttons || none}</div>`;
+}
+
+/**
+ * Identity, state and controls in one band across the top.
+ *
+ * These used to be a run-on line of dot-separated links, with retry and cancel
+ * stranded in a panel below the attempt tables — far from the status they act
+ * on. Grouped, the whole answer to "what is this and what can I do about it"
+ * fits above the fold.
+ */
+function jobHeader(model: JobDetail): string {
+  const { owner, name, pr_number: pr, comment_id: comment } = model.job;
+  const repo = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const prUrl = `https://github.com/${repo}/pull/${String(pr)}`;
+  const title = `<div class="job-title"><h1>${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span><span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
+  const links = `<p class="job-links"><a href="${prUrl}">Pull request #${String(pr)} ↗</a><a href="${prUrl}#discussion_r${String(comment)}">Triggering comment discussion_r${String(comment)} ↗</a></p>`;
+  return `<header class="job-head"><nav class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></nav>${title}${links}${statStrip(model)}<p class="sr-status" data-live-status role="status"></p></header>`;
+}
+
+/**
+ * The agent's current transcript, the largest thing on the page.
+ *
+ * What an operator wants on opening a running job is "what is it doing right
+ * now", side by side with the log that explains it. The newest attempt leads;
+ * older attempts keep their own transcripts on their cards.
+ */
+function activityPanel(model: JobDetail): string {
+  const latest = model.attempts.at(-1);
+  const attempt = latest
+    ? ` <span class="muted panel-note">attempt ${String(latest.attempt_number)}</span>`
+    : "";
+  return `<section class="panel activity-panel"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null)}</section>`;
+}
+
+/** Everything that is context rather than live state, in a card grid below. */
+function jobAside(model: JobDetail): string {
+  const totalStart = model.job.created_at ?? model.timeline[0]?.at;
+  const totalEnd = model.job.finished_at ?? undefined;
+  const attempts =
+    model.attempts
+      .map((attempt, index) =>
+        attemptCard(attempt, { showActivity: index !== model.attempts.length - 1 }),
+      )
+      .join("") || '<p class="muted">No attempts recorded.</p>';
+  const timeline = `<section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
+  const review = `<section class="panel span-2"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
+  const attemptPanel = `<section class="panel span-all"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
+  const validation = `<section class="panel span-all"><h2>Validation results</h2><div class="table-scroll">${validationTable(model.validation)}</div></section>`;
+  return `<div class="job-aside">${timeline}${review}${attemptPanel}${validation}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
 export function jobRegions(model: JobDetail): {
   "job-detail-region": string;
   "job-log-region": string;
 } {
-  const firstEvent = model.timeline[0]?.at;
-  const totalStart = model.job.created_at ?? firstEvent;
-  const totalEnd = model.job.finished_at ?? undefined;
+  const logControls = `<div class="actions log-controls"><label class="log-search">Search <input data-log-filter placeholder="Filter entries"></label><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div>`;
   return {
-    "job-detail-region": `<h1>Job ${model.job.id}: ${escapeHtml(`${model.job.owner}/${model.job.name} PR #${model.job.pr_number}`)} ${statusPill(model.job.status)}</h1><p><a href="/">← Dashboard</a> · Command <code>${escapeHtml(model.job.command)}</code> · <a href="https://github.com/${encodeURIComponent(model.job.owner)}/${encodeURIComponent(model.job.name)}/pull/${model.job.pr_number}">Pull request #${model.job.pr_number}</a> · <a href="https://github.com/${encodeURIComponent(model.job.owner)}/${encodeURIComponent(model.job.name)}/pull/${model.job.pr_number}#discussion_r${model.job.comment_id}">Triggering comment discussion_r${model.job.comment_id}</a></p>${activityPanel(model)}<section class="panel"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section><section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at)}<p><strong>Total elapsed:</strong> ${durationBetween(totalStart, totalEnd)}</p></section>${model.attempts.map((attempt, index) => attemptCard(attempt, { showActivity: index !== model.attempts.length - 1 })).join("") || '<p class="muted">No attempts recorded.</p>'}<section class="panel"><h2>Validation results</h2>${validationTable(model.validation)}</section>${actionControls(model)}${dangerZone(model.job.repo_id, model.job.pr_number)}`,
-    "job-log-region": `<section class="panel" id="log-viewer"><h2>Live log ${liveBadge(model.job.status)}</h2><div class="actions"><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label>Search <input data-log-filter placeholder="Search entries"></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div><p class="muted log-count">${logCount(model)}</p><div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs)}</div></section>`,
+    "job-detail-region": `${jobHeader(model)}${activityPanel(model)}${jobAside(model)}`,
+    "job-log-region": `<section class="panel" id="log-viewer"><h2>Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs)}</div></section>`,
   };
 }
 
@@ -86,5 +158,5 @@ function durationBetween(start: string | null | undefined, end: string | null | 
 
 export function jobView(model: JobDetail): string {
   const regions = jobRegions(model);
-  return `<div id="job-detail-region">${regions["job-detail-region"]}</div><div id="job-log-region">${regions["job-log-region"]}</div>`;
+  return `<div class="job-page"><div id="job-detail-region">${regions["job-detail-region"]}</div><div id="job-log-region">${regions["job-log-region"]}</div></div>`;
 }

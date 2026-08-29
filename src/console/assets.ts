@@ -8,6 +8,7 @@ export const stylesheet = `
   --muted: #5e6a7e; --border: #d5dce8; --accent: #2457c5; --focus: #f59e0b;
   --success: #147d4d; --failure: #b42318; --cancelled: #8a4b08; --interrupted: #6941c6;
   --success-bg: #dcfae6; --failure-bg: #fee4e2; --cancelled-bg: #fff1d6; --interrupted-bg: #eee8ff;
+  --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
@@ -19,22 +20,37 @@ export const stylesheet = `
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; }
 a { color: var(--accent); }
-a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .shell { max-width: 1240px; margin: 0 auto; padding: 1rem; }
+/* The job page runs two live panels side by side; it needs the extra room. */
+.shell-wide { max-width: 1760px; }
 header.site-header { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: .8rem; margin-bottom: 1.25rem; }
 nav { display: flex; gap: .8rem; flex-wrap: wrap; }
 .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
 .lanes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: start; }
 .card, article, section.panel { background: var(--surface); border: 1px solid var(--border); border-radius: .65rem; padding: 1rem; box-shadow: 0 2px 8px #0000000d; }
 .card h3, article h2, section h2 { margin-top: 0; }
+/* One quiet header treatment for every card, so a page of panels reads as a
+   set of labelled regions rather than a stack of competing headlines. */
+section.panel > h2 { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); margin: 0 0 .75rem; padding-bottom: .55rem; border-bottom: 1px solid var(--border); }
+.panel-note { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: .78rem; }
+section.panel > h3 { font-size: .8rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); margin: 1rem 0 .4rem; }
+.panel-foot { margin: .8rem 0 0; padding-top: .6rem; border-top: 1px solid var(--border); font-size: .85rem; }
+.panel-foot strong { color: var(--muted); margin-right: .4rem; }
 .health { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); margin-bottom: 1.3rem; }
 .health .metric { background: var(--surface); border: 1px solid var(--border); border-radius: .5rem; padding: .75rem; }
-.metric strong { display: block; font-size: 1.35rem; }
+.metric span { display: block; font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.metric strong { display: block; font-size: 1.35rem; line-height: 1.25; font-variant-numeric: tabular-nums; }
+.metric small { color: var(--muted); }
 .stale { border-color: var(--failure); color: var(--failure); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
-pre, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.table-scroll { overflow-x: auto; }
+pre, code { font-family: var(--mono); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-muted); border-radius: .4rem; padding: .75rem; }
 button, input, select { font: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .7rem; color: var(--text); background: var(--surface-muted); }
@@ -50,7 +66,11 @@ input:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .model-picker-hint { color: var(--muted); display: block; }
 .catalog-note { color: var(--muted); margin-top: -.75rem; }
 label { display: inline-flex; gap: .45rem; align-items: center; }
-.status-pill { display: inline-flex; gap: .35rem; align-items: center; border-radius: 999px; padding: .18rem .55rem; font-weight: 700; font-size: .82rem; }
+.chip { display: inline-flex; align-items: center; gap: .3rem; background: var(--surface-muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: .12rem .6rem; font-size: .78rem; color: var(--muted); }
+.chip code { font-size: .78rem; color: var(--text); }
+.status-pill { display: inline-flex; gap: .35rem; align-items: center; border-radius: 999px; padding: .18rem .55rem;
+  font-weight: 700; font-size: .82rem; color: var(--muted); background: var(--surface-muted); }
 .status-pill::before { content: ""; display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; }
 .status-succeeded { color: var(--success); background: var(--success-bg); }
 .status-failed { color: var(--failure); background: var(--failure-bg); }
@@ -61,20 +81,93 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .status-cancelled::before { border-radius: 0; }
 .status-interrupted::before { border-radius: 0; transform: rotate(45deg); }
 .timeline { list-style: none; padding: 0; margin: 0; }
-.timeline li { border-left: 3px solid var(--border); padding: .4rem 0 .7rem 1rem; margin-left: .4rem; }
+.timeline li { position: relative; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  border-left: 2px solid var(--border); padding: .3rem 0 .55rem .95rem; margin-left: .4rem; }
+.timeline li::before { content: ""; position: absolute; left: -.3rem; top: .7rem; width: .5rem; height: .5rem;
+  border-radius: 50%; background: var(--border); }
 .timeline li:last-child { border-left-color: transparent; }
-.danger-zone { border: 2px solid var(--failure); background: var(--failure-bg); }
+.timeline time { font-family: var(--mono); font-size: .8rem; color: var(--muted); }
+.timeline li > .muted:last-child { margin-left: auto; font-size: .8rem; font-variant-numeric: tabular-nums; }
+.danger-zone { border: 1px solid var(--border); border-left: 3px solid var(--failure); background: var(--surface); }
+.danger-zone > h2 { color: var(--failure); }
+.danger-controls { margin-top: .6rem; }
+.danger-controls input[name="reset-pr"] { width: 6.5rem; }
 .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .muted { color: var(--muted); }
 .sr-status { min-height: 1.5rem; color: var(--muted); }
 .signin { max-width: 34rem; margin: 10vh auto; }
+
+/* Job page ------------------------------------------------------------------
+   Three bands: an identity-and-controls header, the two live panels side by
+   side filling the viewport, and the forensic detail below. The two swapped
+   regions are display:contents so their children land in this one grid, which
+   is what lets the log sit beside the transcript despite being replaced by a
+   separate stream fragment. */
+.job-page { display: grid; gap: 1rem; align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "activity" "log" "aside"; }
+#job-detail-region { display: contents; }
+.job-head { grid-area: head; }
+.activity-panel { grid-area: activity; }
+#job-log-region { grid-area: log; display: flex; min-width: 0; }
+.job-aside { grid-area: aside; }
+@media (min-width: 1080px) {
+  .job-page { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    grid-template-areas: "head head" "activity log" "aside aside"; }
+}
+.job-head { background: var(--surface); border: 1px solid var(--border); border-radius: .65rem;
+  padding: .9rem 1rem 1rem; box-shadow: 0 2px 8px #0000000d; }
+.crumbs { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
+.job-title { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: .4rem 0 0; }
+.job-title h1 { margin: 0; font-size: 1.4rem; letter-spacing: -.01em; }
+.job-pr { color: var(--muted); font-weight: 500; }
+.job-id { font-size: .78rem; font-variant-numeric: tabular-nums; }
+.job-actions { margin-left: auto; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; font-size: .85rem; }
+.job-links { display: flex; gap: 1.1rem; flex-wrap: wrap; margin: .6rem 0 0; font-size: .85rem; }
+.job-stats { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); margin-top: .9rem; }
+.job-stats .metric { background: var(--surface-muted); border: 1px solid var(--border); border-radius: .5rem; padding: .55rem .7rem; }
+.job-stats .metric strong { font-size: 1.2rem; }
+.job-stats .metric small { font-size: .74rem; }
+.job-head .sr-status { min-height: 0; font-size: .82rem; margin: .55rem 0 0; }
+.job-head .sr-status:empty { display: none; }
+.job-aside { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.job-aside .span-all { grid-column: 1 / -1; }
+@media (min-width: 900px) {
+  .job-aside { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .job-aside .span-2 { grid-column: span 2; }
+}
+.kv { display: grid; gap: 0 1.2rem; margin: 0; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.kv > div { display: grid; grid-template-columns: minmax(6rem, 36%) minmax(0, 1fr); gap: .6rem;
+  align-items: baseline; padding: .28rem 0; border-bottom: 1px solid var(--border); }
+.kv dt { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+.kv dd { margin: 0; min-width: 0; font-size: .85rem; overflow-wrap: anywhere; }
+.thread { margin: .4rem 0 0; padding-left: 1.1rem; }
+
+/* Attempts: a card each, summary first, forensics folded away. */
+.attempt-grid { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fill, minmax(23rem, 1fr)); }
+.attempt { background: var(--surface-muted); box-shadow: none; padding: .85rem; }
+.attempt-head { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+.attempt-head h3 { margin: 0; font-size: 1rem; }
+.attempt-elapsed { margin-left: auto; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.attempt-spec { display: flex; gap: .35rem; flex-wrap: wrap; margin: .55rem 0; }
+.attempt-spec .chip { background: var(--surface); }
+.attempt-failure { margin: .55rem 0; padding: .45rem .6rem; border-radius: .35rem; font-size: .85rem;
+  border-left: 3px solid var(--failure); background: var(--failure-bg); color: var(--failure); }
+.attempt-failure strong { text-transform: uppercase; font-size: .7rem; letter-spacing: .05em; margin-right: .4rem; }
+.attempt .kv { grid-template-columns: minmax(0, 1fr); }
+.attempt .kv > div:last-child { border-bottom: 0; }
+.attempt-folds { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .7rem; }
+.attempt-folds > details { flex: 1 1 11rem; min-width: 0; }
+.attempt-folds summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
 
 /* Live log ------------------------------------------------------------------
    A dense, scannable stream rather than a wall of JSON: fixed-width time and
    level columns so the eye tracks one vertical line, and structured fields as
    inline chips. The stream scrolls inside its own box so the surrounding job
    controls stay reachable while a long attempt runs. */
-.log-count { margin: .35rem 0 .5rem; font-size: .85rem; }
+.log-controls { margin-bottom: .6rem; }
+.log-search { flex: 1 1 11rem; min-width: 0; }
+.log-search input { flex: 1; min-width: 0; }
 .log-follow { margin-left: auto; }
 .live-badge { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--accent); background: var(--surface-muted); border-radius: 999px; padding: .1rem .5rem; vertical-align: middle; }
@@ -84,7 +177,7 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 @keyframes log-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .live-badge::before { animation: none; } }
 .log-stream { max-height: 26rem; overflow: auto; border: 1px solid var(--border); border-radius: .45rem;
-  background: var(--surface-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .82rem; }
+  background: var(--surface-muted); font-family: var(--mono); font-size: .82rem; }
 .log-line { display: grid; grid-template-columns: 6.2rem 3.6rem 1fr; gap: .5rem; align-items: baseline;
   padding: .28rem .6rem; border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
   background: transparent; box-shadow: none; }
@@ -107,18 +200,17 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 @media (max-width: 640px) {
   .log-line { grid-template-columns: 1fr; gap: .15rem; }
   .log-chips { margin-left: 0; }
+  .job-actions { margin-left: 0; width: 100%; }
 }
 
 /* Agent activity ------------------------------------------------------------
    A vertical timeline: one rail down the left, a dot per step, colour-coded by
    what the agent was doing. Colour alone never carries the meaning — each step
    also states its kind — so the three types stay distinguishable without it. */
-.activity-panel { border-color: var(--accent); }
-.activity-attempt { font-size: .8rem; font-weight: 400; }
-.activity-summary { font-size: .85rem; margin: .2rem 0 .7rem; }
+.activity-summary { font-size: .85rem; margin: 0 0 .7rem; }
 .activity-stat { font-weight: 700; color: var(--text); }
 .activity-stream { list-style: none; margin: 0; padding: 0 0 0 1.15rem; display: grid; gap: .45rem;
-  max-height: 32rem; overflow: auto; position: relative; }
+  align-content: start; max-height: 32rem; overflow: auto; position: relative; }
 /* The rail itself, behind the dots. */
 .activity-stream::before { content: ""; position: absolute; left: .32rem; top: .3rem; bottom: .3rem;
   width: 2px; background: var(--border); border-radius: 2px; }
@@ -132,7 +224,7 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .activity-head { display: flex; align-items: baseline; gap: .45rem; flex-wrap: wrap; }
 .activity-kind { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   border-radius: 999px; padding: .08rem .5rem; background: var(--surface); border: 1px solid var(--kind, var(--border)); color: var(--kind, var(--muted)); }
-.activity-time { font-size: .72rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.activity-time { font-size: .72rem; color: var(--muted); font-family: var(--mono); }
 .activity-fold > summary, .activity-args > summary { cursor: pointer; }
 .activity-args > summary { font-size: .74rem; color: var(--muted); margin-top: .3rem; }
 .activity-tool-name { margin: .3rem 0 0; }
@@ -158,6 +250,14 @@ pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font
   .activity-block.is-open::after { animation: none; opacity: .8; height: 100%; top: 0; }
   .activity-block.is-open .activity-dot { animation: none; }
 }
+
+/* Last word on the two live panels: they share a grid row, stretch to the same
+   height and let their stream scroll inside. Placed after the log and activity
+   blocks above so it overrides the standalone max-heights they set. */
+.activity-panel, #job-log-region > .panel { display: flex; flex-direction: column;
+  min-height: min(66vh, 46rem); max-height: min(80vh, 62rem); }
+#job-log-region > .panel { flex: 1; min-width: 0; }
+.activity-panel > .activity-stream, #log-viewer > .log-stream { flex: 1; min-height: 0; max-height: none; }
 `;
 
 export const clientScript = `
