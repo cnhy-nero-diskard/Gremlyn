@@ -1,5 +1,6 @@
 import { execa } from "execa";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 
 export interface ProcessResult {
@@ -21,7 +22,66 @@ export type ProcessRunner = (
   },
 ) => Promise<ProcessResult>;
 
+/**
+ * On Windows, `cline` on PATH is an npm `.cmd` shim. Node refuses to execute a
+ * `.cmd` directly (CVE-2024-27980) and routes it through `cmd.exe`, whose
+ * command line is capped at 8191 characters — far below the 32767 that
+ * `CreateProcess` allows. The resolution prompt carries the review thread and
+ * the repository's agent instructions, so it clears 8191 easily, and the spawn
+ * dies in milliseconds with "The command line is too long." before the agent
+ * runs at all.
+ *
+ * The shim's own last line is `"%_prog%" "%dp0%\<entry>" %*`, so invoking that
+ * entry with the current Node binary reproduces exactly what the shim does
+ * while skipping `cmd.exe` and its limit.
+ *
+ * Returns undefined whenever anything is unrecognised, leaving the caller to
+ * spawn the binary as configured.
+ */
+function resolveWindowsShim(binary: string): { binary: string; prefix: string[] } | undefined {
+  if (process.platform !== "win32") return undefined;
+  let shimPath: string | undefined;
+  if (/\.cmd$/iu.test(binary) && existsSync(binary)) {
+    shimPath = binary;
+  } else {
+    const direct = `${binary}.cmd`;
+    if (existsSync(direct)) {
+      shimPath = direct;
+    } else {
+      // A bare name (the common case): find the shim the way the OS would.
+      for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+        if (dir === "") continue;
+        const candidate = join(dir, `${binary}.cmd`);
+        if (existsSync(candidate)) {
+          shimPath = candidate;
+          break;
+        }
+      }
+    }
+  }
+  if (shimPath === undefined) return undefined;
+  let contents: string;
+  try {
+    contents = readFileSync(shimPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  // Anchor on the trailing `%*` of the invocation line. An unanchored match
+  // finds the shim's earlier `IF EXIST "%dp0%\node.exe"` probe and resolves the
+  // entry to node.exe itself, which then tries to parse its own binary as JS.
+  const match = /"%dp0%\\([^"]+)"\s+%\*/u.exec(contents);
+  if (!match?.[1]) return undefined;
+  const entry = join(dirname(shimPath), match[1]);
+  if (!existsSync(entry)) return undefined;
+  return { binary: process.execPath, prefix: [entry] };
+}
+
 export const defaultRunner: ProcessRunner = async (binary, args, options) => {
+  const shim = resolveWindowsShim(binary);
+  if (shim) {
+    binary = shim.binary;
+    args = [...shim.prefix, ...args];
+  }
   const result = await execa(binary, args, {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     env: options.env,

@@ -201,3 +201,27 @@ repositories:
     /not supported by agent "cline"/u,
   );
 });
+
+/**
+ * A prompt carrying a review thread plus repository instructions runs past
+ * cmd.exe's 8191-character command line. Node will not exec a `.cmd` directly
+ * (CVE-2024-27980), so `cline` on Windows went through cmd.exe and every job
+ * died in ~40ms with "The command line is too long." before the agent started.
+ * `defaultRunner` resolves the npm shim to its Node entry to skip that cap.
+ */
+test(
+  "an argv past cmd.exe's limit still reaches the agent",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    );
+    const oversized = "y".repeat(20_000);
+    const result = await defaultRunner("cline", ["--version", oversized], { env });
+    assert.ok(
+      !/command line is too long/iu.test(result.stderr),
+      `spawn hit the cmd.exe cap: ${result.stderr}`,
+    );
+    assert.equal(result.exitCode, 0);
+  },
+);
