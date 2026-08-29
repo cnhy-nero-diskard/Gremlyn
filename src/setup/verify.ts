@@ -219,24 +219,6 @@ export async function checkEntry(
     ),
   );
 
-  const modelAllowed =
-    entry.allowedModels.length === 0 || entry.allowedModels.includes(entry.model);
-  results.push(
-    check(
-      "model-allowed",
-      modelAllowed,
-      { model: entry.model, allowedModels: entry.allowedModels },
-      modelAllowed
-        ? entry.allowedModels.length === 0
-          ? `model ${entry.model} is permitted because allowed_models is empty`
-          : `model ${entry.model} is in allowed_models`
-        : `model ${entry.model} is outside allowed_models (${entry.allowedModels.join(", ")})`,
-      modelAllowed
-        ? "Keep allowed_models empty deliberately or retain the model in its non-empty list."
-        : `Choose one of the permitted models: ${entry.allowedModels.join(", ")}.`,
-    ),
-  );
-
   return results;
 }
 

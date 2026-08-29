@@ -350,10 +350,6 @@ test("verification returns data for every registration check", async () => {
       id: "agent-known",
       entry: { ...base, agent: "missing" },
     },
-    {
-      id: "model-allowed",
-      entry: { ...base, model: "test-provider/other" },
-    },
   ];
   for (const scenario of cases) {
     const results = await checkEntry(

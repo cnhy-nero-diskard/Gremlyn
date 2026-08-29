@@ -31,20 +31,18 @@ function modelOptions(
 ): string {
   const provider = catalog.providers.find((entry) => entry.id === providerId);
   if (!provider) return "";
-  const allowed = repo.allowedModels ?? [];
   const models = [...provider.models];
   const current = repo.model ?? "";
   if (providerId === repo.provider) {
-    for (const id of [...allowed, current]) {
+    for (const id of [current]) {
       if (!id || models.some((model) => model.id === id)) continue;
-      models.push({ id, name: id, tags: [id === current ? "CURRENT" : "ALLOWED"] });
+      models.push({ id, name: id, tags: ["CURRENT"] });
     }
   }
   return models
     .map((model) => {
       const selected = providerId === repo.provider && model.id === current ? " selected" : "";
-      const disabled = allowed.length > 0 && !allowed.includes(model.id) ? " disabled" : "";
-      return `<option value="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}"${selected}${disabled}>${escapeHtml(modelOptionLabel(model))}</option>`;
+      return `<option value="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}"${selected}>${escapeHtml(modelOptionLabel(model))}</option>`;
     })
     .join("");
 }
@@ -53,7 +51,6 @@ function modelProviderControl(repo: RepositorySummary, catalog: ProviderCatalogS
   const providerId = repo.provider ?? "";
   const knownProvider = catalog.providers.find((provider) => provider.id === providerId);
   const providerValue = knownProvider ? providerId : CUSTOM_PROVIDER;
-  const allowed = repo.allowedModels ?? [];
   const providerOptions = catalog.providers
     .map(
       (provider) =>
@@ -66,14 +63,10 @@ function modelProviderControl(repo: RepositorySummary, catalog: ProviderCatalogS
   const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(knownProvider ? "" : providerId)}" placeholder="provider id"${knownProvider ? " hidden" : ""}>`;
   const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${catalog.providers.map((provider) => modelOptions(repo, provider.id, catalog)).join("")}</select>`;
   const modelInput = `<input name="repo-model-input-${repo.id}" data-repo-model-input data-repo-field="model" value="${escapeHtml(repo.model ?? "")}" placeholder="model id"${knownProvider ? " hidden" : ""}>`;
-  const allowedHint =
-    allowed.length > 0
-      ? `Only models in allowed_models are selectable (${allowed.map(escapeHtml).join(", ")}).`
-      : "Any model in the provider catalog is selectable.";
   const hint = knownProvider
-    ? `${knownProvider.description} ${allowedHint}`
-    : `Custom provider; enter the exact provider and model ids. ${allowedHint}`;
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-allowed-models="${escapeHtml(JSON.stringify(allowed))}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)}</small></div>`;
+    ? `${knownProvider.description} All catalog models are selectable.`
+    : "Custom provider; enter the exact provider and model ids.";
+  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)}</small></div>`;
 }
 
 export function repositoryCards(

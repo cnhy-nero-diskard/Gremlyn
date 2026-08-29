@@ -291,9 +291,6 @@ export const clientScript = `
   };
   let modelCatalog = null;
   const customProvider = '__custom__';
-  const allowedModelsFor = (root) => {
-    try { const parsed = JSON.parse(root.dataset.allowedModels || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
-  };
   const providerFor = (root) => {
     const select = root.querySelector('[data-repo-provider-select]');
     const input = root.querySelector('[data-repo-provider-input]');
@@ -320,7 +317,6 @@ export const clientScript = `
     const staticProvider = [...modelSelect.options].some((option) => option.dataset.providerId === providerId);
     const provider = modelCatalog?.find((entry) => entry.id === providerId) ||
       (staticProvider ? { id: providerId, description: '' } : null);
-    const allowed = allowedModelsFor(root);
     providerInput.hidden = Boolean(provider);
     modelSelect.hidden = !provider;
     modelInput.hidden = Boolean(provider);
@@ -328,14 +324,13 @@ export const clientScript = `
     [...modelSelect.options].forEach((option) => {
       const visible = option.dataset.providerId === provider.id;
       option.hidden = !visible;
-      option.disabled = visible && allowed.length > 0 && !allowed.includes(option.value);
     });
     const current = preferredModel || modelSelect.value;
-    const usable = [...modelSelect.options].find((option) => option.dataset.providerId === provider.id && !option.disabled);
+    const usable = [...modelSelect.options].find((option) => option.dataset.providerId === provider.id);
     const currentOption = [...modelSelect.options].find((option) => option.value === current && option.dataset.providerId === provider.id);
-    modelSelect.value = currentOption && !currentOption.disabled ? current : (usable?.value || current);
+    modelSelect.value = currentOption ? current : (usable?.value || current);
     const hint = root.querySelector('[data-repo-hint]');
-    if (hint) hint.textContent = provider.description + (allowed.length ? ' Only models in allowed_models are selectable (' + allowed.join(', ') + ').' : ' Any model in the provider catalog is selectable.');
+    if (hint) hint.textContent = provider.description + ' All catalog models are selectable.';
   };
   const renderLivePicker = (root, preferredModel) => {
     const providers = modelCatalog || [];

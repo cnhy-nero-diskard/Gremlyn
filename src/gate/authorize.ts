@@ -24,7 +24,6 @@ export type AuthorizationReason =
   | "command-unregistered"
   | "command-placement"
   | "duplicate-command"
-  | "model-not-allowed"
   | "invalid-command-arguments";
 
 export type AuthorizationResult =
@@ -117,17 +116,6 @@ export async function authorizeCommand(
     return result;
   }
   const model = command.args[0] ?? repository.defaultModel;
-  if (repository.allowedModels.length > 0 && !repository.allowedModels.includes(model)) {
-    const result = reject("rejected", "model-not-allowed");
-    await options.github.postReviewReply(
-      event.owner,
-      event.repo,
-      event.prNumber,
-      event.commentId,
-      `Gremlyn rejected !${command.name}: model "${model}" is not allowed. Allowed models: ${repository.allowedModels.join(", ")}.`,
-    );
-    return result;
-  }
   return { kind: "authorized", pullRequest, model };
 }
 

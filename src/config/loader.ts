@@ -202,9 +202,6 @@ function parseRepositories(
         );
       }
     }
-    if (model && allowedModels.length > 0 && !allowedModels.includes(model)) {
-      problems.push(`${label}.model "${model}" is not in its allowed_models list`);
-    }
     if (owner && name && sourcePath && workspaceRoot && agent && provider && model && effort) {
       repositories.push({
         owner,

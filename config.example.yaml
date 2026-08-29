@@ -82,10 +82,6 @@ repositories:
     # Optional; defaults to the agent's highest supported tier.
     effort: xhigh
     enabled: true
-    # Models a command argument may select. The configured model must be in
-    # this list when the list is non-empty.
-    allowed_models:
-      - your-provider/lune-5.6
     # Validation run in the worktree after the agent exits, in order, each as
     # an argument vector (no shell). Empty list means inspection only.
     validation_commands:

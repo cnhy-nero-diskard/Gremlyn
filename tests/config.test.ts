@@ -141,9 +141,9 @@ test("requires explicit git commit attribution", () => {
   );
 });
 
-test("rejects a model outside allowed_models", () => {
+test("accepts a model without an allowed_models restriction", () => {
   const config = VALID_CONFIG.replace("model: test-provider/model-1", "model: test-provider/other");
-  assert.throws(() => loadConfig(writeConfig(config), VALID_ENV), ConfigError);
+  assert.equal(loadConfig(writeConfig(config), VALID_ENV).repositories[0]?.model, "test-provider/other");
 });
 
 test("environment overlay overrides file values", () => {

@@ -670,7 +670,7 @@ test("the agent transcript leads the job page and each step states its kind", ()
   assert.equal(detail.split("is-open").length - 1, 1);
 });
 
-test("model/provider updates are atomic, policy-aware, audited, and notify the runtime", async () => {
+test("model/provider updates are atomic, unrestricted, audited, and notify the runtime", async () => {
   const data = fixture();
   let settingsChanges = 0;
   data.options.actions = {
@@ -694,18 +694,15 @@ test("model/provider updates are atomic, policy-aware, audited, and notify the r
   );
   assert.equal(settingsChanges, 1);
 
-  data.store.db
-    .prepare("UPDATE repositories SET allowed_models = ? WHERE id = ?")
-    .run(JSON.stringify(["gpt-5.6-sol"]), data.repoId);
-  const rejected = await app.inject({
+  const secondUpdate = await app.inject({
     method: "POST",
     url: `/repos/${data.repoId}/model-provider`,
     headers: AUTH,
     payload: { provider: "openai-codex", model: "gpt-5.6-terra" },
   });
-  assert.equal(rejected.statusCode, 400);
-  assert.deepEqual(rejected.json(), { error: "model-not-allowed" });
-  assert.equal(settingsChanges, 1);
+  assert.equal(secondUpdate.statusCode, 200);
+  assert.deepEqual(secondUpdate.json(), { ok: true, provider: "openai-codex", model: "gpt-5.6-terra" });
+  assert.equal(settingsChanges, 2);
   assert.equal(
     new OperatorActionStore(data.store.db).list()[0]?.action,
     "repository-model-provider",

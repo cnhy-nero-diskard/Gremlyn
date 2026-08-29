@@ -171,26 +171,9 @@ test("fork PR is rejected with guidance and the required reason", async () => {
   }
 });
 
-test("model arguments outside allowed_models are rejected before job or agent work", async () => {
+test("model arguments are accepted without an allowed_models restriction", async () => {
   const fixture = setup();
   fixture.options.command = { name: "RESOLVE", args: ["unapproved-model"] };
-  try {
-    assert.deepEqual(await authorizeCommand(fixture.options), {
-      kind: "rejected",
-      reason: "model-not-allowed",
-    });
-    assert.equal(countJobs(fixture.store), 0);
-    assert.equal(fixture.github.replies.length, 1);
-    assert.match(fixture.github.replies[0]!.body, /model "unapproved-model" is not allowed/u);
-  } finally {
-    fixture.store.close();
-  }
-});
-
-test("an empty allowed_models list permits the repository default and explicit models", async () => {
-  const fixture = setup();
-  fixture.repository.allowedModels = [];
-  fixture.options.command = { name: "RESOLVE", args: ["gpt-5.6-sol"] };
   try {
     assert.equal((await authorizeCommand(fixture.options)).kind, "authorized");
   } finally {
