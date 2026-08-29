@@ -166,6 +166,7 @@ test("console defaults to loopback and rejects every route without a token", asy
     { method: "POST" as const, url: `/jobs/${data.jobId}/retry` },
     { method: "POST" as const, url: `/jobs/${data.queuedJobId}/cancel` },
     { method: "POST" as const, url: `/repos/${data.repoId}/toggle` },
+    { method: "GET" as const, url: "/model-catalog" },
     {
       method: "POST" as const,
       url: `/workspaces/${data.repoId}/reset`,
@@ -191,6 +192,11 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /Orchestrator/);
   assert.match(response.body, /no poll recorded/);
   assert.match(response.body, /acme\/widgets/);
+  assert.match(response.body, /data-repo-picker/);
+  assert.match(response.body, /OpenAI Codex/);
+  assert.match(response.body, /gpt-5\.6-sol/);
+  assert.match(response.body, /moonshotai\/kimi-k3/);
+  assert.match(response.body, /provider-qualified ids/);
   assert.match(response.body, /Running/);
   assert.match(response.body, /Queued/);
   assert.match(response.body, /Recent successes and failures/);
@@ -662,4 +668,48 @@ test("the agent transcript leads the job page and each step states its kind", ()
   assert.match(detail, /activity-args/u);
   // Only the unfinished step animates.
   assert.equal(detail.split("is-open").length - 1, 1);
+});
+
+test("model/provider updates are atomic, policy-aware, audited, and notify the runtime", async () => {
+  const data = fixture();
+  let settingsChanges = 0;
+  data.options.actions = {
+    ...data.options.actions,
+    repositorySettingsChanged: () => {
+      settingsChanges += 1;
+    },
+  };
+  const app = buildConsoleServer(data.options);
+  const updated = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: " openai-codex ", model: " gpt-5.6-sol " },
+  });
+  assert.equal(updated.statusCode, 200);
+  assert.deepEqual(updated.json(), { ok: true, provider: "openai-codex", model: "gpt-5.6-sol" });
+  assert.deepEqual(
+    data.store.db.prepare("SELECT provider, model FROM repositories WHERE id = ?").get(data.repoId),
+    { provider: "openai-codex", model: "gpt-5.6-sol" },
+  );
+  assert.equal(settingsChanges, 1);
+
+  data.store.db
+    .prepare("UPDATE repositories SET allowed_models = ? WHERE id = ?")
+    .run(JSON.stringify(["gpt-5.6-sol"]), data.repoId);
+  const rejected = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "openai-codex", model: "gpt-5.6-terra" },
+  });
+  assert.equal(rejected.statusCode, 400);
+  assert.deepEqual(rejected.json(), { error: "model-not-allowed" });
+  assert.equal(settingsChanges, 1);
+  assert.equal(
+    new OperatorActionStore(data.store.db).list()[0]?.action,
+    "repository-model-provider",
+  );
+  await app.close();
+  data.store.close();
 });

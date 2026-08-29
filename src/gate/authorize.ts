@@ -117,7 +117,7 @@ export async function authorizeCommand(
     return result;
   }
   const model = command.args[0] ?? repository.defaultModel;
-  if (!repository.allowedModels.includes(model)) {
+  if (repository.allowedModels.length > 0 && !repository.allowedModels.includes(model)) {
     const result = reject("rejected", "model-not-allowed");
     await options.github.postReviewReply(
       event.owner,

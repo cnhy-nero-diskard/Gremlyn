@@ -19,7 +19,7 @@ export const stylesheet = `
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; }
 a { color: var(--accent); }
-a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .shell { max-width: 1240px; margin: 0 auto; padding: 1rem; }
 header.site-header { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: .8rem; margin-bottom: 1.25rem; }
 nav { display: flex; gap: .8rem; flex-wrap: wrap; }
@@ -44,6 +44,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 input, select { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .5rem; }
 input:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .repo-defaults { display: flex; flex-wrap: wrap; gap: .8rem; }
+.model-provider-picker { display: grid; gap: .55rem; min-width: min(100%, 34rem); }
+.model-provider-picker label { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: .45rem; align-items: center; }
+.model-provider-picker select, .model-provider-picker input { min-width: 0; width: 100%; }
+.model-picker-hint { color: var(--muted); display: block; }
+.catalog-note { color: var(--muted); margin-top: -.75rem; }
 label { display: inline-flex; gap: .45rem; align-items: center; }
 .status-pill { display: inline-flex; gap: .35rem; align-items: center; border-radius: 999px; padding: .18rem .55rem; font-weight: 700; font-size: .82rem; }
 .status-pill::before { content: ""; display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; }
@@ -184,6 +189,109 @@ export const clientScript = `
       entry.hidden = (level && (entry.dataset.level || '').toLowerCase() !== level) || (text && !entry.textContent.toLowerCase().includes(text));
     });
   };
+  let modelCatalog = null;
+  const customProvider = '__custom__';
+  const allowedModelsFor = (root) => {
+    try { const parsed = JSON.parse(root.dataset.allowedModels || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  };
+  const providerFor = (root) => {
+    const select = root.querySelector('[data-repo-provider-select]');
+    const input = root.querySelector('[data-repo-provider-input]');
+    return select && select.value === customProvider ? (input?.value || '').trim() : (select?.value || '').trim();
+  };
+  const modelFor = (root) => {
+    const select = root.querySelector('[data-repo-model-select]');
+    const input = root.querySelector('[data-repo-model-input]');
+    return select && !select.hidden ? select.value : (input?.value || '').trim();
+  };
+  const modelLabel = (model) => {
+    const tier = model.tier === 'free' ? ' · FREE' : model.tier === 'subscribed' ? ' · PASS' : '';
+    const tags = Array.isArray(model.tags) && model.tags.length ? ' · ' + model.tags.join(' · ') : '';
+    return (model.name || model.id) + tier + tags;
+  };
+  const providerLabel = (provider) => (provider.name || provider.id) + ' — ' + (provider.auth || 'provider credentials');
+  const syncPicker = (root, preferredModel) => {
+    const providerSelect = root.querySelector('[data-repo-provider-select]');
+    const providerInput = root.querySelector('[data-repo-provider-input]');
+    const modelSelect = root.querySelector('[data-repo-model-select]');
+    const modelInput = root.querySelector('[data-repo-model-input]');
+    if (!providerSelect || !modelSelect || !modelInput) return;
+    const providerId = providerFor(root);
+    const staticProvider = [...modelSelect.options].some((option) => option.dataset.providerId === providerId);
+    const provider = modelCatalog?.find((entry) => entry.id === providerId) ||
+      (staticProvider ? { id: providerId, description: '' } : null);
+    const allowed = allowedModelsFor(root);
+    providerInput.hidden = Boolean(provider);
+    modelSelect.hidden = !provider;
+    modelInput.hidden = Boolean(provider);
+    if (!provider) { modelInput.value = preferredModel || modelInput.value; return; }
+    [...modelSelect.options].forEach((option) => {
+      const visible = option.dataset.providerId === provider.id;
+      option.hidden = !visible;
+      option.disabled = visible && allowed.length > 0 && !allowed.includes(option.value);
+    });
+    const current = preferredModel || modelSelect.value;
+    const usable = [...modelSelect.options].find((option) => option.dataset.providerId === provider.id && !option.disabled);
+    const currentOption = [...modelSelect.options].find((option) => option.value === current && option.dataset.providerId === provider.id);
+    modelSelect.value = currentOption && !currentOption.disabled ? current : (usable?.value || current);
+    const hint = root.querySelector('[data-repo-hint]');
+    if (hint) hint.textContent = provider.description + (allowed.length ? ' Only models in allowed_models are selectable (' + allowed.join(', ') + ').' : ' Any model in the provider catalog is selectable.');
+  };
+  const renderLivePicker = (root, preferredModel) => {
+    const providers = modelCatalog || [];
+    const providerSelect = root.querySelector('[data-repo-provider-select]');
+    const providerInput = root.querySelector('[data-repo-provider-input]');
+    const modelSelect = root.querySelector('[data-repo-model-select]');
+    if (!providerSelect || !providerInput || !modelSelect) return;
+    const currentProvider = providerFor(root);
+    const currentModel = preferredModel || modelFor(root);
+    providerSelect.textContent = '';
+    providers.forEach((provider) => {
+      const option = document.createElement('option'); option.value = provider.id; option.textContent = providerLabel(provider); providerSelect.append(option);
+    });
+    const custom = document.createElement('option'); custom.value = customProvider; custom.textContent = 'Custom provider'; providerSelect.append(custom);
+    const known = providers.some((provider) => provider.id === currentProvider);
+    providerSelect.value = known ? currentProvider : customProvider;
+    providerInput.value = known ? '' : currentProvider;
+    modelSelect.textContent = '';
+    providers.forEach((provider) => provider.models.forEach((model) => {
+      const option = document.createElement('option'); option.value = model.id; option.textContent = modelLabel(model); option.dataset.providerId = provider.id; modelSelect.append(option);
+    }));
+    syncPicker(root, currentModel);
+  };
+  const setPickerSelection = (root, provider, model) => {
+    const providerSelect = root.querySelector('[data-repo-provider-select]');
+    const providerInput = root.querySelector('[data-repo-provider-input]');
+    const modelSelect = root.querySelector('[data-repo-model-select]');
+    const modelInput = root.querySelector('[data-repo-model-input]');
+    if (!providerSelect || !providerInput || !modelSelect || !modelInput) return;
+    const known = [...providerSelect.options].some((option) => option.value === provider);
+    providerSelect.value = known ? provider : customProvider;
+    providerInput.value = known ? '' : provider;
+    if (!modelCatalog) { modelSelect.value = model; modelInput.value = model; }
+    syncPicker(root, model);
+  };
+  const savePicker = async (root, previousProvider, previousModel) => {
+    const provider = providerFor(root); const model = modelFor(root); const id = root.dataset.repoId;
+    const controls = [...root.querySelectorAll('select, input')]; controls.forEach((control) => { control.disabled = true; }); status('Saving model and provider…');
+    try {
+      const response = await fetch('/repos/' + id + '/model-provider', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, model }) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
+      root.dataset.savedProvider = payload.provider; root.dataset.savedModel = payload.model; status('Model and provider updated');
+    } catch (error) {
+      setPickerSelection(root, previousProvider, previousModel);
+      status(error instanceof Error ? error.message : 'Update refused');
+    } finally { controls.forEach((control) => { control.disabled = false; }); }
+  };
+  const refreshModelCatalog = async () => {
+    try {
+      const response = await fetch('/model-catalog'); if (!response.ok) return;
+      const payload = await response.json(); if (!Array.isArray(payload.providers)) return;
+      modelCatalog = payload.providers;
+      document.querySelectorAll('[data-repo-picker]').forEach((root) => renderLivePicker(root));
+    } catch { /* The server-rendered bundled catalog remains usable offline. */ }
+  };
   // Any scrollable panel inside a swapped region loses its position, because
   // the region's innerHTML is replaced wholesale. Key by name, not index, so a
   // panel appearing or disappearing between ticks cannot shift the mapping.
@@ -288,24 +396,19 @@ export const clientScript = `
       if (stream) stream.scrollTop = stream.scrollHeight;
       return;
     }
-    // A repository's default model or provider control: save immediately on
-    // change, mirroring the enable/disable toggle's immediate-effect behavior.
-    if ((target instanceof HTMLSelectElement || target instanceof HTMLInputElement) && target.matches('[data-repo-field]')) {
-      const field = target.dataset.repoField; const url = target.dataset.url; const value = target.value;
-      target.disabled = true; status('Saving…');
-      try {
-        const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [field]: value }) });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
-        status(field === 'model' ? 'Model updated' : 'Provider updated');
-      } catch (error) { status(error instanceof Error ? error.message : 'Update refused'); }
-      target.disabled = false;
+    if ((target instanceof HTMLSelectElement || target instanceof HTMLInputElement) && target.matches('[data-repo-provider-select], [data-repo-provider-input], [data-repo-model-select], [data-repo-model-input]')) {
+      const root = target.closest('[data-repo-picker]'); if (!root) return;
+      const previousProvider = root.dataset.savedProvider || providerFor(root); const previousModel = root.dataset.savedModel || modelFor(root);
+      if (target.matches('[data-repo-provider-select]')) syncPicker(root);
+      await savePicker(root, previousProvider, previousModel);
     }
   });
   // The log arrives server-rendered and is refreshed by the stream swap above;
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
   const initialStream = document.querySelector('[data-log-items]');
   if (initialStream) initialStream.scrollTop = initialStream.scrollHeight;
+  document.querySelectorAll('[data-repo-picker]').forEach((root) => { root.dataset.savedProvider = providerFor(root); root.dataset.savedModel = modelFor(root); });
+  void refreshModelCatalog();
   const signIn = document.querySelector('[data-sign-in]');
   if (signIn) signIn.addEventListener('click', async () => { const token = document.querySelector('#token').value; const response = await fetch('/auth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }); if (response.ok) window.location.href = '/'; else document.querySelector('[data-auth-error]').textContent = 'Invalid token'; });
 })();

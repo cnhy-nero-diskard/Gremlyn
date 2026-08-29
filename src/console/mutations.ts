@@ -45,6 +45,39 @@ export type SetRepositoryProviderResult =
   | { ok: true; provider: string }
   | { ok: false; reason: "not-found" | "provider-required" };
 
+export type SetRepositoryModelProviderResult =
+  | { ok: true; provider: string; model: string }
+  | {
+      ok: false;
+      reason: "not-found" | "provider-required" | "model-required" | "model-not-allowed";
+    };
+
+/** Atomically update the dashboard's provider/model pair under repository policy. */
+export function setRepositoryModelProvider(
+  db: Database.Database,
+  repoId: number,
+  provider: string,
+  model: string,
+): SetRepositoryModelProviderResult {
+  const row = db.prepare("SELECT allowed_models FROM repositories WHERE id = ?").get(repoId) as
+    { allowed_models: string } | undefined;
+  if (!row) return { ok: false, reason: "not-found" };
+  const trimmedProvider = provider.trim();
+  if (!trimmedProvider) return { ok: false, reason: "provider-required" };
+  const trimmedModel = model.trim();
+  if (!trimmedModel) return { ok: false, reason: "model-required" };
+  const allowed = parseAllowedModels(row.allowed_models);
+  if (allowed.length > 0 && !allowed.includes(trimmedModel)) {
+    return { ok: false, reason: "model-not-allowed" };
+  }
+  db.prepare("UPDATE repositories SET provider = ?, model = ? WHERE id = ?").run(
+    trimmedProvider,
+    trimmedModel,
+    repoId,
+  );
+  return { ok: true, provider: trimmedProvider, model: trimmedModel };
+}
+
 /** Set a repository's default provider. Providers are opaque ids passed through to the agent CLI. */
 export function setRepositoryProvider(
   db: Database.Database,

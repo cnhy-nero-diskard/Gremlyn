@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
+import { ProviderCatalog } from "../agent/provider-catalog.js";
 import type { OperatorActionStore } from "../store/actions.js";
 import { createConsoleQueries, type ConsoleQueries } from "./queries.js";
 import { stylesheet, clientScript, stylesheetPath, clientScriptPath } from "./assets.js";
@@ -10,6 +11,7 @@ import { commandsView, auditView } from "./views/commands.js";
 import {
   repositoryExists,
   setRepositoryModel,
+  setRepositoryModelProvider,
   setRepositoryProvider,
   toggleRepository,
 } from "./mutations.js";
@@ -19,6 +21,7 @@ export interface ConsoleActions {
   retry?: (jobId: number) => Promise<unknown> | unknown;
   cancel?: (jobId: number) => Promise<unknown> | unknown;
   resetWorkspace?: (repoId: number, prNumber: number) => Promise<unknown> | unknown;
+  repositorySettingsChanged?: (repoId: number) => Promise<unknown> | unknown;
 }
 export interface ConsoleOptions {
   db: Database.Database;
@@ -30,6 +33,7 @@ export interface ConsoleOptions {
   concurrency?: number;
   /** Where attempt output and activity snapshots live; used for live tailing. */
   dataDir?: string;
+  providerCatalog?: ProviderCatalog;
 }
 export function consoleListenOptions(input: { host?: string; port: number }): {
   host: string;
@@ -40,6 +44,7 @@ export function consoleListenOptions(input: { host?: string; port: number }): {
 
 export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
   const app = Fastify({ logger: false });
+  const providerCatalog = options.providerCatalog ?? new ProviderCatalog();
   const queries: ConsoleQueries = createConsoleQueries({
     db: options.db,
     secrets: options.secrets,
@@ -96,16 +101,23 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       .header("cache-control", "public, max-age=31536000, immutable")
       .send(clientScript),
   );
+  app.get("/model-catalog", async (_request, reply) =>
+    reply.type("application/json").send(await providerCatalog.refreshIfStale()),
+  );
   app.get("/", async (_request, reply) =>
     reply
       .type("text/html")
       .send(
-        layout("Gremlyn dashboard", dashboardView(queries.readDashboard()), { stream: "/stream" }),
+        layout(
+          "Gremlyn dashboard",
+          dashboardView(queries.readDashboard(), providerCatalog.snapshot()),
+          { stream: "/stream" },
+        ),
       ),
   );
   app.get<{ Querystring: { snapshot?: string } }>("/stream", async (request, reply) => {
     const fragments = () => {
-      const regions = dashboardRegions(queries.readDashboard());
+      const regions = dashboardRegions(queries.readDashboard(), providerCatalog.snapshot());
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -125,7 +137,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
   });
   app.get<{ Querystring: { snapshot?: string } }>("/dashboard/stream", async (request, reply) => {
     const fragments = () => {
-      const regions = dashboardRegions(queries.readDashboard());
+      const regions = dashboardRegions(queries.readDashboard(), providerCatalog.snapshot());
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -240,6 +252,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
         target: `repository:${id}`,
         effect: result.model,
       });
+      await options.actions?.repositorySettingsChanged?.(id);
       return reply.send({ ok: true, model: result.model });
     },
   );
@@ -259,7 +272,29 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
         target: `repository:${id}`,
         effect: result.provider,
       });
+      await options.actions?.repositorySettingsChanged?.(id);
       return reply.send({ ok: true, provider: result.provider });
+    },
+  );
+  app.post<{ Params: { id: string }; Body: { provider?: string; model?: string } }>(
+    "/repos/:id/model-provider",
+    async (request, reply) => {
+      const id = positiveInteger(request.params.id);
+      const provider = request.body?.provider;
+      const model = request.body?.model;
+      if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
+      if (typeof model !== "string") return reply.code(400).send({ error: "model-required" });
+      const result = setRepositoryModelProvider(options.db, id, provider, model);
+      if (!result.ok) {
+        return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
+      }
+      options.operatorActions.record({
+        action: "repository-model-provider",
+        target: `repository:${id}`,
+        effect: `${result.provider}/${result.model}`,
+      });
+      await options.actions?.repositorySettingsChanged?.(id);
+      return reply.send({ ok: true, provider: result.provider, model: result.model });
     },
   );
   app.post<{ Params: { id: string }; Body: { confirm?: string; prNumber?: number } }>(

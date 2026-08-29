@@ -187,6 +187,17 @@ test("model arguments outside allowed_models are rejected before job or agent wo
   }
 });
 
+test("an empty allowed_models list permits the repository default and explicit models", async () => {
+  const fixture = setup();
+  fixture.repository.allowedModels = [];
+  fixture.options.command = { name: "RESOLVE", args: ["gpt-5.6-sol"] };
+  try {
+    assert.equal((await authorizeCommand(fixture.options)).kind, "authorized");
+  } finally {
+    fixture.store.close();
+  }
+});
+
 test("invalid command arguments are rejected with review-thread guidance", async () => {
   const fixture = setup();
   fixture.options.command = { name: "RESOLVE", args: ["fix", "this"] };

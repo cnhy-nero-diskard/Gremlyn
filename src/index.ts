@@ -100,6 +100,19 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
           actions: { record: () => 0 },
         });
       },
+      repositorySettingsChanged: (repoId) => {
+        const index = repositories.findIndex((entry) => entry.id === repoId);
+        if (index < 0) return;
+        const existing = repositories[index];
+        if (!existing) return;
+        const row = store.db
+          .prepare("SELECT model, provider FROM repositories WHERE id = ?")
+          .get(repoId) as { model: string; provider: string } | undefined;
+        if (!row) return;
+        const updated = { ...existing, model: row.model, provider: row.provider };
+        repositories[index] = updated;
+        orchestrator.registerRepository(updated);
+      },
     },
   });
 
