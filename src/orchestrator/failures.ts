@@ -11,6 +11,7 @@ export const FAILURE_REASONS = [
   "workspace-corrupted",
   "workspace-invalid",
   "workspace-conflicted",
+  "workspace-branch-in-use",
   "git-conflict",
   "agent-cli-missing",
   "model-unavailable",
@@ -101,7 +102,11 @@ export function classifyFailure(error: unknown, stage: FailureStage): StageFailu
         ? "head-changed"
         : error.reason === "workspace-conflicted"
           ? "git-conflict"
-          : "workspace-corrupted";
+          : // Another checkout owns the branch. Distinct from corruption: the
+            // operator has to release that worktree, and no retry will help.
+            error.reason === "workspace-branch-in-use"
+            ? "workspace-branch-in-use"
+            : "workspace-corrupted";
     return new StageFailure(stage, reason, error.message);
   }
   if (error instanceof GitHubError) {

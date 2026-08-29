@@ -26,6 +26,7 @@ export type WorkspaceFailureReason =
   | "workspace-diverged"
   | "workspace-not-worktree"
   | "workspace-outside-root"
+  | "workspace-branch-in-use"
   | "head-changed";
 
 export class WorkspaceError extends Error {
@@ -179,7 +180,49 @@ async function assertValidWorktree(path: string): Promise<void> {
   }
 }
 
+/**
+ * Find a registered worktree still holding `branch`, if any.
+ *
+ * `git worktree list --porcelain` emits stanzas of `worktree <path>` /
+ * `branch refs/heads/<name>`, so the path is whatever `worktree` line most
+ * recently preceded the matching `branch` line.
+ */
+async function worktreeHoldingBranch(
+  sourcePath: string,
+  branch: string,
+): Promise<string | undefined> {
+  const { stdout } = await git(["worktree", "list", "--porcelain"], { cwd: sourcePath });
+  let current: string | undefined;
+  for (const line of stdout.split(/\r?\n/u)) {
+    if (line.startsWith("worktree ")) current = line.slice("worktree ".length).trim();
+    else if (line.trim() === `branch refs/heads/${branch}`) return current;
+  }
+  return undefined;
+}
+
 async function createWorktree(sourcePath: string, path: string, branch: string): Promise<void> {
+  // Drop registrations whose directories are gone before asking for a new one.
+  // Git treats a stale ("prunable") entry as still holding its branch, so
+  // `worktree add` fails with "already used by worktree at <path>" and the job
+  // dies at `preparing` — permanently, since nothing else clears it. Deleting a
+  // worktree directory by hand is enough to cause this, as is a worktree
+  // created under a path this OS can no longer see (a WSL `/mnt/...` path).
+  // `fetch --prune` does not help: it prunes remote-tracking refs, not
+  // worktrees. Pruning is a no-op when every registration is live.
+  await git(["worktree", "prune"], { cwd: sourcePath });
+
+  // A live worktree still holding the branch is a genuine conflict, not
+  // something to clean up: some other checkout legitimately owns it, and
+  // stealing or force-adding it would corrupt that working copy. Name it
+  // precisely instead of surfacing git's raw error as "workspace-corrupted".
+  const holder = await worktreeHoldingBranch(sourcePath, branch);
+  if (holder !== undefined && resolve(holder) !== resolve(path)) {
+    throw new WorkspaceError(
+      "workspace-branch-in-use",
+      `branch ${branch} is already checked out at ${holder}`,
+    );
+  }
+
   const localExists = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {
     cwd: sourcePath,
   })

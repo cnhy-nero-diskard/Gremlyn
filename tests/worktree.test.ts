@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
@@ -250,4 +250,65 @@ test("explicit reset recreates only the deterministic workspace and records acti
   } finally {
     store.close();
   }
+});
+
+/**
+ * A worktree registration whose directory is gone still counts, to git, as
+ * holding its branch — so `worktree add` fails with "already used by worktree
+ * at <path>" and the job dies at `preparing` with no way to retry out of it.
+ * Deleting a worktree by hand does this, as does one created under a path this
+ * OS can no longer resolve (a WSL `/mnt/...` path). `fetch --prune` does not
+ * clear it; only `git worktree prune` does.
+ */
+test("a stale worktree registration holding the branch is pruned, not fatal", async () => {
+  const repo = await createTempRepo();
+  const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
+
+  // Register a worktree on the head branch, then delete its directory so the
+  // registration survives as "prunable" — exactly the observed state.
+  const stale = join(repo.workspaceRoot, "stale-holder");
+  await git(["worktree", "add", stale, repo.headBranch], { cwd: repo.sourcePath });
+  rmSync(stale, { recursive: true, force: true });
+  const listed = await git(["worktree", "list"], { cwd: repo.sourcePath });
+  assert.match(listed.stdout, /prunable/u);
+
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 12,
+    headBranch: repo.headBranch,
+    headSha: expectedSha,
+  });
+
+  assert.equal(prepared.created, true);
+  assert.equal(prepared.headSha, expectedSha);
+  assert.equal(await currentBranch(prepared.path), repo.headBranch);
+});
+
+test("a live worktree holding the branch fails as branch-in-use, not corruption", async () => {
+  const repo = await createTempRepo();
+  const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
+
+  // Still on disk: another checkout legitimately owns the branch. Pruning must
+  // not touch it, and force-adding would corrupt that working copy.
+  const live = join(repo.workspaceRoot, "live-holder");
+  await git(["worktree", "add", live, repo.headBranch], { cwd: repo.sourcePath });
+
+  await assert.rejects(
+    prepareWorkspace({
+      sourcePath: repo.sourcePath,
+      workspaceRoot: repo.workspaceRoot,
+      prNumber: 13,
+      headBranch: repo.headBranch,
+      headSha: expectedSha,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkspaceError);
+      assert.equal(error.reason, "workspace-branch-in-use");
+      // The operator has to release a specific directory; name it.
+      assert.match(error.message, /live-holder/u);
+      return true;
+    },
+  );
+  assert.equal(existsSync(live), true, "the live worktree must survive");
 });
