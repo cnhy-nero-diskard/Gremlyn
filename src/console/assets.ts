@@ -50,6 +50,17 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
 .table-scroll { overflow-x: auto; }
+td.num { font-variant-numeric: tabular-nums; }
+/* Let the command column absorb the slack; the rest are fixed-width facts, so
+   a two-row table does not stretch four columns across the whole panel. */
+.validation-table th:nth-child(2), .validation-table td:nth-child(2) { width: 7rem; }
+.validation-table th:nth-child(3), .validation-table td:nth-child(3) { width: 8rem; }
+.validation-table th:nth-child(4), .validation-table td:nth-child(4) { width: 30%; }
+.validation-table summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+.exit { display: inline-block; min-width: 1.7rem; text-align: center; border-radius: .3rem;
+  padding: .05rem .35rem; font-weight: 700; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.exit-ok { color: var(--success); background: var(--success-bg); }
+.exit-bad { color: var(--failure); background: var(--failure-bg); }
 pre, code { font-family: var(--mono); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-muted); border-radius: .4rem; padding: .75rem; }
 button, input, select { font: inherit; }
@@ -141,10 +152,24 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
   align-items: baseline; padding: .28rem 0; border-bottom: 1px solid var(--border); }
 .kv dt { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
 .kv dd { margin: 0; min-width: 0; font-size: .85rem; overflow-wrap: anywhere; }
-.thread { margin: .4rem 0 0; padding-left: 1.1rem; }
+.review-split { display: grid; gap: 1rem 1.5rem; grid-template-columns: minmax(0, 1fr); margin-top: .3rem; }
+@media (min-width: 1400px) { .review-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.review-scroll { max-height: 26rem; overflow: auto; }
+.thread { list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; max-height: 26rem; overflow: auto; }
+.thread-comment { background: var(--surface-muted); border: 1px solid var(--border);
+  border-radius: .45rem; padding: .55rem .7rem; }
+.thread-author { display: block; font-size: .74rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--accent); margin-bottom: .25rem; }
+.thread-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .86rem; }
+/* A hunk reads as a diff: one row per line so the tint spans the full width. */
+.diff { max-height: 26rem; overflow: auto; padding: .5rem 0; font-size: .8rem; line-height: 1.45; }
+.diff span { display: block; padding: 0 .6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff .diff-add { background: var(--success-bg); color: var(--success); }
+.diff .diff-del { background: var(--failure-bg); color: var(--failure); }
+.diff .diff-meta { color: var(--muted); font-weight: 700; }
 
 /* Attempts: a card each, summary first, forensics folded away. */
-.attempt-grid { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fill, minmax(23rem, 1fr)); }
+.attempt-grid { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fit, minmax(23rem, 1fr)); }
 .attempt { background: var(--surface-muted); box-shadow: none; padding: .85rem; }
 .attempt-head { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
 .attempt-head h3 { margin: 0; font-size: 1rem; }
@@ -154,7 +179,7 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .attempt-failure { margin: .55rem 0; padding: .45rem .6rem; border-radius: .35rem; font-size: .85rem;
   border-left: 3px solid var(--failure); background: var(--failure-bg); color: var(--failure); }
 .attempt-failure strong { text-transform: uppercase; font-size: .7rem; letter-spacing: .05em; margin-right: .4rem; }
-.attempt .kv { grid-template-columns: minmax(0, 1fr); }
+.attempt .kv { grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }
 .attempt .kv > div:last-child { border-bottom: 0; }
 .attempt-folds { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .7rem; }
 .attempt-folds > details { flex: 1 1 11rem; min-width: 0; }

@@ -81,8 +81,21 @@ export function timelineStepper(
   }</ol>`;
 }
 
+/** A zero and a one look alike in a column of numbers; say which one passed. */
+function exitCode(code: number | null): string {
+  if (code === null) return '<span class="muted">—</span>';
+  return `<span class="exit exit-${code === 0 ? "ok" : "bad"}">${String(code)}</span>`;
+}
+
 export function validationTable(runs: ValidationRun[]): string {
-  return `<table><thead><tr><th>Command</th><th>Exit code</th><th>Duration</th><th>Output</th></tr></thead><tbody>${runs.map((run) => `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${run.exit_code ?? "—"}</td><td>${run.duration_ms === null ? "—" : `${run.duration_ms}ms`}</td><td><details><summary>Show output</summary><pre>${escapeHtml(run.output)}</pre></details></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No validation runs recorded.</td></tr>'}</tbody></table>`;
+  const rows =
+    runs
+      .map(
+        (run) =>
+          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary><pre>${escapeHtml(run.output)}</pre></details></td></tr>`,
+      )
+      .join("") || '<tr><td colspan="4" class="muted">No validation runs recorded.</td></tr>';
+  return `<table class="validation-table"><thead><tr><th>Command</th><th>Exit code</th><th>Duration</th><th>Output</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function displayCommand(command: string): string {

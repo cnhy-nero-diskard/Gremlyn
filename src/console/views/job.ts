@@ -12,17 +12,57 @@ import {
   validationTable,
 } from "./components.js";
 
+/**
+ * A hunk reads as a diff, not as a wall of monospace.
+ *
+ * Each line keeps its own row so the added/removed tint spans the full width,
+ * and the leading +/- stays in the text — the colour is a second signal, never
+ * the only one.
+ */
+function diffHunk(text: string): string {
+  const lines = text.split("\n").map((line) => {
+    const kind = line.startsWith("+")
+      ? "add"
+      : line.startsWith("-")
+        ? "del"
+        : line.startsWith("@@")
+          ? "meta"
+          : "ctx";
+    return `<span class="diff-${kind}">${escapeHtml(line)}</span>`;
+  });
+  return `<pre class="diff">${lines.join("")}</pre>`;
+}
+
+/** One review comment as a card; bodies keep their own line breaks. */
+function threadComment(comment: unknown): string {
+  const record = comment as Record<string, unknown>;
+  const author = escapeHtml(record.authorLogin ?? record.author_login);
+  return `<li class="thread-comment"><span class="thread-author">${author}</span><div class="thread-body">${escapeHtml(record.body)}</div></li>`;
+}
+
 function reviewContext(raw: string | null): string {
   if (!raw) return '<p class="muted">No review context recorded.</p>';
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (typeof value.feedback === "string") {
-      return `<pre>${escapeHtml(value.feedback)}</pre>`;
+      return `<pre class="review-scroll">${escapeHtml(value.feedback)}</pre>`;
     }
     const thread = Array.isArray(value.thread) ? value.thread : [];
-    return `${keyValueTable({ "Pull request": value.prTitle ?? value.pr_title, Branch: value.headBranch ?? value.head_branch, "File path": value.filePath ?? value.file_path })}<h3>Diff hunk</h3><pre>${escapeHtml(value.diffHunk ?? value.diff_hunk ?? "No diff hunk recorded")}</pre><h3>Comment thread</h3>${thread.length ? `<ul class="thread">${thread.map((comment) => `<li><strong>${escapeHtml((comment as Record<string, unknown>).authorLogin ?? (comment as Record<string, unknown>).author_login)}</strong>: ${escapeHtml((comment as Record<string, unknown>).body)}</li>`).join("")}</ul>` : '<p class="muted">No thread comments recorded.</p>'}`;
+    const facts = keyValueTable({
+      "Pull request": value.prTitle ?? value.pr_title,
+      Branch: value.headBranch ?? value.head_branch,
+      "File path": value.filePath ?? value.file_path,
+    });
+    const hunk = diffHunk(String(value.diffHunk ?? value.diff_hunk ?? "No diff hunk recorded"));
+    const comments = thread.length
+      ? `<ol class="thread">${thread.map(threadComment).join("")}</ol>`
+      : '<p class="muted">No thread comments recorded.</p>';
+    // Side by side: the hunk is what changed, the thread is what was said about
+    // it, and stacking them made this panel three times taller than the timeline
+    // beside it.
+    return `${facts}<div class="review-split"><div><h3>Diff hunk</h3>${hunk}</div><div><h3>Comment thread</h3>${comments}</div></div>`;
   } catch {
-    return `<pre>${escapeHtml(raw)}</pre>`;
+    return `<pre class="review-scroll">${escapeHtml(raw)}</pre>`;
   }
 }
 
@@ -124,7 +164,14 @@ function activityPanel(model: JobDetail): string {
   return `<section class="panel activity-panel"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null)}</section>`;
 }
 
-/** Everything that is context rather than live state, in a card grid below. */
+/**
+ * Everything that is context rather than live state, in a card grid below.
+ *
+ * Paired by height, not just by topic: the timeline and the validation table
+ * are both short and share the first row, while the review context and the
+ * attempts both want the full width. Putting a tall panel beside a short one
+ * left a column of dead space taller than either.
+ */
 function jobAside(model: JobDetail): string {
   const totalStart = model.job.created_at ?? model.timeline[0]?.at;
   const totalEnd = model.job.finished_at ?? undefined;
@@ -135,10 +182,10 @@ function jobAside(model: JobDetail): string {
       )
       .join("") || '<p class="muted">No attempts recorded.</p>';
   const timeline = `<section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
-  const review = `<section class="panel span-2"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
+  const review = `<section class="panel span-all"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
   const attemptPanel = `<section class="panel span-all"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
-  const validation = `<section class="panel span-all"><h2>Validation results</h2><div class="table-scroll">${validationTable(model.validation)}</div></section>`;
-  return `<div class="job-aside">${timeline}${review}${attemptPanel}${validation}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
+  const validation = `<section class="panel span-2"><h2>Validation results</h2><div class="table-scroll">${validationTable(model.validation)}</div></section>`;
+  return `<div class="job-aside">${timeline}${validation}${review}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
 export function jobRegions(model: JobDetail): {
