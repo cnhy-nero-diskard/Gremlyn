@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 export function toggleRepository(db: Database.Database, repoId: number): boolean | undefined {
   const row = db.prepare("SELECT enabled FROM repositories WHERE id = ?").get(repoId) as
     { enabled: number } | undefined;
@@ -32,30 +33,43 @@ export type SetRepositoryProviderResult =
   | { ok: false; reason: "not-found" | "provider-required" };
 
 export type SetRepositoryModelProviderResult =
-  | { ok: true; provider: string; model: string }
+  | { ok: true; provider: string; model: string; effort: ReasoningEffort }
   | {
       ok: false;
-      reason: "not-found" | "provider-required" | "model-required";
+      reason:
+        | "not-found"
+        | "provider-required"
+        | "model-required"
+        | "effort-required"
+        | "effort-not-supported";
     };
 
-/** Atomically update the dashboard's provider/model pair under repository policy. */
+/** Atomically update the dashboard's provider/model/effort settings. */
 export function setRepositoryModelProvider(
   db: Database.Database,
   repoId: number,
   provider: string,
   model: string,
+  effort: string,
+  supportedEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
 ): SetRepositoryModelProviderResult {
   if (!repositoryExists(db, repoId)) return { ok: false, reason: "not-found" };
   const trimmedProvider = provider.trim();
   if (!trimmedProvider) return { ok: false, reason: "provider-required" };
   const trimmedModel = model.trim();
   if (!trimmedModel) return { ok: false, reason: "model-required" };
-  db.prepare("UPDATE repositories SET provider = ?, model = ? WHERE id = ?").run(
+  const trimmedEffort = effort.trim();
+  if (!trimmedEffort) return { ok: false, reason: "effort-required" };
+  if (!supportedEfforts.includes(trimmedEffort as ReasoningEffort)) {
+    return { ok: false, reason: "effort-not-supported" };
+  }
+  db.prepare("UPDATE repositories SET provider = ?, model = ?, effort = ? WHERE id = ?").run(
     trimmedProvider,
     trimmedModel,
+    trimmedEffort,
     repoId,
   );
-  return { ok: true, provider: trimmedProvider, model: trimmedModel };
+  return { ok: true, provider: trimmedProvider, model: trimmedModel, effort: trimmedEffort as ReasoningEffort };
 }
 
 /** Set a repository's default provider. Providers are opaque ids passed through to the agent CLI. */

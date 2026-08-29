@@ -74,7 +74,8 @@ input:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .model-provider-picker { display: grid; gap: .55rem; min-width: min(100%, 34rem); }
 .model-provider-picker label { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: .45rem; align-items: center; }
 .model-provider-picker select, .model-provider-picker input { min-width: 0; width: 100%; }
-.model-picker-hint { color: var(--muted); display: block; }
+.model-picker-description, .model-picker-hint { color: var(--muted); display: block; grid-column: 2; font-size: .8rem; overflow-wrap: anywhere; }
+.model-picker-description { color: var(--text); }
 .catalog-note { color: var(--muted); margin-top: -.75rem; }
 label { display: inline-flex; gap: .45rem; align-items: center; }
 .chip { display: inline-flex; align-items: center; gap: .3rem; background: var(--surface-muted);
@@ -327,11 +328,19 @@ export const clientScript = `
     return select && !select.hidden ? select.value : (input?.value || '').trim();
   };
   const modelLabel = (model) => {
-    const tier = model.tier === 'free' ? ' · FREE' : model.tier === 'subscribed' ? ' · PASS' : '';
+    const tier = model.tier === 'recommended' ? ' · RECOMMENDED' : model.tier === 'free' ? ' · FREE' : model.tier === 'subscribed' ? ' · PASS' : '';
     const tags = Array.isArray(model.tags) && model.tags.length ? ' · ' + model.tags.join(' · ') : '';
     return (model.name || model.id) + tier + tags;
   };
+  const modelDescription = (model) => [model.description, 'ID: ' + model.id].filter(Boolean).join(' · ');
   const providerLabel = (provider) => (provider.name || provider.id) + ' — ' + (provider.auth || 'provider credentials');
+  const updateModelDescription = (root) => {
+    const description = root.querySelector('[data-repo-model-description]');
+    if (!description) return;
+    const select = root.querySelector('[data-repo-model-select]');
+    const option = select && !select.hidden ? select.selectedOptions[0] : null;
+    description.textContent = option?.dataset.modelDescription || (modelFor(root) ? 'ID: ' + modelFor(root) : 'Choose a model.');
+  };
   const syncPicker = (root, preferredModel) => {
     const providerSelect = root.querySelector('[data-repo-provider-select]');
     const providerInput = root.querySelector('[data-repo-provider-input]');
@@ -345,10 +354,13 @@ export const clientScript = `
     providerInput.hidden = Boolean(provider);
     modelSelect.hidden = !provider;
     modelInput.hidden = Boolean(provider);
-    if (!provider) { modelInput.value = preferredModel || modelInput.value; return; }
+    if (!provider) { modelInput.value = preferredModel || modelInput.value; updateModelDescription(root); return; }
     [...modelSelect.options].forEach((option) => {
       const visible = option.dataset.providerId === provider.id;
       option.hidden = !visible;
+    });
+    modelSelect.querySelectorAll('optgroup').forEach((group) => {
+      group.hidden = ![...group.options].some((option) => !option.hidden);
     });
     const current = preferredModel || modelSelect.value;
     const usable = [...modelSelect.options].find((option) => option.dataset.providerId === provider.id);
@@ -356,6 +368,7 @@ export const clientScript = `
     modelSelect.value = currentOption ? current : (usable?.value || current);
     const hint = root.querySelector('[data-repo-hint]');
     if (hint) hint.textContent = provider.description + ' All catalog models are selectable.';
+    updateModelDescription(root);
   };
   const renderLivePicker = (root, preferredModel) => {
     const providers = modelCatalog || [];
@@ -374,33 +387,44 @@ export const clientScript = `
     providerSelect.value = known ? currentProvider : customProvider;
     providerInput.value = known ? '' : currentProvider;
     modelSelect.textContent = '';
-    providers.forEach((provider) => provider.models.forEach((model) => {
-      const option = document.createElement('option'); option.value = model.id; option.textContent = modelLabel(model); option.dataset.providerId = provider.id; modelSelect.append(option);
-    }));
+    providers.forEach((provider) => {
+      const group = document.createElement('optgroup'); group.label = providerLabel(provider);
+      const models = provider.models.slice();
+      if (provider.id === currentProvider && currentModel && !models.some((model) => model.id === currentModel)) {
+        models.push({ id: currentModel, name: currentModel, description: 'Current repository model.', tags: ['CURRENT'] });
+      }
+      models.forEach((model) => {
+        const option = document.createElement('option'); option.value = model.id; option.textContent = modelLabel(model); option.dataset.providerId = provider.id; option.dataset.modelDescription = modelDescription(model); group.append(option);
+      });
+      modelSelect.append(group);
+    });
     syncPicker(root, currentModel);
   };
-  const setPickerSelection = (root, provider, model) => {
+  const setPickerSelection = (root, provider, model, effort) => {
     const providerSelect = root.querySelector('[data-repo-provider-select]');
     const providerInput = root.querySelector('[data-repo-provider-input]');
     const modelSelect = root.querySelector('[data-repo-model-select]');
     const modelInput = root.querySelector('[data-repo-model-input]');
-    if (!providerSelect || !providerInput || !modelSelect || !modelInput) return;
+    const effortSelect = root.querySelector('[data-repo-effort]');
+    if (!providerSelect || !providerInput || !modelSelect || !modelInput || !effortSelect) return;
     const known = [...providerSelect.options].some((option) => option.value === provider);
     providerSelect.value = known ? provider : customProvider;
     providerInput.value = known ? '' : provider;
     if (!modelCatalog) { modelSelect.value = model; modelInput.value = model; }
+    effortSelect.value = effort;
     syncPicker(root, model);
   };
-  const savePicker = async (root, previousProvider, previousModel) => {
-    const provider = providerFor(root); const model = modelFor(root); const id = root.dataset.repoId;
-    const controls = [...root.querySelectorAll('select, input')]; controls.forEach((control) => { control.disabled = true; }); status('Saving model and provider…');
+  const effortFor = (root) => root.querySelector('[data-repo-effort]')?.value || '';
+  const savePicker = async (root, previousProvider, previousModel, previousEffort) => {
+    const provider = providerFor(root); const model = modelFor(root); const effort = effortFor(root); const id = root.dataset.repoId;
+    const controls = [...root.querySelectorAll('select, input')]; controls.forEach((control) => { control.disabled = true; }); status('Saving model, provider, and effort…');
     try {
-      const response = await fetch('/repos/' + id + '/model-provider', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, model }) });
+      const response = await fetch('/repos/' + id + '/model-provider', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, model, effort }) });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
-      root.dataset.savedProvider = payload.provider; root.dataset.savedModel = payload.model; status('Model and provider updated');
+      root.dataset.savedProvider = payload.provider; root.dataset.savedModel = payload.model; root.dataset.savedEffort = payload.effort; status('Model, provider, and effort updated');
     } catch (error) {
-      setPickerSelection(root, previousProvider, previousModel);
+      setPickerSelection(root, previousProvider, previousModel, previousEffort);
       status(error instanceof Error ? error.message : 'Update refused');
     } finally { controls.forEach((control) => { control.disabled = false; }); }
   };
@@ -474,6 +498,7 @@ export const clientScript = `
     const root = document.getElementById(id); if (!root) return;
     const atBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 24;
     const state = remember(root); root.innerHTML = html; restore(root, state);
+    root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
     if (atBottom) root.scrollTop = root.scrollHeight;
   });
   const eventSource = document.querySelector('[data-stream]');
@@ -516,18 +541,18 @@ export const clientScript = `
       if (stream) stream.scrollTop = stream.scrollHeight;
       return;
     }
-    if ((target instanceof HTMLSelectElement || target instanceof HTMLInputElement) && target.matches('[data-repo-provider-select], [data-repo-provider-input], [data-repo-model-select], [data-repo-model-input]')) {
+    if ((target instanceof HTMLSelectElement || target instanceof HTMLInputElement) && target.matches('[data-repo-provider-select], [data-repo-provider-input], [data-repo-model-select], [data-repo-model-input], [data-repo-effort]')) {
       const root = target.closest('[data-repo-picker]'); if (!root) return;
-      const previousProvider = root.dataset.savedProvider || providerFor(root); const previousModel = root.dataset.savedModel || modelFor(root);
-      if (target.matches('[data-repo-provider-select]')) syncPicker(root);
-      await savePicker(root, previousProvider, previousModel);
+      const previousProvider = root.dataset.savedProvider || providerFor(root); const previousModel = root.dataset.savedModel || modelFor(root); const previousEffort = root.dataset.savedEffort || effortFor(root);
+      if (target.matches('[data-repo-provider-select]')) syncPicker(root); else updateModelDescription(root);
+      await savePicker(root, previousProvider, previousModel, previousEffort);
     }
   });
   // The log arrives server-rendered and is refreshed by the stream swap above;
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
   const initialStream = document.querySelector('[data-log-items]');
   if (initialStream) initialStream.scrollTop = initialStream.scrollHeight;
-  document.querySelectorAll('[data-repo-picker]').forEach((root) => { root.dataset.savedProvider = providerFor(root); root.dataset.savedModel = modelFor(root); });
+  document.querySelectorAll('[data-repo-picker]').forEach((root) => { root.dataset.savedProvider = providerFor(root); root.dataset.savedModel = modelFor(root); root.dataset.savedEffort = effortFor(root); syncPicker(root); });
   void refreshModelCatalog();
   const signIn = document.querySelector('[data-sign-in]');
   if (signIn) signIn.addEventListener('click', async () => { const token = document.querySelector('#token').value; const response = await fetch('/auth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }); if (response.ok) window.location.href = '/'; else document.querySelector('[data-auth-error]').textContent = 'Invalid token'; });

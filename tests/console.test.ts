@@ -193,6 +193,11 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /no poll recorded/);
   assert.match(response.body, /acme\/widgets/);
   assert.match(response.body, /data-repo-picker/);
+  assert.match(response.body, /data-repo-effort/);
+  assert.match(response.body, />Extra high<\/option>/);
+  assert.match(response.body, /<optgroup label="Cline/);
+  assert.match(response.body, /data-model-description=/);
+  assert.match(response.body, /ID: model/);
   assert.match(response.body, /OpenAI Codex/);
   assert.match(response.body, /gpt-5\.6-sol/);
   assert.match(response.body, /moonshotai\/kimi-k3/);
@@ -670,7 +675,7 @@ test("the agent transcript leads the job page and each step states its kind", ()
   assert.equal(detail.split("is-open").length - 1, 1);
 });
 
-test("model/provider updates are atomic, unrestricted, audited, and notify the runtime", async () => {
+test("model/provider/effort updates are atomic, unrestricted, audited, and notify the runtime", async () => {
   const data = fixture();
   let settingsChanges = 0;
   data.options.actions = {
@@ -684,13 +689,18 @@ test("model/provider updates are atomic, unrestricted, audited, and notify the r
     method: "POST",
     url: `/repos/${data.repoId}/model-provider`,
     headers: AUTH,
-    payload: { provider: " openai-codex ", model: " gpt-5.6-sol " },
+    payload: { provider: " openai-codex ", model: " gpt-5.6-sol ", effort: " high " },
   });
   assert.equal(updated.statusCode, 200);
-  assert.deepEqual(updated.json(), { ok: true, provider: "openai-codex", model: "gpt-5.6-sol" });
+  assert.deepEqual(updated.json(), {
+    ok: true,
+    provider: "openai-codex",
+    model: "gpt-5.6-sol",
+    effort: "high",
+  });
   assert.deepEqual(
-    data.store.db.prepare("SELECT provider, model FROM repositories WHERE id = ?").get(data.repoId),
-    { provider: "openai-codex", model: "gpt-5.6-sol" },
+    data.store.db.prepare("SELECT provider, model, effort FROM repositories WHERE id = ?").get(data.repoId),
+    { provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
   );
   assert.equal(settingsChanges, 1);
 
@@ -698,10 +708,15 @@ test("model/provider updates are atomic, unrestricted, audited, and notify the r
     method: "POST",
     url: `/repos/${data.repoId}/model-provider`,
     headers: AUTH,
-    payload: { provider: "openai-codex", model: "gpt-5.6-terra" },
+    payload: { provider: "openai-codex", model: "gpt-5.6-terra", effort: "medium" },
   });
   assert.equal(secondUpdate.statusCode, 200);
-  assert.deepEqual(secondUpdate.json(), { ok: true, provider: "openai-codex", model: "gpt-5.6-terra" });
+  assert.deepEqual(secondUpdate.json(), {
+    ok: true,
+    provider: "openai-codex",
+    model: "gpt-5.6-terra",
+    effort: "medium",
+  });
   assert.equal(settingsChanges, 2);
   assert.equal(
     new OperatorActionStore(data.store.db).list()[0]?.action,

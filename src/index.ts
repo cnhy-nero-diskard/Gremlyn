@@ -15,7 +15,7 @@ import { ResolutionOrchestrator } from "./orchestrator/resolution.js";
 import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
 import { JobStore } from "./store/jobs.js";
-import type { AgentExecutor } from "./types.js";
+import { REASONING_EFFORTS, type AgentExecutor, type ReasoningEffort } from "./types.js";
 import { syncRepositories } from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
 
@@ -84,6 +84,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     dataDir: config.dataDir,
     pollIntervalSec: config.pollIntervalSec,
     concurrency: config.concurrency,
+    effortOptions: config.agents.cline?.efforts ?? REASONING_EFFORTS,
     actions: {
       retry: (jobId) => orchestrator.retry(jobId),
       cancel: (jobId) => orchestrator.cancel(jobId),
@@ -106,10 +107,15 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         const existing = repositories[index];
         if (!existing) return;
         const row = store.db
-          .prepare("SELECT model, provider FROM repositories WHERE id = ?")
-          .get(repoId) as { model: string; provider: string } | undefined;
+          .prepare("SELECT model, provider, effort FROM repositories WHERE id = ?")
+          .get(repoId) as { model: string; provider: string; effort: string } | undefined;
         if (!row) return;
-        const updated = { ...existing, model: row.model, provider: row.provider };
+        const updated = {
+          ...existing,
+          model: row.model,
+          provider: row.provider,
+          effort: row.effort as ReasoningEffort,
+        };
         repositories[index] = updated;
         orchestrator.registerRepository(updated);
       },

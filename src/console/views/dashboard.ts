@@ -1,4 +1,5 @@
 import type { DashboardModel, JobSummary, RepositorySummary } from "../queries.js";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../../types.js";
 import {
   bundledProviderCatalog,
   type ProviderCatalogSnapshot,
@@ -20,8 +21,33 @@ function providerOptionLabel(provider: { name: string; auth: string }): string {
 
 function modelOptionLabel(model: ProviderModelOption): string {
   const tags = model.tags?.length ? ` · ${model.tags.join(" · ")}` : "";
-  const tier = model.tier === "free" ? " · FREE" : model.tier === "subscribed" ? " · PASS" : "";
+  const tier = model.tier === "recommended" ? " · RECOMMENDED" : model.tier === "free" ? " · FREE" : model.tier === "subscribed" ? " · PASS" : "";
   return `${model.name}${tier}${tags}`;
+}
+
+function modelDescription(model: ProviderModelOption): string {
+  return [model.description, `ID: ${model.id}`].filter(Boolean).join(" · ");
+}
+
+function effortLabel(effort: ReasoningEffort): string {
+  return effort === "xhigh" ? "Extra high" : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function effortOptions(
+  repo: RepositorySummary,
+  configuredEfforts: readonly ReasoningEffort[],
+): string {
+  const efforts = [...configuredEfforts];
+  const current = repo.effort;
+  if (current && !efforts.includes(current as ReasoningEffort)) {
+    efforts.push(current as ReasoningEffort);
+  }
+  return efforts
+    .map(
+      (effort) =>
+        `<option value="${escapeHtml(effort)}"${effort === current ? " selected" : ""}>${escapeHtml(effortLabel(effort))}</option>`,
+    )
+    .join("");
 }
 
 function modelOptions(
@@ -42,12 +68,16 @@ function modelOptions(
   return models
     .map((model) => {
       const selected = providerId === repo.provider && model.id === current ? " selected" : "";
-      return `<option value="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}"${selected}>${escapeHtml(modelOptionLabel(model))}</option>`;
+      return `<option value="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}" data-model-description="${escapeHtml(modelDescription(model))}"${selected}>${escapeHtml(modelOptionLabel(model))}</option>`;
     })
     .join("");
 }
 
-function modelProviderControl(repo: RepositorySummary, catalog: ProviderCatalogSnapshot): string {
+function modelProviderControl(
+  repo: RepositorySummary,
+  catalog: ProviderCatalogSnapshot,
+  configuredEfforts: readonly ReasoningEffort[],
+): string {
   const providerId = repo.provider ?? "";
   const knownProvider = catalog.providers.find((provider) => provider.id === providerId);
   const providerValue = knownProvider ? providerId : CUSTOM_PROVIDER;
@@ -61,20 +91,24 @@ function modelProviderControl(repo: RepositorySummary, catalog: ProviderCatalogS
     )
     .join("");
   const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(knownProvider ? "" : providerId)}" placeholder="provider id"${knownProvider ? " hidden" : ""}>`;
-  const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${catalog.providers.map((provider) => modelOptions(repo, provider.id, catalog)).join("")}</select>`;
+  const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${catalog.providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
   const modelInput = `<input name="repo-model-input-${repo.id}" data-repo-model-input data-repo-field="model" value="${escapeHtml(repo.model ?? "")}" placeholder="model id"${knownProvider ? " hidden" : ""}>`;
+  const effort = `<select name="repo-effort-${repo.id}" data-repo-effort data-repo-field="effort">${effortOptions(repo, configuredEfforts)}</select>`;
+  const selectedModel = knownProvider?.models.find((model) => model.id === repo.model);
+  const modelHint = selectedModel ? modelDescription(selectedModel) : repo.model ? `ID: ${repo.model}` : "Choose a model.";
   const hint = knownProvider
     ? `${knownProvider.description} All catalog models are selectable.`
     : "Custom provider; enter the exact provider and model ids.";
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)}</small></div>`;
+  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Effort tiers come from the configured agent.</small></div>`;
 }
 
 export function repositoryCards(
   repositories: RepositorySummary[],
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
+  configuredEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
 ): string {
   if (repositories.length === 0) return '<p class="muted">No repositories configured.</p>';
-  return `<div class="grid">${repositories.map((repo) => `<article class="card"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><p>Agent <strong>${escapeHtml(repo.agent ?? "unknown")}</strong> · Effort <strong>${escapeHtml(repo.effort ?? "unknown")}</strong></p><div class="repo-defaults">${modelProviderControl(repo, catalog)}</div><p><strong>Validation commands</strong>${validationLabel(repo)}</p><p>State: <strong data-enabled>${repo.enabled === 1 ? "enabled" : "disabled"}</strong> <button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${repo.enabled === 1 ? "Disable" : "Enable"}</button></p></article>`).join("")}</div>`;
+  return `<div class="grid">${repositories.map((repo) => `<article class="card"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><p>Agent <strong>${escapeHtml(repo.agent ?? "unknown")}</strong> · Effort <strong>${escapeHtml(repo.effort ?? "unknown")}</strong></p><div class="repo-defaults">${modelProviderControl(repo, catalog, configuredEfforts)}</div><p><strong>Validation commands</strong>${validationLabel(repo)}</p><p>State: <strong data-enabled>${repo.enabled === 1 ? "enabled" : "disabled"}</strong> <button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${repo.enabled === 1 ? "Disable" : "Enable"}</button></p></article>`).join("")}</div>`;
 }
 
 function jobItem(job: JobSummary): string {
@@ -89,6 +123,7 @@ export function jobLane(title: string, jobs: JobSummary[], regionId?: string): s
 export function dashboardRegions(
   model: DashboardModel,
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
+  configuredEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
 ): {
   health: string;
   repositories: string;
@@ -97,7 +132,7 @@ export function dashboardRegions(
   const health = model.health;
   return {
     health: `<section class="health" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimestamp(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.pollAgeSec === null ? "—" : `${health.pollAgeSec}s`}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${health.pollIntervalSec}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${health.queueDepth}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${health.inFlight} / ${health.concurrency}</strong><small>jobs executing</small></div></section>`,
-    repositories: `<h2>Repositories</h2>${repositoryCards(model.repositories, catalog)}`,
+    repositories: `<h2>Repositories</h2>${repositoryCards(model.repositories, catalog, configuredEfforts)}`,
     jobs: `<div class="lanes">${jobLane("Running", model.running)}${jobLane("Queued", model.queued)}${jobLane("Recent successes and failures", model.recent)}</div>`,
   };
 }
@@ -105,8 +140,9 @@ export function dashboardRegions(
 export function dashboardView(
   model: DashboardModel,
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
+  configuredEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
 ): string {
-  const regions = dashboardRegions(model, catalog);
+  const regions = dashboardRegions(model, catalog, configuredEfforts);
   const catalogStatus = catalog.updatedAt
     ? `Cline catalog refreshed ${relativeTimestamp(catalog.updatedAt)}.`
     : "Cline catalog fallback is ready; live featured models refresh when available.";

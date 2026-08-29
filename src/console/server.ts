@@ -16,6 +16,7 @@ import {
   toggleRepository,
 } from "./mutations.js";
 import { openSseStream, SharedChangeTicker } from "./stream.js";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 
 export interface ConsoleActions {
   retry?: (jobId: number) => Promise<unknown> | unknown;
@@ -34,6 +35,7 @@ export interface ConsoleOptions {
   /** Where attempt output and activity snapshots live; used for live tailing. */
   dataDir?: string;
   providerCatalog?: ProviderCatalog;
+  effortOptions?: readonly ReasoningEffort[];
 }
 export function consoleListenOptions(input: { host?: string; port: number }): {
   host: string;
@@ -110,14 +112,22 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       .send(
         layout(
           "Gremlyn dashboard",
-          dashboardView(queries.readDashboard(), providerCatalog.snapshot()),
+          dashboardView(
+            queries.readDashboard(),
+            providerCatalog.snapshot(),
+            options.effortOptions ?? REASONING_EFFORTS,
+          ),
           { stream: "/stream" },
         ),
       ),
   );
   app.get<{ Querystring: { snapshot?: string } }>("/stream", async (request, reply) => {
     const fragments = () => {
-      const regions = dashboardRegions(queries.readDashboard(), providerCatalog.snapshot());
+      const regions = dashboardRegions(
+        queries.readDashboard(),
+        providerCatalog.snapshot(),
+        options.effortOptions ?? REASONING_EFFORTS,
+      );
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -137,7 +147,11 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
   });
   app.get<{ Querystring: { snapshot?: string } }>("/dashboard/stream", async (request, reply) => {
     const fragments = () => {
-      const regions = dashboardRegions(queries.readDashboard(), providerCatalog.snapshot());
+      const regions = dashboardRegions(
+        queries.readDashboard(),
+        providerCatalog.snapshot(),
+        options.effortOptions ?? REASONING_EFFORTS,
+      );
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -282,25 +296,34 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       return reply.send({ ok: true, provider: result.provider });
     },
   );
-  app.post<{ Params: { id: string }; Body: { provider?: string; model?: string } }>(
+  app.post<{ Params: { id: string }; Body: { provider?: string; model?: string; effort?: string } }>(
     "/repos/:id/model-provider",
     async (request, reply) => {
       const id = positiveInteger(request.params.id);
       const provider = request.body?.provider;
       const model = request.body?.model;
+      const effort = request.body?.effort;
       if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
       if (typeof model !== "string") return reply.code(400).send({ error: "model-required" });
-      const result = setRepositoryModelProvider(options.db, id, provider, model);
+      if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
+      const result = setRepositoryModelProvider(
+        options.db,
+        id,
+        provider,
+        model,
+        effort,
+        options.effortOptions ?? REASONING_EFFORTS,
+      );
       if (!result.ok) {
         return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
       }
       options.operatorActions.record({
         action: "repository-model-provider",
         target: `repository:${id}`,
-        effect: `${result.provider}/${result.model}`,
+        effect: `${result.provider}/${result.model}/${result.effort}`,
       });
       await options.actions?.repositorySettingsChanged?.(id);
-      return reply.send({ ok: true, provider: result.provider, model: result.model });
+      return reply.send({ ok: true, provider: result.provider, model: result.model, effort: result.effort });
     },
   );
   app.post<{ Params: { id: string }; Body: { confirm?: string; prNumber?: number } }>(
