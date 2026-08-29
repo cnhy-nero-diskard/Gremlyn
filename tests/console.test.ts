@@ -618,3 +618,48 @@ test("scrollable panels and keyed details survive a live region swap", () => {
   assert.match(html, /<details[^>]*>.*Thinking/su);
   assert.match(html, /activity-open/u, "an unfinished block says it is still writing");
 });
+
+test("the agent transcript leads the job page and each step states its kind", () => {
+  const attempt = {
+    id: 9, job_id: 1, attempt_number: 2, agent: "cline", model: "m", provider: "p", effort: "xhigh",
+    workspace_path: null, head_sha_at_prepare: null, started_at: null, ended_at: null,
+    agent_exit_code: null, agent_session_id: null, outcome: null, failure_stage: null,
+    failure_reason: null, commit_sha: null, pushed: 0, report_status: null,
+    has_uncommitted_changes: 0, output_ref: null, output: "",
+    activity: {
+      blocks: [
+        { seq: 1, kind: "reasoning", at: "2026-08-29T06:28:20.000Z", text: "**Planning**", done: true },
+        { seq: 2, kind: "tool", at: "2026-08-29T06:28:21.000Z", text: "run_commands\n{\n  \"a\": 1\n}", done: true },
+        { seq: 3, kind: "text", at: "2026-08-29T06:28:22.000Z", text: "Working on it", done: false },
+      ],
+      toolCalls: 1, iterations: 1, usage: null, updatedAt: "2026-08-29T06:28:22.000Z",
+    },
+  };
+  const regions = jobRegions({
+    job: {
+      id: 1, repo_id: 1, pr_number: 2, comment_id: 3, command: "RESOLVE", status: "running",
+      owner: "acme", name: "widgets", thread_id: null, review_context: null,
+      created_at: "2026-08-29T06:28:00.000Z", finished_at: null,
+    },
+    attempts: [attempt], timeline: [], validation: [], logs: [], logTotal: 0,
+  } as never);
+  const detail = regions["job-detail-region"];
+
+  // Leads the page: what the agent is doing now must beat the review context
+  // and the timeline, which is where it used to sit.
+  assert.ok(
+    detail.indexOf("activity-panel") < detail.indexOf("Review feedback"),
+    "activity must precede review feedback",
+  );
+  // The newest attempt's transcript is not repeated on its own card.
+  assert.equal(detail.split("activity-stream").length - 1, 1);
+  // Kind is stated in text, never by colour alone.
+  for (const label of ["Thinking", "Tool call", "Narration"]) {
+    assert.ok(detail.includes(label), label);
+  }
+  // A tool step leads with its name and hides long arguments.
+  assert.match(detail, /activity-tool-name.*run_commands/su);
+  assert.match(detail, /activity-args/u);
+  // Only the unfinished step animates.
+  assert.equal(detail.split("is-open").length - 1, 1);
+});

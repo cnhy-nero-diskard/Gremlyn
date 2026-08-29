@@ -87,8 +87,8 @@ function displayCommand(command: string): string {
   }
 }
 
-export function attemptCard(attempt: AttemptDetail): string {
-  return `<article><h2>Attempt ${attempt.attempt_number}</h2>${keyValueTable({ Agent: `${attempt.agent} / ${attempt.model} / ${attempt.effort}`, Workspace: attempt.workspace_path ?? "not prepared", Outcome: attempt.outcome ?? "pending", "Failure stage": attempt.failure_stage ?? "none", "Failure reason": attempt.failure_reason ?? "none", Commit: attempt.commit_sha ?? "none", Reporting: attempt.report_status ?? "pending", Started: attempt.started_at ?? null, Ended: attempt.ended_at ?? null, Duration: duration(attempt.started_at, attempt.ended_at), "Agent exit code": attempt.agent_exit_code, Pushed: attempt.pushed === 1 ? "yes" : "no", "Uncommitted changes": attempt.has_uncommitted_changes === 1 ? "yes" : "no", "Head SHA at prepare": attempt.head_sha_at_prepare })}<h3>Agent activity</h3>${agentActivity(attempt.activity)}<h3>Agent output</h3><details><summary>Raw stream</summary><pre>${escapeHtml(attempt.output)}</pre></details></article>`;
+export function attemptCard(attempt: AttemptDetail, options: { showActivity?: boolean } = {}): string {
+  return `<article><h2>Attempt ${attempt.attempt_number}</h2>${keyValueTable({ Agent: `${attempt.agent} / ${attempt.model} / ${attempt.effort}`, Workspace: attempt.workspace_path ?? "not prepared", Outcome: attempt.outcome ?? "pending", "Failure stage": attempt.failure_stage ?? "none", "Failure reason": attempt.failure_reason ?? "none", Commit: attempt.commit_sha ?? "none", Reporting: attempt.report_status ?? "pending", Started: attempt.started_at ?? null, Ended: attempt.ended_at ?? null, Duration: duration(attempt.started_at, attempt.ended_at), "Agent exit code": attempt.agent_exit_code, Pushed: attempt.pushed === 1 ? "yes" : "no", "Uncommitted changes": attempt.has_uncommitted_changes === 1 ? "yes" : "no", "Head SHA at prepare": attempt.head_sha_at_prepare })}${options.showActivity === false ? "" : `<h3>Agent activity</h3><details class="activity-fold"><summary>Transcript for this attempt</summary>${agentActivity(attempt.activity)}</details>`}<h3>Agent output</h3><details><summary>Raw stream</summary><pre>${escapeHtml(attempt.output)}</pre></details></article>`;
 }
 
 /** `2026-08-28T17:53:05.254Z` → `17:53:05.254`, the part that varies while watching. */
@@ -147,8 +147,26 @@ function logFields(raw: string | null): string {
 const ACTIVITY_LABELS: Record<string, string> = {
   reasoning: "Thinking",
   text: "Narration",
-  tool: "Tool input",
+  tool: "Tool call",
 };
+
+/** `2026-08-28T18:05:44.524Z` -> `18:05:44`, matching the log's clock. */
+function activityClock(at: string): string {
+  const match = /T(\d{2}:\d{2}:\d{2})/u.exec(at);
+  return match ? (match[1] ?? at) : at;
+}
+
+/**
+ * A tool block is stored as `name` then its JSON input on following lines.
+ * The name is the part worth showing at a glance; the arguments can be long
+ * enough to bury the rest of the transcript, so they stay behind a toggle.
+ */
+function toolParts(text: string): { name: string; input: string } {
+  const newline = text.indexOf("\n");
+  return newline === -1
+    ? { name: text, input: "" }
+    : { name: text.slice(0, newline), input: text.slice(newline + 1) };
+}
 
 /**
  * The agent's own transcript for an attempt.
@@ -156,26 +174,46 @@ const ACTIVITY_LABELS: Record<string, string> = {
  * Reasoning is collapsed by default and narration is not: reasoning is the
  * model's unfiltered intermediate output and can quote file contents verbatim,
  * so it should be opened deliberately rather than sprayed across the page.
- * An open block is still being written, and says so, because a transcript that
- * simply stops is indistinguishable from a stalled agent.
+ * An unfinished block is marked as still being written, because a transcript
+ * that simply stops is indistinguishable from a stalled agent.
  */
 export function agentActivity(activity: AgentActivity | null): string {
   if (!activity || activity.blocks.length === 0) {
     return '<p class="muted">No agent activity captured yet.</p>';
   }
-  const summary = `<p class="muted activity-summary">${String(activity.iterations)} iteration${activity.iterations === 1 ? "" : "s"} · ${String(activity.toolCalls)} tool call${activity.toolCalls === 1 ? "" : "s"} · updated ${escapeHtml(activity.updatedAt)}</p>`;
+  const summary = `<p class="muted activity-summary"><span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(activityClock(activity.updatedAt))}</p>`;
   const blocks = activity.blocks
     .map((block) => {
       const label = ACTIVITY_LABELS[block.kind] ?? block.kind;
+      const open = block.done ? "" : " is-open";
       const pending = block.done ? "" : '<span class="activity-open">writing…</span>';
-      const body = `<pre class="activity-text">${escapeHtml(block.text)}</pre>`;
-      const head = `<span class="activity-kind activity-${escapeHtml(block.kind)}">${escapeHtml(label)}</span>${pending}`;
-      return block.kind === "reasoning"
-        ? `<details class="activity-block" data-details-key="activity-${String(block.seq)}"><summary>${head}</summary>${body}</details>`
-        : `<div class="activity-block"><div class="activity-head">${head}</div>${body}</div>`;
+      const head =
+        `<span class="activity-kind">${escapeHtml(label)}</span>` +
+        `<time class="activity-time" datetime="${escapeHtml(block.at)}">${escapeHtml(activityClock(block.at))}</time>` +
+        pending;
+      const shell = (inner: string): string =>
+        `<li class="activity-block activity-${escapeHtml(block.kind)}${open}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;
+
+      if (block.kind === "tool") {
+        const { name, input } = toolParts(block.text);
+        const args = input
+          ? `<details class="activity-args" data-details-key="activity-args-${String(block.seq)}"><summary>arguments</summary><pre class="activity-text">${escapeHtml(input)}</pre></details>`
+          : "";
+        return shell(
+          `<div class="activity-head">${head}</div><p class="activity-tool-name"><code>${escapeHtml(name)}</code></p>${args}`,
+        );
+      }
+      if (block.kind === "reasoning") {
+        return shell(
+          `<details class="activity-fold" data-details-key="activity-${String(block.seq)}"><summary><span class="activity-head">${head}</span></summary><pre class="activity-text">${escapeHtml(block.text)}</pre></details>`,
+        );
+      }
+      return shell(
+        `<div class="activity-head">${head}</div><pre class="activity-text">${escapeHtml(block.text)}</pre>`,
+      );
     })
     .join("");
-  return `${summary}<div class="activity-stream" data-scroll-keep="activity">${blocks}</div>`;
+  return `${summary}<ol class="activity-stream" data-scroll-keep="activity">${blocks}</ol>`;
 }
 
 export function logEntries(logs: LogRow[]): string {

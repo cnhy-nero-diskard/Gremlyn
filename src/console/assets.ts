@@ -102,18 +102,55 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
   .log-chips { margin-left: 0; }
 }
 
-/* Agent activity — the agent's own transcript for one attempt. */
-.activity-summary { font-size: .85rem; margin: .2rem 0 .6rem; }
-.activity-stream { display: grid; gap: .5rem; max-height: 32rem; overflow: auto; }
-.activity-block { background: var(--surface-muted); border: 1px solid var(--border); border-radius: .45rem; padding: .5rem .65rem; }
-.activity-head { margin-bottom: .3rem; }
-.activity-block > summary { cursor: pointer; }
-.activity-kind { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
-  border-radius: 999px; padding: .1rem .5rem; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
-.activity-reasoning { color: var(--interrupted); }
-.activity-text { margin: 0; background: transparent; padding: .35rem 0 0; font-size: .84rem; }
-.activity-tool { color: var(--accent); }
-.activity-open { margin-left: .45rem; font-size: .72rem; color: var(--muted); font-style: italic; }
+/* Agent activity ------------------------------------------------------------
+   A vertical timeline: one rail down the left, a dot per step, colour-coded by
+   what the agent was doing. Colour alone never carries the meaning — each step
+   also states its kind — so the three types stay distinguishable without it. */
+.activity-panel { border-color: var(--accent); }
+.activity-attempt { font-size: .8rem; font-weight: 400; }
+.activity-summary { font-size: .85rem; margin: .2rem 0 .7rem; }
+.activity-stat { font-weight: 700; color: var(--text); }
+.activity-stream { list-style: none; margin: 0; padding: 0 0 0 1.15rem; display: grid; gap: .45rem;
+  max-height: 32rem; overflow: auto; position: relative; }
+/* The rail itself, behind the dots. */
+.activity-stream::before { content: ""; position: absolute; left: .32rem; top: .3rem; bottom: .3rem;
+  width: 2px; background: var(--border); border-radius: 2px; }
+.activity-block { position: relative; background: var(--surface-muted); border: 1px solid var(--border);
+  border-left: 3px solid var(--kind, var(--border)); border-radius: .45rem; padding: .45rem .65rem; }
+.activity-dot { position: absolute; left: -1.02rem; top: .75rem; width: .55rem; height: .55rem;
+  border-radius: 50%; background: var(--kind, var(--muted)); box-shadow: 0 0 0 3px var(--surface); }
+.activity-reasoning { --kind: var(--interrupted); }
+.activity-text { --kind: var(--accent); }
+.activity-tool { --kind: var(--success); }
+.activity-head { display: flex; align-items: baseline; gap: .45rem; flex-wrap: wrap; }
+.activity-kind { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  border-radius: 999px; padding: .08rem .5rem; background: var(--surface); border: 1px solid var(--kind, var(--border)); color: var(--kind, var(--muted)); }
+.activity-time { font-size: .72rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.activity-fold > summary, .activity-args > summary { cursor: pointer; }
+.activity-args > summary { font-size: .74rem; color: var(--muted); margin-top: .3rem; }
+.activity-tool-name { margin: .3rem 0 0; }
+.activity-tool-name code { font-size: .84rem; font-weight: 700; }
+/* .activity-text doubles as the block body; keep it quiet inside a card. */
+pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font-size: .84rem; }
+.activity-open { font-size: .72rem; color: var(--kind, var(--muted)); font-style: italic; }
+
+/* The step still being written: a travelling sheen along its left edge and a
+   pulsing dot, so a live attempt is obvious at a glance from the rail alone. */
+.activity-block.is-open { border-left-color: var(--kind, var(--accent)); overflow: hidden; }
+.activity-block.is-open::after { content: ""; position: absolute; left: -3px; top: 0; width: 3px; height: 40%;
+  background: linear-gradient(180deg, transparent, var(--kind, var(--accent)), transparent);
+  animation: activity-sheen 1.8s ease-in-out infinite; }
+.activity-block.is-open .activity-dot { animation: activity-ping 1.4s ease-out infinite; }
+@keyframes activity-sheen { 0% { top: -40%; } 100% { top: 100%; } }
+@keyframes activity-ping {
+  0% { box-shadow: 0 0 0 3px var(--surface), 0 0 0 3px var(--kind, var(--accent)); }
+  70% { box-shadow: 0 0 0 3px var(--surface), 0 0 0 9px transparent; }
+  100% { box-shadow: 0 0 0 3px var(--surface), 0 0 0 9px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-block.is-open::after { animation: none; opacity: .8; height: 100%; top: 0; }
+  .activity-block.is-open .activity-dot { animation: none; }
+}
 `;
 
 export const clientScript = `
