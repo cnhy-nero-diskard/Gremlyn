@@ -62,6 +62,17 @@ export interface PollCommentsResult {
   comments: ReviewCommentPayload[];
 }
 
+/** GitHub's fixed reaction vocabulary. */
+export type ReactionContent =
+  | "+1"
+  | "-1"
+  | "laugh"
+  | "confused"
+  | "heart"
+  | "hooray"
+  | "rocket"
+  | "eyes";
+
 export interface GitHubClient {
   /** Login of the identity the client authenticates as. */
   getAuthenticatedLogin(): Promise<string>;
@@ -103,6 +114,18 @@ export interface GitHubClient {
     repo: string,
     options: PollCommentsOptions,
   ): Promise<PollCommentsResult>;
+  /**
+   * Replace the orchestrator's status reaction on the triggering review
+   * comment. Any reaction the authenticated identity already left on the
+   * comment is removed first, so exactly one status reaction is visible at a
+   * time, letting the comment itself surface the job's progress at a glance.
+   */
+  setCommentReaction(
+    owner: string,
+    repo: string,
+    commentId: number,
+    content: ReactionContent,
+  ): Promise<void>;
 }
 
 export class GitHubError extends Error {

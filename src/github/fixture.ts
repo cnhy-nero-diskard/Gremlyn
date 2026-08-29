@@ -4,6 +4,7 @@ import {
   type PollCommentsOptions,
   type PollCommentsResult,
   type PullRequestInfo,
+  type ReactionContent,
   type ReviewCommentPayload,
   type ReviewThread,
 } from "./client.js";
@@ -22,6 +23,10 @@ export class FixtureGitHubClient implements GitHubClient {
   readonly replies: { prNumber: number; inReplyTo: number; body: string }[] = [];
   /** Top-level pull-request conversation replies posted by the fixture. */
   readonly conversationReplies: { prNumber: number; body: string }[] = [];
+  /** Every reaction content applied per comment, in order. */
+  readonly reactionHistory: { commentId: number; content: ReactionContent }[] = [];
+  /** Current reaction left on each comment, keyed by comment id. */
+  readonly reactions = new Map<number, ReactionContent>();
   /** Fixture-observable count of requests that consumed rate limit. */
   rateLimitConsumed = 0;
   private nextCommentId = 1;
@@ -125,5 +130,17 @@ export class FixtureGitHubClient implements GitHubClient {
     }
     this.rateLimitConsumed += 1;
     return Promise.resolve({ status: 200, etag, comments: fresh });
+  }
+
+  setCommentReaction(
+    _owner: string,
+    _repo: string,
+    commentId: number,
+    content: ReactionContent,
+  ): Promise<void> {
+    if (this.reactions.get(commentId) === content) return Promise.resolve();
+    this.reactions.set(commentId, content);
+    this.reactionHistory.push({ commentId, content });
+    return Promise.resolve();
   }
 }

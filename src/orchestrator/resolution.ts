@@ -20,7 +20,7 @@ import { createRedactor } from "../log/redact.js";
 import { publishIfEligible } from "../publish/policy.js";
 import { reportAttemptOutcome } from "../publish/report.js";
 import { JobStore } from "../store/jobs.js";
-import type { AgentExecutor, FailureStage, NormalizedEvent, ParsedCommand } from "../types.js";
+import type { AgentExecutor, FailureStage, JobStatus, NormalizedEvent, ParsedCommand } from "../types.js";
 import { inspectWorkspace } from "../validate/inspection.js";
 import { runValidationCommands } from "../validate/runner.js";
 import { statusEntries } from "../workspace/gitops.js";
@@ -32,6 +32,7 @@ import {
   classifyFailure,
 } from "./failures.js";
 import { JobQueue, type QueueResult } from "./queue.js";
+import { reactionForStatus } from "./reactions.js";
 
 export interface RuntimeRepository extends RepoConfig {
   id: number;
@@ -111,6 +112,7 @@ export class ResolutionOrchestrator {
         observedAt: event.observedAt,
       });
       if (claimed.kind === "duplicate") continue;
+      await this.reactToStatus(repository, event.commentId, "queued");
       const attempt = this.jobs.createAttempt({
         jobId: claimed.jobId,
         agent: repository.agent,
@@ -139,6 +141,31 @@ export class ResolutionOrchestrator {
 
   cancel(jobId: number): boolean {
     return this.queue.cancel(jobId);
+  }
+
+  /**
+   * Best-effort: the triggering comment's reaction is a status mirror, not a
+   * source of truth. A GitHub hiccup here must never fail or retry the job.
+   */
+  private async reactToStatus(
+    repository: Pick<RuntimeRepository, "owner" | "name">,
+    commentId: number,
+    status: JobStatus,
+  ): Promise<void> {
+    try {
+      await this.options.github.setCommentReaction(
+        repository.owner,
+        repository.name,
+        commentId,
+        reactionForStatus(status),
+      );
+    } catch (error) {
+      this.options.logger.warn("status reaction failed", {
+        commentId,
+        status,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async retry(jobId: number): Promise<QueueResult<{ commitSha?: string }>> {
@@ -196,13 +223,17 @@ export class ResolutionOrchestrator {
           command,
           signal,
         }),
-      onRejected: (reason) => this.jobs.finishFailure(jobId, attemptId, "preparing", reason),
+      onRejected: async (reason) => {
+        this.jobs.finishFailure(jobId, attemptId, "preparing", reason);
+        await this.reactToStatus(repository, commentId, "failed");
+      },
       onCancelled: async () => {
         const attempt = this.jobs.getAttempt(attemptId);
         const hasChanges = attempt.workspace_path
           ? (await statusEntries(attempt.workspace_path)).length > 0
           : false;
         this.jobs.cancelJob(jobId, attemptId, hasChanges);
+        await this.reactToStatus(repository, commentId, "cancelled");
         // 4.3: seeded credential must be removed even on cancellation.
         const attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
         removeAttemptDataDir(attemptDataDir);
@@ -226,6 +257,7 @@ export class ResolutionOrchestrator {
     let attemptDataDir: string | undefined;
     try {
       this.jobs.setStatus(jobId, stage, attemptId);
+      await this.reactToStatus(repository, commentId, stage);
       const context = await reconstructReviewContext(this.options.github, {
         owner: repository.owner,
         repo: repository.name,
@@ -249,6 +281,7 @@ export class ResolutionOrchestrator {
 
       stage = "running";
       this.jobs.setStatus(jobId, stage, attemptId);
+      await this.reactToStatus(repository, commentId, stage);
       const executor = this.options.executors.get(repository.agent);
       if (!executor) throw new StageFailure(stage, "agent-cli-missing");
       attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
@@ -324,6 +357,7 @@ export class ResolutionOrchestrator {
 
       stage = "validating";
       this.jobs.setStatus(jobId, stage, attemptId);
+      await this.reactToStatus(repository, commentId, stage);
       this.options.logger.info("validation started", { jobId, attemptId });
       const inspection = await inspectWorkspace(workspace.path, context.headBranch);
       const validation = await runValidationCommands({
@@ -342,6 +376,7 @@ export class ResolutionOrchestrator {
 
       stage = "publishing";
       this.jobs.setStatus(jobId, stage, attemptId);
+      await this.reactToStatus(repository, commentId, stage);
       const currentPr = await this.options.github.getPullRequest(
         repository.owner,
         repository.name,
@@ -378,6 +413,7 @@ export class ResolutionOrchestrator {
 
       stage = "reporting";
       this.jobs.setStatus(jobId, stage, attemptId);
+      await this.reactToStatus(repository, commentId, stage);
       const report = await reportAttemptOutcome({
         github: this.options.github,
         jobs: this.jobs,
@@ -399,6 +435,7 @@ export class ResolutionOrchestrator {
       if (!report.posted) throw new StageFailure(stage, "comment-post-failed");
       this.options.logger.info("GitHub reply posted", { jobId, attemptId });
       this.jobs.finishSuccess(jobId, attemptId);
+      await this.reactToStatus(repository, commentId, "succeeded");
       this.options.logger.info("job completed", { jobId, attemptId });
       this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       return { commitSha: publication.commitSha };
@@ -419,6 +456,7 @@ export class ResolutionOrchestrator {
         hasUncommittedChanges: hasChanges,
       });
       this.jobs.finishFailure(jobId, attemptId, failure.stage, failure.reason);
+      await this.reactToStatus(repository, commentId, "failed");
       if (failure.stage !== "reporting") {
         await reportAttemptOutcome({
           github: this.options.github,

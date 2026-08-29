@@ -5,6 +5,7 @@ import {
   type PollCommentsOptions,
   type PollCommentsResult,
   type PullRequestInfo,
+  type ReactionContent,
   type ReviewCommentPayload,
   type ReviewThread,
 } from "./client.js";
@@ -16,14 +17,19 @@ import { mapPullRequest, mapReviewComment } from "./mappers.js";
  */
 export class OctokitGitHubClient implements GitHubClient {
   private readonly octokit: Octokit;
+  private authenticatedLogin: Promise<string> | undefined;
 
   constructor(token: string) {
     this.octokit = new Octokit({ auth: token });
   }
 
   async getAuthenticatedLogin(): Promise<string> {
-    const { data } = await this.octokit.rest.users.getAuthenticated();
-    return data.login;
+    // Cached: the orchestrator's identity never changes mid-process, and
+    // setCommentReaction calls this on every status transition.
+    this.authenticatedLogin ??= this.octokit.rest.users
+      .getAuthenticated()
+      .then(({ data }) => data.login);
+    return this.authenticatedLogin;
   }
 
   async getPullRequest(owner: string, repo: string, prNumber: number): Promise<PullRequestInfo> {
@@ -120,6 +126,36 @@ export class OctokitGitHubClient implements GitHubClient {
       }
       throw err;
     }
+  }
+
+  async setCommentReaction(
+    owner: string,
+    repo: string,
+    commentId: number,
+    content: ReactionContent,
+  ): Promise<void> {
+    const login = await this.getAuthenticatedLogin();
+    const { data: existing } = await this.octokit.rest.reactions.listForPullRequestReviewComment({
+      owner,
+      repo,
+      comment_id: commentId,
+    });
+    const ownReactions = existing.filter((reaction) => reaction.user?.login === login);
+    if (ownReactions.some((reaction) => reaction.content === content)) return;
+    for (const reaction of ownReactions) {
+      await this.octokit.rest.reactions.deleteForPullRequestComment({
+        owner,
+        repo,
+        comment_id: commentId,
+        reaction_id: reaction.id,
+      });
+    }
+    await this.octokit.rest.reactions.createForPullRequestReviewComment({
+      owner,
+      repo,
+      comment_id: commentId,
+      content,
+    });
   }
 }
 

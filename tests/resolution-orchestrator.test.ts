@@ -136,6 +136,11 @@ test("production lifecycle reconstructs context, validates, pushes, replies, and
   );
   assert.equal(data.executor.runs[0]!.options.prompt.includes("$(malformed)"), true);
   assert.equal(data.executor.runs[0]!.options.env.GREMLYN_GITHUB_TOKEN, undefined);
+  assert.deepEqual(
+    data.github.reactionHistory.map((r) => r.content),
+    ["eyes", "rocket", "hooray"],
+  );
+  assert.equal(data.github.reactions.get(501), "hooray");
   data.store.close();
 });
 
@@ -156,6 +161,10 @@ test("failed agent never pushes and records stage, files, commit, and push facts
   assert.equal(attempt.commit_sha, null);
   assert.equal(attempt.pushed, 0);
   assert.match(data.github.replies[0]!.body, /No changes were pushed/);
+  assert.deepEqual(
+    data.github.reactionHistory.map((r) => r.content),
+    ["eyes", "rocket", "confused"],
+  );
   data.store.close();
 });
 

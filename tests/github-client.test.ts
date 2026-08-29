@@ -170,3 +170,17 @@ test("fork detection distinguishes same-repo from fork PRs", () => {
   assert.equal(isForkPullRequest(PR), false);
   assert.equal(isForkPullRequest({ ...PR, headRepoOwner: "someone-else" }), true);
 });
+
+test("setCommentReaction records each distinct status and skips repeats", async () => {
+  const client = new FixtureGitHubClient({ login: "gremlyn-bot", prs: [PR] });
+  await client.setCommentReaction("someuser", "repo", 102, "eyes");
+  await client.setCommentReaction("someuser", "repo", 102, "rocket");
+  await client.setCommentReaction("someuser", "repo", 102, "rocket");
+  await client.setCommentReaction("someuser", "repo", 102, "hooray");
+  assert.deepEqual(client.reactionHistory, [
+    { commentId: 102, content: "eyes" },
+    { commentId: 102, content: "rocket" },
+    { commentId: 102, content: "hooray" },
+  ]);
+  assert.equal(client.reactions.get(102), "hooray");
+});
