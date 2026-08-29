@@ -23,6 +23,8 @@ export interface ConsoleOptions {
   actions?: ConsoleActions;
   pollIntervalSec?: number;
   concurrency?: number;
+  /** Where attempt output and activity snapshots live; used for live tailing. */
+  dataDir?: string;
 }
 export function consoleListenOptions(input: { host?: string; port: number }): {
   host: string;
@@ -38,8 +40,9 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
     secrets: options.secrets,
     pollIntervalSec: options.pollIntervalSec ?? 60,
     concurrency: options.concurrency ?? 1,
+    dataDir: options.dataDir ?? ".gremlyn",
   });
-  const ticker = new SharedChangeTicker(options.db);
+  const ticker = new SharedChangeTicker(options.db, 250, options.dataDir ?? ".gremlyn");
   const publicAssetPaths = new Set([
     "/assets/app.css",
     "/assets/app.js",

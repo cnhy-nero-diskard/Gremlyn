@@ -19,6 +19,12 @@ export type ProcessRunner = (
     env: Record<string, string>;
     timeoutMs?: number;
     signal?: AbortSignal;
+    /**
+     * Called with each complete stdout line as it arrives, so a caller can
+     * follow a run in progress. The buffered stdout is still returned in full
+     * on exit; this is an addition, not a replacement.
+     */
+    onLine?: (line: string) => void;
   },
 ) => Promise<ProcessResult>;
 
@@ -82,7 +88,7 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     binary = shim.binary;
     args = [...shim.prefix, ...args];
   }
-  const result = await execa(binary, args, {
+  const subprocess = execa(binary, args, {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     env: options.env,
     extendEnv: false,
@@ -95,6 +101,37 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
     ...(options.signal === undefined ? {} : { cancelSignal: options.signal }),
   });
+  if (options.onLine && subprocess.stdout) {
+    // Observe the stream without consuming it: execa still buffers stdout, so
+    // the completed result is unchanged whether or not anyone is watching.
+    const emit = options.onLine;
+    let pending = "";
+    subprocess.stdout.on("data", (chunk: Buffer | string) => {
+      pending += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const lines = pending.split(/\r?\n/u);
+      // The trailing element is an incomplete line; hold it for the next chunk.
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        // A malformed line must never take down the run being observed.
+        try {
+          emit(line);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    subprocess.stdout.on("end", () => {
+      if (pending !== "") {
+        try {
+          emit(pending);
+        } catch {
+          /* ignore */
+        }
+        pending = "";
+      }
+    });
+  }
+  const result = await subprocess;
   return {
     stdout: result.stdout,
     stderr: result.stderr,
@@ -169,6 +206,7 @@ export class ClineExecutor implements AgentExecutor {
       env: opts.env,
       timeoutMs: opts.timeoutSec * 1_000,
       signal: opts.signal,
+      ...(opts.onLine ? { onLine: opts.onLine } : {}),
     });
     const sessionId = extractSessionId(result.stdout);
     return {

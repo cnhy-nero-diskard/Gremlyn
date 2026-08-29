@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
+import { activityPath } from "../agent/activity.js";
 
 export type StreamChange = { sequence: number };
 export type StreamListener = (change: StreamChange) => void;
@@ -13,6 +14,7 @@ export class SharedChangeTicker {
   constructor(
     private readonly db: Database.Database,
     private readonly intervalMs = 250,
+    private readonly dataDir = ".gremlyn",
   ) {
     this.lastSignature = this.signature();
   }
@@ -52,12 +54,20 @@ export class SharedChangeTicker {
     try {
       const row = this.db
         .prepare(
-          `SELECT (SELECT COALESCE(MAX(id), 0) FROM jobs) AS jobs, (SELECT GROUP_CONCAT(id || ':' || status || ':' || COALESCE(finished_at, ''), '|') FROM jobs) AS job_states, (SELECT COALESCE(MAX(id), 0) FROM attempts) AS attempts, (SELECT GROUP_CONCAT(id || ':' || COALESCE(outcome, '') || ':' || COALESCE(started_at, '') || ':' || COALESCE(ended_at, ''), '|') FROM attempts) AS attempt_states, (SELECT COALESCE(MAX(id), 0) FROM status_events) AS statuses, (SELECT COALESCE(MAX(id), 0) FROM log_entries) AS logs, (SELECT COALESCE(MAX(id), 0) FROM operator_actions) AS actions, (SELECT GROUP_CONCAT(id || ':' || enabled, '|') FROM repositories) AS repository_states, (SELECT GROUP_CONCAT(output_ref, '|') FROM attempts WHERE output_ref IS NOT NULL) AS attempt_outputs, (SELECT GROUP_CONCAT(output_ref, '|') FROM validation_runs WHERE output_ref IS NOT NULL) AS validation_outputs`,
+          `SELECT (SELECT COALESCE(MAX(id), 0) FROM jobs) AS jobs, (SELECT GROUP_CONCAT(id || ':' || status || ':' || COALESCE(finished_at, ''), '|') FROM jobs) AS job_states, (SELECT COALESCE(MAX(id), 0) FROM attempts) AS attempts, (SELECT GROUP_CONCAT(id || ':' || COALESCE(outcome, '') || ':' || COALESCE(started_at, '') || ':' || COALESCE(ended_at, ''), '|') FROM attempts) AS attempt_states, (SELECT COALESCE(MAX(id), 0) FROM status_events) AS statuses, (SELECT COALESCE(MAX(id), 0) FROM log_entries) AS logs, (SELECT COALESCE(MAX(id), 0) FROM operator_actions) AS actions, (SELECT GROUP_CONCAT(id || ':' || enabled, '|') FROM repositories) AS repository_states, (SELECT GROUP_CONCAT(output_ref, '|') FROM attempts WHERE output_ref IS NOT NULL) AS attempt_outputs, (SELECT GROUP_CONCAT(output_ref, '|') FROM validation_runs WHERE output_ref IS NOT NULL) AS validation_outputs, (SELECT GROUP_CONCAT(id, '|') FROM attempts WHERE ended_at IS NULL) AS live_attempts`,
         )
         .get() as Record<string, unknown>;
       const paths = [row.attempt_outputs, row.validation_outputs]
         .filter((value): value is string => typeof value === "string")
         .flatMap((value) => value.split("|"));
+      // A running agent writes only its activity snapshot: no row changes, so
+      // without this the log would sit still for the whole attempt.
+      if (typeof row.live_attempts === "string") {
+        for (const id of row.live_attempts.split("|")) {
+          const attemptId = Number(id);
+          if (Number.isInteger(attemptId)) paths.push(activityPath(this.dataDir, attemptId));
+        }
+      }
       const files = paths.map((path) => {
         try {
           const stat = statSync(path);

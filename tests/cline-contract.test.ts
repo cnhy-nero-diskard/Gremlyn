@@ -225,3 +225,38 @@ test(
     assert.equal(result.exitCode, 0);
   },
 );
+
+/**
+ * Streaming exists so an attempt is observable while it runs: the buffered
+ * stdout only arrives on exit, which for a 2-minute agent is 2 minutes of
+ * silence. Observing must not change what the completed result contains.
+ */
+test("stdout lines are delivered while the process runs, and the buffer is unchanged", async () => {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+  const seen: string[] = [];
+  const script =
+    "process.stdout.write('one\\ntw'); process.stdout.write('o\\nthree\\n'); process.stdout.write('trailing');";
+  const result = await defaultRunner(process.execPath, ["-e", script], {
+    env,
+    onLine: (line) => seen.push(line),
+  });
+  // Chunk boundaries fall mid-line; the reader must rejoin them.
+  assert.deepEqual(seen, ["one", "two", "three", "trailing"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /one\r?\ntwo\r?\nthree\r?\ntrailing/u);
+});
+
+test("a throwing line observer cannot fail the run it is watching", async () => {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+  const result = await defaultRunner(process.execPath, ["-e", "process.stdout.write('x\\n')"], {
+    env,
+    onLine: () => {
+      throw new Error("observer blew up");
+    },
+  });
+  assert.equal(result.exitCode, 0);
+});

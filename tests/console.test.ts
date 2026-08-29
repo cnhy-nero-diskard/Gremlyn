@@ -11,14 +11,17 @@ import {
 } from "../src/console/server.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
-import { readHealth } from "../src/console/queries.js";
+import { JOB_LOG_TAIL, readHealth, readJobDetail } from "../src/console/queries.js";
 import { SharedChangeTicker } from "../src/console/stream.js";
+import { jobRegions } from "../src/console/views/job.js";
 import { assetHash, clientScriptPath, stylesheetPath } from "../src/console/assets.js";
 import {
   dangerZone,
   duration,
   escapeHtml,
+  agentActivity,
   keyValueTable,
+  logEntries,
   relativeTimestamp,
   statusPill,
 } from "../src/console/views/components.js";
@@ -216,7 +219,7 @@ test("job detail separates attempts and shows context, failure, output, validati
     "Validation results",
     "agent output contains [redacted]",
     "validation failed: [redacted]",
-    "Structured log",
+    "Live log",
     "Destructive actions",
     "Confirmation",
     "discussion_r101",
@@ -519,4 +522,99 @@ test("terminal status treatments use distinct classes and non-colour cues", () =
     await app.close();
     data.store.close();
   });
+});
+
+test("the job log tails a bounded number of newest entries in chronological order", () => {
+  const data = fixture();
+  const insert = data.store.db.prepare(
+    "INSERT INTO log_entries (at, level, event, job_id, fields) VALUES (?, 'info', ?, ?, '{}')",
+  );
+  for (let i = 0; i < JOB_LOG_TAIL + 60; i += 1) {
+    insert.run(`2026-08-28T18:00:00.000Z`, `bulk event ${String(i)}`, data.jobId);
+  }
+  const model = readJobDetail(data.store.db, data.jobId, [SECRET]);
+  assert.ok(model);
+  // Bounded, newest-last: an unbounded log is re-serialised on every stream
+  // tick and buries the line the operator is actually watching.
+  assert.equal(model.logs.length, JOB_LOG_TAIL);
+  assert.ok(model.logTotal > JOB_LOG_TAIL);
+  const events = model.logs.map((row) => row.event);
+  assert.equal(events.at(-1), `bulk event ${String(JOB_LOG_TAIL + 60 - 1)}`);
+  assert.ok(events.indexOf("bulk event 259") > events.indexOf("bulk event 200"));
+  data.store.close();
+});
+
+test("log fields render as chips rather than a raw JSON blob", () => {
+  const long = "x".repeat(200);
+  const html = logEntries([
+    {
+      id: 1,
+      at: "2026-08-28T17:53:05.254Z",
+      level: "error",
+      event: "job failed",
+      job_id: 1,
+      attempt_id: 2,
+      fields: JSON.stringify({ reason: "agent-auth-failed", detail: long }),
+    },
+  ]);
+  // Compact clock, not the full ISO stamp, with the exact value kept for hover.
+  assert.match(html, /&gt;17:53:05\.254&lt;|>17:53:05\.254</u);
+  assert.match(html, /title="2026-08-28T17:53:05\.254Z"/u);
+  // Short values become chips; a long one keeps its own readable row.
+  assert.match(html, /class="log-chip"><span class="log-key">reason<\/span>agent-auth-failed/u);
+  assert.match(html, /class="log-detail"/u);
+  // Level drives a styling hook so errors are visually distinct.
+  assert.match(html, /class="log-line log-error"/u);
+});
+
+test("malformed log fields are shown verbatim rather than dropped", () => {
+  const html = logEntries([
+    {
+      id: 1,
+      at: "2026-08-28T17:53:05.254Z",
+      level: "info",
+      event: "odd",
+      job_id: 1,
+      attempt_id: null,
+      fields: "not json at all",
+    },
+  ]);
+  assert.match(html, /not json at all/u);
+});
+
+test("scrollable panels and keyed details survive a live region swap", () => {
+  // The job region is replaced wholesale on every stream tick. Anything the
+  // operator scrolled or expanded must be re-identified after the swap, or the
+  // activity panel snaps back to the top several times a second.
+  const model = jobRegions({
+    job: {
+      id: 1, repo_id: 1, pr_number: 2, comment_id: 3, command: "RESOLVE", status: "running",
+      owner: "acme", name: "widgets", thread_id: null, review_context: null,
+      created_at: "2026-08-28T18:00:00.000Z", finished_at: null,
+    },
+    attempts: [],
+    timeline: [],
+    validation: [],
+    logs: [],
+    logTotal: 0,
+  } as never);
+  assert.match(model["job-log-region"], /data-scroll-keep="log"/u);
+
+  const html = agentActivity({
+    blocks: [
+      { seq: 1, kind: "reasoning", at: "2026-08-28T18:00:00.000Z", text: "**Planning**", done: true },
+      { seq: 2, kind: "text", at: "2026-08-28T18:00:01.000Z", text: "Plan: read the repo", done: false },
+    ],
+    toolCalls: 2,
+    iterations: 1,
+    usage: null,
+    updatedAt: "2026-08-28T18:00:02.000Z",
+  });
+  // The container is restorable, and each reasoning block has a stable key so
+  // appending new blocks cannot shift which one is expanded.
+  assert.match(html, /data-scroll-keep="activity"/u);
+  assert.match(html, /data-details-key="activity-1"/u);
+  // Reasoning is collapsed behind a <details>; narration is not.
+  assert.match(html, /<details[^>]*>.*Thinking/su);
+  assert.match(html, /activity-open/u, "an unfinished block says it is still writing");
 });

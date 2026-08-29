@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
+import { activityPath, type AgentActivity } from "../agent/activity.js";
 import { createRedactor, type Redactor } from "../log/redact.js";
 import type { CommandOutcome, JobStatus } from "../types.js";
 
@@ -71,6 +72,8 @@ export interface AttemptDetail {
   has_uncommitted_changes: number;
   output_ref: string | null;
   output: string;
+  /** Live transcript for this attempt, when the agent produced one. */
+  activity: AgentActivity | null;
 }
 
 export interface StatusTimelineEntry {
@@ -111,6 +114,8 @@ export interface JobDetail {
   timeline: StatusTimelineEntry[];
   validation: ValidationRun[];
   logs: LogRow[];
+  /** Total entries for this job; `logs` holds only the newest JOB_LOG_TAIL. */
+  logTotal: number;
 }
 
 export interface HealthModel {
@@ -214,6 +219,18 @@ function parseValidationCommands(value: string | null | undefined): string[][] {
   }
 }
 
+/** Read an attempt's activity snapshot; absent or unreadable means "none yet". */
+function readActivity(dataDir: string, attemptId: number): AgentActivity | null {
+  try {
+    const path = activityPath(dataDir, attemptId);
+    if (!existsSync(path)) return null;
+    return JSON.parse(readFileSync(path, "utf8")) as AgentActivity;
+  } catch {
+    // A snapshot caught mid-write is transient; the next tick reads a whole one.
+    return null;
+  }
+}
+
 /** Read a captured output file, treating missing/unreadable files as empty data. */
 function readOutput(path: string | null): string {
   if (!path) return "";
@@ -291,6 +308,7 @@ export function readJobDetail(
   db: Database.Database,
   jobId: number,
   redaction: Redaction,
+  dataDir = ".gremlyn",
 ): JobDetail | undefined {
   const redact = asRedactor(redaction);
   const jobRow = db
@@ -309,7 +327,14 @@ export function readJobDetail(
       const raw = row as Record<string, unknown>;
       const outputRef = typeof raw.output_ref === "string" ? raw.output_ref : null;
       const safe = redactRow(raw, redact) as unknown as AttemptDetail;
-      return { ...safe, output: redact(readOutput(outputRef)) };
+      // Activity is written by the running attempt and already redacted at the
+      // source; re-reading it here keeps a live attempt visible before its
+      // final output file exists.
+      return {
+        ...safe,
+        output: redact(readOutput(outputRef)),
+        activity: readActivity(dataDir, safe.id),
+      };
     });
   const timeline = db
     .prepare(
@@ -333,16 +358,39 @@ export function readJobDetail(
       return { ...safe, output: redact(readOutput(outputRef)) };
     });
   const logs = readJobLog(db, jobId, redact);
+  const logTotal = (
+    db.prepare("SELECT COUNT(*) AS n FROM log_entries WHERE job_id = ?").get(jobId) as {
+      n: number;
+    }
+  ).n;
   const safeJob = redactRow(jobRow, redact) as unknown as JobDetail["job"];
-  return { job: safeJob, attempts, timeline, validation, logs };
+  return { job: safeJob, attempts, timeline, validation, logs, logTotal };
 }
 
 /** Read only the selected job's structured lifecycle log. */
-export function readJobLog(db: Database.Database, jobId: number, redaction: Redaction): LogRow[] {
+/**
+ * How many log lines the job view tails by default.
+ *
+ * The console is the only window into a headless orchestrator, so the log has
+ * to stay readable while a job is live. Every stream tick re-renders the whole
+ * region; without a bound, a long-running attempt re-serialises its entire
+ * history several times a second and the newest line — the only one anyone is
+ * watching — sits at the bottom of an ever-growing wall.
+ */
+export const JOB_LOG_TAIL = 200;
+
+export function readJobLog(
+  db: Database.Database,
+  jobId: number,
+  redaction: Redaction,
+  limit: number = JOB_LOG_TAIL,
+): LogRow[] {
   const redact = asRedactor(redaction);
+  // Take the newest rows, then restore chronological order for display.
   return db
-    .prepare("SELECT * FROM log_entries WHERE job_id = ? ORDER BY id")
-    .all(jobId)
+    .prepare("SELECT * FROM log_entries WHERE job_id = ? ORDER BY id DESC LIMIT ?")
+    .all(jobId, Math.max(1, Math.trunc(limit)))
+    .reverse()
     .map((row) => {
       const safe = redactRow(row as Record<string, unknown>, redact) as unknown as LogRow;
       // Keep the endpoint's historical contract: absent structured fields are
@@ -440,6 +488,7 @@ export function createConsoleQueries(input: {
   secrets: readonly string[];
   pollIntervalSec?: number;
   concurrency?: number;
+  dataDir?: string;
 }): ConsoleQueries;
 export function createConsoleQueries(
   db: Database.Database,
@@ -453,6 +502,7 @@ export function createConsoleQueries(
         secrets: readonly string[];
         pollIntervalSec?: number;
         concurrency?: number;
+        dataDir?: string;
       }
     | Database.Database,
   secretsOrUndefined?: readonly string[],
@@ -477,7 +527,7 @@ export function createConsoleQueries(
         ...readOptions,
       }),
     readHealth: (now) => readHealth(input.db, pollIntervalSec, concurrency, now),
-    readJobDetail: (jobId) => readJobDetail(input.db, jobId, redact),
+    readJobDetail: (jobId) => readJobDetail(input.db, jobId, redact, input.dataDir ?? ".gremlyn"),
     readJobLog: (jobId) => readJobLog(input.db, jobId, redact),
     readProcessedCommands: (limit) => readProcessedCommands(input.db, redact, limit),
     readOperatorActions: (limit) => readOperatorActions(input.db, redact, limit),

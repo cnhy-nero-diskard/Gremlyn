@@ -61,18 +61,141 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .muted { color: var(--muted); }
 .sr-status { min-height: 1.5rem; color: var(--muted); }
 .signin { max-width: 34rem; margin: 10vh auto; }
+
+/* Live log ------------------------------------------------------------------
+   A dense, scannable stream rather than a wall of JSON: fixed-width time and
+   level columns so the eye tracks one vertical line, and structured fields as
+   inline chips. The stream scrolls inside its own box so the surrounding job
+   controls stay reachable while a long attempt runs. */
+.log-count { margin: .35rem 0 .5rem; font-size: .85rem; }
+.log-follow { margin-left: auto; }
+.live-badge { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--accent); background: var(--surface-muted); border-radius: 999px; padding: .1rem .5rem; vertical-align: middle; }
+.live-badge::before { content: ""; display: inline-block; width: .45rem; height: .45rem; border-radius: 50%;
+  background: currentColor; margin-right: .35rem; vertical-align: baseline; animation: log-pulse 1.6s ease-in-out infinite; }
+.live-badge-off { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; vertical-align: middle; }
+@keyframes log-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .live-badge::before { animation: none; } }
+.log-stream { max-height: 26rem; overflow: auto; border: 1px solid var(--border); border-radius: .45rem;
+  background: var(--surface-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .82rem; }
+.log-line { display: grid; grid-template-columns: 6.2rem 3.6rem 1fr; gap: .5rem; align-items: baseline;
+  padding: .28rem .6rem; border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
+  background: transparent; box-shadow: none; }
+.log-line:last-child { border-bottom: 0; }
+.log-line:nth-child(even) { background: #8888880d; }
+.log-line:hover { background: #8888881f; }
+.log-time { color: var(--muted); white-space: nowrap; }
+.log-level { text-transform: uppercase; font-size: .7rem; font-weight: 700; letter-spacing: .04em; color: var(--muted); }
+.log-event { font-weight: 700; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+.log-body { min-width: 0; }
+.log-chips { display: inline-flex; flex-wrap: wrap; gap: .3rem; margin-left: .5rem; vertical-align: baseline; }
+.log-chip { background: var(--surface); border: 1px solid var(--border); border-radius: .3rem; padding: 0 .3rem; color: var(--muted); }
+.log-key { color: var(--accent); font-weight: 600; margin-right: .2rem; }
+.log-detail { margin: .3rem 0 0; padding: .4rem .5rem; background: var(--surface); font-size: .8rem; }
+.log-warn .log-level { color: var(--cancelled); }
+.log-error .log-level { color: var(--failure); }
+.log-error { background: var(--failure-bg); }
+.log-error:nth-child(even), .log-error:hover { background: var(--failure-bg); }
+.log-debug { opacity: .75; }
+@media (max-width: 640px) {
+  .log-line { grid-template-columns: 1fr; gap: .15rem; }
+  .log-chips { margin-left: 0; }
+}
+
+/* Agent activity — the agent's own transcript for one attempt. */
+.activity-summary { font-size: .85rem; margin: .2rem 0 .6rem; }
+.activity-stream { display: grid; gap: .5rem; max-height: 32rem; overflow: auto; }
+.activity-block { background: var(--surface-muted); border: 1px solid var(--border); border-radius: .45rem; padding: .5rem .65rem; }
+.activity-head { margin-bottom: .3rem; }
+.activity-block > summary { cursor: pointer; }
+.activity-kind { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  border-radius: 999px; padding: .1rem .5rem; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.activity-reasoning { color: var(--interrupted); }
+.activity-text { margin: 0; background: transparent; padding: .35rem 0 0; font-size: .84rem; }
+.activity-tool { color: var(--accent); }
+.activity-open { margin-left: .45rem; font-size: .72rem; color: var(--muted); font-style: italic; }
 `;
 
 export const clientScript = `
 (() => {
   const status = (message) => { const node = document.querySelector('[data-live-status]'); if (node) node.textContent = message; };
+  // The log region is replaced wholesale on every stream tick, so anything the
+  // operator set by hand — filter text, level, follow, scroll position — has to
+  // be carried across the swap or it resets several times a second.
+  const logState = (root) => {
+    const stream = root.querySelector('[data-log-items]');
+    const level = root.querySelector('[data-log-level]');
+    const filter = root.querySelector('[data-log-filter]');
+    const follow = root.querySelector('[data-log-follow]');
+    if (!stream && !level && !filter) return null;
+    return {
+      level: level ? level.value : '',
+      filter: filter ? filter.value : '',
+      follow: follow ? follow.checked : true,
+      scrollTop: stream ? stream.scrollTop : 0,
+      pinned: stream ? stream.scrollHeight - stream.scrollTop - stream.clientHeight < 24 : true,
+    };
+  };
+  const applyLogFilter = (root) => {
+    const levelNode = root.querySelector('[data-log-level]');
+    const filterNode = root.querySelector('[data-log-filter]');
+    const level = levelNode ? levelNode.value.toLowerCase() : '';
+    const text = filterNode ? filterNode.value.toLowerCase() : '';
+    root.querySelectorAll('[data-log-entry]').forEach((entry) => {
+      entry.hidden = (level && (entry.dataset.level || '').toLowerCase() !== level) || (text && !entry.textContent.toLowerCase().includes(text));
+    });
+  };
+  // Any scrollable panel inside a swapped region loses its position, because
+  // the region's innerHTML is replaced wholesale. Key by name, not index, so a
+  // panel appearing or disappearing between ticks cannot shift the mapping.
+  const scrollState = (root) => {
+    const state = {};
+    root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
+      state[el.dataset.scrollKeep] = {
+        top: el.scrollTop,
+        pinned: el.scrollHeight - el.scrollTop - el.clientHeight < 24,
+      };
+    });
+    return state;
+  };
   const remember = (root) => ({
+    // Keyed where a stable identity exists: a live transcript appends blocks,
+    // and index-based restore would reopen whichever element slid into the slot.
     details: [...root.querySelectorAll('details')].map((d) => d.open),
+    detailKeys: Object.fromEntries([...root.querySelectorAll('details[data-details-key]')].map((d) => [d.dataset.detailsKey, d.open])),
     inputs: [...root.querySelectorAll('input')].map((i) => ({ name: i.name, value: i.value })),
+    log: logState(root),
+    scrolls: scrollState(root),
   });
   const restore = (root, state) => {
-    [...root.querySelectorAll('details')].forEach((d, i) => { if (state.details[i] !== undefined) d.open = state.details[i]; });
+    [...root.querySelectorAll('details')].forEach((d, i) => {
+      const key = d.dataset.detailsKey;
+      if (key && state.detailKeys && state.detailKeys[key] !== undefined) { d.open = state.detailKeys[key]; return; }
+      if (!key && state.details[i] !== undefined) d.open = state.details[i];
+    });
     state.inputs.forEach((saved) => { const input = root.querySelector('input[name="' + CSS.escape(saved.name) + '"]'); if (input && document.activeElement !== input) input.value = saved.value; });
+    root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
+      const saved = state.scrolls[el.dataset.scrollKeep];
+      if (!saved) return;
+      // The log panel has its own follow rule below; everything else simply
+      // holds the operator's place, sticking to the bottom only if it was
+      // already there.
+      if (el.dataset.scrollKeep === 'log') return;
+      el.scrollTop = saved.pinned ? el.scrollHeight : saved.top;
+    });
+    if (state.log) {
+      const level = root.querySelector('[data-log-level]');
+      const filter = root.querySelector('[data-log-filter]');
+      const follow = root.querySelector('[data-log-follow]');
+      const stream = root.querySelector('[data-log-items]');
+      if (level && document.activeElement !== level) level.value = state.log.level;
+      if (filter && document.activeElement !== filter) filter.value = state.log.filter;
+      if (follow) follow.checked = state.log.follow;
+      applyLogFilter(root);
+      // Follow means stay on the newest line; otherwise hold the operator's
+      // place so reading back through the log is not yanked away mid-scroll.
+      if (stream) stream.scrollTop = (state.log.follow || state.log.pinned) ? stream.scrollHeight : state.log.scrollTop;
+    }
     const confirmation = root.querySelector('[data-reset-confirm]'); const reset = root.querySelector('[data-reset-submit]');
     if (confirmation && reset) {
       reset.disabled = confirmation.value !== 'RESET';
@@ -114,24 +237,22 @@ export const clientScript = `
       const root = target.closest('#danger-zone') || document; const confirmation = root.querySelector('[data-reset-confirm]'); const button = root.querySelector('[data-reset-submit]'); const pr = root.querySelector('input[name="reset-pr"]');
       if (button) { button.disabled = !confirmation || confirmation.value !== 'RESET'; button.dataset.body = JSON.stringify({ confirm: 'RESET', prNumber: Number(pr?.value) }); }
     }
-    if (target?.matches('[data-log-filter]')) {
-      const level = document.querySelector('[data-log-level]').value.toLowerCase(); const text = target.value.toLowerCase();
-      document.querySelectorAll('[data-log-entry]').forEach((entry) => { entry.hidden = (level && entry.dataset.level !== level) || (text && !entry.textContent.toLowerCase().includes(text)); });
-    }
+    if (target?.matches('[data-log-filter]')) applyLogFilter(document);
   });
   document.addEventListener('change', (event) => {
-    if (!(event.target instanceof HTMLSelectElement) || !event.target.matches('[data-log-level]')) return;
-    const level = event.target.value.toLowerCase(); const text = document.querySelector('[data-log-filter]').value.toLowerCase();
-    document.querySelectorAll('[data-log-entry]').forEach((entry) => { entry.hidden = (level && entry.dataset.level !== level) || (text && !entry.textContent.toLowerCase().includes(text)); });
+    const target = event.target;
+    if (target instanceof HTMLSelectElement && target.matches('[data-log-level]')) { applyLogFilter(document); return; }
+    // Ticking Follow jumps to the newest line immediately, rather than waiting
+    // for the next stream tick to scroll.
+    if (target instanceof HTMLInputElement && target.matches('[data-log-follow]') && target.checked) {
+      const stream = document.querySelector('[data-log-items]');
+      if (stream) stream.scrollTop = stream.scrollHeight;
+    }
   });
-  document.querySelectorAll('[data-log-url]').forEach(async (viewer) => {
-    try {
-      const response = await fetch(viewer.dataset.logUrl);
-      if (!response.ok) return;
-      const rows = await response.json(); const items = viewer.querySelector('[data-log-items]'); if (!items || !Array.isArray(rows)) return;
-      items.replaceChildren(...rows.map((row) => { const entry = document.createElement('article'); entry.dataset.logEntry = ''; entry.dataset.level = row.level || ''; const heading = document.createElement('div'); heading.textContent = (row.at || '') + ' ' + (row.level || '') + ' ' + (row.event || ''); const fields = document.createElement('pre'); fields.textContent = row.fields || '{}'; entry.append(heading, fields); return entry; }));
-    } catch { /* The server-rendered log remains available when refresh fails. */ }
-  });
+  // The log arrives server-rendered and is refreshed by the stream swap above;
+  // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
+  const initialStream = document.querySelector('[data-log-items]');
+  if (initialStream) initialStream.scrollTop = initialStream.scrollHeight;
   const signIn = document.querySelector('[data-sign-in]');
   if (signIn) signIn.addEventListener('click', async () => { const token = document.querySelector('#token').value; const response = await fetch('/auth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }); if (response.ok) window.location.href = '/'; else document.querySelector('[data-auth-error]').textContent = 'Invalid token'; });
 })();

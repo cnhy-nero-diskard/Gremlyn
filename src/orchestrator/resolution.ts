@@ -8,6 +8,7 @@ import {
   removeAttemptDataDir,
   seedAgentCredentials,
 } from "../agent/credentials.js";
+import { ActivityRecorder, writeActivity } from "../agent/activity.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { writeAgentOutput } from "../agent/output.js";
 import { buildResolutionPrompt } from "../agent/prompt.js";
@@ -33,6 +34,9 @@ import {
 } from "./failures.js";
 import { JobQueue, type QueueResult } from "./queue.js";
 import { reactionForStatus } from "./reactions.js";
+
+/** Snapshot cadence for live agent activity: responsive without thrashing disk. */
+const ACTIVITY_FLUSH_MS = 400;
 
 export interface RuntimeRepository extends RepoConfig {
   id: number;
@@ -311,6 +315,23 @@ export class ResolutionOrchestrator {
         });
       }
       this.options.logger.info("agent launched", { jobId, attemptId, agent: executor.id });
+      // Follow the agent while it works. Nothing here may fail the attempt:
+      // the recorder swallows unparsable lines, and a failed snapshot write is
+      // logged rather than thrown — losing visibility is not losing the run.
+      const recorder = new ActivityRecorder();
+      let lastFlush = 0;
+      const flush = (): void => {
+        if (!recorder.hasChanges) return;
+        try {
+          writeActivity(this.options.dataDir, attemptId, recorder.snapshot(), this.redact);
+        } catch (error) {
+          this.options.logger.warn("activity snapshot failed", {
+            jobId,
+            attemptId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
       const agentResult = await executor.run({
         cwd: workspace.path,
         model: input.model,
@@ -322,7 +343,18 @@ export class ResolutionOrchestrator {
         retries: this.options.retries,
         dataDir: attemptDataDir,
         signal,
+        onLine: (line) => {
+          recorder.push(line);
+          // The stream arrives token by token; rewriting the snapshot on every
+          // line would mean hundreds of writes a second for no visible gain.
+          const now = Date.now();
+          if (now - lastFlush < ACTIVITY_FLUSH_MS) return;
+          lastFlush = now;
+          flush();
+        },
       });
+      recorder.finish();
+      flush();
       // Reasoning effort is validated per agent at startup, but the CLI enforces
       // it per *model* and accepts an unsupported tier silently. The model's own
       // metadata on the result stream is the only signal, so surface a mismatch

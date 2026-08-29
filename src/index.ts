@@ -81,6 +81,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     token: config.consoleToken,
     secrets: [config.githubToken, config.consoleToken],
     operatorActions,
+    dataDir: config.dataDir,
     pollIntervalSec: config.pollIntervalSec,
     concurrency: config.concurrency,
     actions: {

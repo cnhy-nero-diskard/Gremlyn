@@ -25,6 +25,23 @@ function reviewContext(raw: string | null): string {
   }
 }
 
+const LIVE_STATUSES = ["queued", "preparing", "running", "validating", "publishing", "reporting"];
+
+/** Mark the log as streaming, so a still panel is not mistaken for a stalled one. */
+function liveBadge(status: string): string {
+  return LIVE_STATUSES.includes(status)
+    ? '<span class="live-badge" title="Streaming while this job runs">live</span>'
+    : '<span class="muted live-badge-off">ended</span>';
+}
+
+function logCount(model: JobDetail): string {
+  const shown = model.logs.length;
+  const total = model.logTotal;
+  return total > shown
+    ? `Showing the latest ${String(shown)} of ${String(total)} entries.`
+    : `${String(total)} ${total === 1 ? "entry" : "entries"}.`;
+}
+
 function actionControls(model: JobDetail): string {
   const status = model.job.status;
   const retryable = ["failed", "cancelled", "interrupted"].includes(status);
@@ -43,7 +60,7 @@ export function jobRegions(model: JobDetail): {
   const totalEnd = model.job.finished_at ?? undefined;
   return {
     "job-detail-region": `<h1>Job ${model.job.id}: ${escapeHtml(`${model.job.owner}/${model.job.name} PR #${model.job.pr_number}`)} ${statusPill(model.job.status)}</h1><p><a href="/">← Dashboard</a> · Command <code>${escapeHtml(model.job.command)}</code> · <a href="https://github.com/${encodeURIComponent(model.job.owner)}/${encodeURIComponent(model.job.name)}/pull/${model.job.pr_number}">Pull request #${model.job.pr_number}</a> · <a href="https://github.com/${encodeURIComponent(model.job.owner)}/${encodeURIComponent(model.job.name)}/pull/${model.job.pr_number}#discussion_r${model.job.comment_id}">Triggering comment discussion_r${model.job.comment_id}</a></p><section class="panel"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section><section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at)}<p><strong>Total elapsed:</strong> ${durationBetween(totalStart, totalEnd)}</p></section>${model.attempts.map(attemptCard).join("") || '<p class="muted">No attempts recorded.</p>'}<section class="panel"><h2>Validation results</h2>${validationTable(model.validation)}</section>${actionControls(model)}${dangerZone(model.job.repo_id, model.job.pr_number)}`,
-    "job-log-region": `<section class="panel" id="log-viewer" data-log-url="/jobs/${model.job.id}/log"><h2>Structured log</h2><div class="actions"><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label>Search <input data-log-filter placeholder="Search entries"></label></div><div data-log-items>${logEntries(model.logs)}</div></section>`,
+    "job-log-region": `<section class="panel" id="log-viewer"><h2>Live log ${liveBadge(model.job.status)}</h2><div class="actions"><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label>Search <input data-log-filter placeholder="Search entries"></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div><p class="muted log-count">${logCount(model)}</p><div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs)}</div></section>`,
   };
 }
 

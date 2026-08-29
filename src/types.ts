@@ -117,6 +117,8 @@ export interface AgentRunOptions {
   retries: number;
   dataDir: string;
   signal: AbortSignal;
+  /** Observe the agent's stdout lines as they arrive, for live reporting. */
+  onLine?: (line: string) => void;
 }
 
 /** The replaceable executor seam (design D10). */
