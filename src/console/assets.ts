@@ -36,12 +36,14 @@ th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--borde
 th { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
 pre, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-muted); border-radius: .4rem; padding: .75rem; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .7rem; color: var(--text); background: var(--surface-muted); }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 button.danger { color: var(--failure); border-color: var(--failure); }
 button:disabled { cursor: not-allowed; opacity: .55; }
-input { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .5rem; }
+input, select { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .5rem; }
+input:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
+.repo-defaults { display: flex; flex-wrap: wrap; gap: .8rem; }
 label { display: inline-flex; gap: .45rem; align-items: center; }
 .status-pill { display: inline-flex; gap: .35rem; align-items: center; border-radius: 999px; padding: .18rem .55rem; font-weight: 700; font-size: .82rem; }
 .status-pill::before { content: ""; display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; }
@@ -200,7 +202,7 @@ export const clientScript = `
     // and index-based restore would reopen whichever element slid into the slot.
     details: [...root.querySelectorAll('details')].map((d) => d.open),
     detailKeys: Object.fromEntries([...root.querySelectorAll('details[data-details-key]')].map((d) => [d.dataset.detailsKey, d.open])),
-    inputs: [...root.querySelectorAll('input')].map((i) => ({ name: i.name, value: i.value })),
+    inputs: [...root.querySelectorAll('input, select')].map((i) => ({ name: i.name, value: i.value })),
     log: logState(root),
     scrolls: scrollState(root),
   });
@@ -210,7 +212,7 @@ export const clientScript = `
       if (key && state.detailKeys && state.detailKeys[key] !== undefined) { d.open = state.detailKeys[key]; return; }
       if (!key && state.details[i] !== undefined) d.open = state.details[i];
     });
-    state.inputs.forEach((saved) => { const input = root.querySelector('input[name="' + CSS.escape(saved.name) + '"]'); if (input && document.activeElement !== input) input.value = saved.value; });
+    state.inputs.forEach((saved) => { if (!saved.name) return; const input = root.querySelector('[name="' + CSS.escape(saved.name) + '"]'); if (input && document.activeElement !== input) input.value = saved.value; });
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
       const saved = state.scrolls[el.dataset.scrollKeep];
       if (!saved) return;
@@ -276,7 +278,7 @@ export const clientScript = `
     }
     if (target?.matches('[data-log-filter]')) applyLogFilter(document);
   });
-  document.addEventListener('change', (event) => {
+  document.addEventListener('change', async (event) => {
     const target = event.target;
     if (target instanceof HTMLSelectElement && target.matches('[data-log-level]')) { applyLogFilter(document); return; }
     // Ticking Follow jumps to the newest line immediately, rather than waiting
@@ -284,6 +286,20 @@ export const clientScript = `
     if (target instanceof HTMLInputElement && target.matches('[data-log-follow]') && target.checked) {
       const stream = document.querySelector('[data-log-items]');
       if (stream) stream.scrollTop = stream.scrollHeight;
+      return;
+    }
+    // A repository's default model or provider control: save immediately on
+    // change, mirroring the enable/disable toggle's immediate-effect behavior.
+    if ((target instanceof HTMLSelectElement || target instanceof HTMLInputElement) && target.matches('[data-repo-field]')) {
+      const field = target.dataset.repoField; const url = target.dataset.url; const value = target.value;
+      target.disabled = true; status('Saving…');
+      try {
+        const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [field]: value }) });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
+        status(field === 'model' ? 'Model updated' : 'Provider updated');
+      } catch (error) { status(error instanceof Error ? error.message : 'Update refused'); }
+      target.disabled = false;
     }
   });
   // The log arrives server-rendered and is refreshed by the stream swap above;

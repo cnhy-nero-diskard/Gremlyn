@@ -7,9 +7,29 @@ function validationLabel(repository: RepositorySummary): string {
   return `<ul>${commands.map((command) => `<li><code>${escapeHtml(command.join(" "))}</code></li>`).join("")}</ul>`;
 }
 
+function modelControl(repo: RepositorySummary): string {
+  const options = repo.allowedModels ?? [];
+  const name = `repo-model-${repo.id}`;
+  if (options.length > 0) {
+    const opts = options
+      .map(
+        (m) =>
+          `<option value="${escapeHtml(m)}"${m === repo.model ? " selected" : ""}>${escapeHtml(m)}</option>`,
+      )
+      .join("");
+    return `<select name="${name}" data-repo-field="model" data-url="/repos/${repo.id}/model">${opts}</select>`;
+  }
+  return `<input name="${name}" data-repo-field="model" data-url="/repos/${repo.id}/model" value="${escapeHtml(repo.model ?? "")}">`;
+}
+
+function providerControl(repo: RepositorySummary): string {
+  const name = `repo-provider-${repo.id}`;
+  return `<input name="${name}" data-repo-field="provider" data-url="/repos/${repo.id}/provider" value="${escapeHtml(repo.provider ?? "")}" placeholder="provider id">`;
+}
+
 export function repositoryCards(repositories: RepositorySummary[]): string {
   if (repositories.length === 0) return '<p class="muted">No repositories configured.</p>';
-  return `<div class="grid">${repositories.map((repo) => `<article class="card"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><p>Agent <strong>${escapeHtml(repo.agent ?? "unknown")}</strong> · Model <strong>${escapeHtml(repo.model ?? "unknown")}</strong> · Effort <strong>${escapeHtml(repo.effort ?? "unknown")}</strong></p><p><strong>Validation commands</strong>${validationLabel(repo)}</p><p>State: <strong data-enabled>${repo.enabled === 1 ? "enabled" : "disabled"}</strong> <button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${repo.enabled === 1 ? "Disable" : "Enable"}</button></p></article>`).join("")}</div>`;
+  return `<div class="grid">${repositories.map((repo) => `<article class="card"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><p>Agent <strong>${escapeHtml(repo.agent ?? "unknown")}</strong> · Effort <strong>${escapeHtml(repo.effort ?? "unknown")}</strong></p><p class="repo-defaults"><label>Model ${modelControl(repo)}</label> <label>Provider ${providerControl(repo)}</label></p><p><strong>Validation commands</strong>${validationLabel(repo)}</p><p>State: <strong data-enabled>${repo.enabled === 1 ? "enabled" : "disabled"}</strong> <button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${repo.enabled === 1 ? "Disable" : "Enable"}</button></p></article>`).join("")}</div>`;
 }
 
 function jobItem(job: JobSummary): string {

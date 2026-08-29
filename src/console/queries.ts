@@ -31,6 +31,8 @@ export interface RepositorySummary {
   allowed_models?: string;
   /** Parsed validation commands for views that do not want to parse JSON. */
   validationCommands?: string[][];
+  /** Parsed allowed-models list for views that do not want to parse JSON. */
+  allowedModels?: string[];
 }
 
 export interface JobSummary {
@@ -204,6 +206,16 @@ function redactRow<T extends Record<string, unknown>>(row: T, redact: Redactor):
   return result;
 }
 
+function parseAllowedModels(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function parseValidationCommands(value: string | null | undefined): string[][] {
   if (!value) return [];
   try {
@@ -281,6 +293,7 @@ export function readDashboard(
       return {
         ...safe,
         validationCommands: parseValidationCommands(safe.validation_commands),
+        allowedModels: parseAllowedModels(safe.allowed_models),
       };
     });
   const jobs = db

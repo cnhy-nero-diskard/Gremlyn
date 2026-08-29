@@ -7,7 +7,12 @@ import { authLayout, layout } from "./views/layout.js";
 import { dashboardView, dashboardRegions } from "./views/dashboard.js";
 import { jobView, jobRegions } from "./views/job.js";
 import { commandsView, auditView } from "./views/commands.js";
-import { repositoryExists, toggleRepository } from "./mutations.js";
+import {
+  repositoryExists,
+  setRepositoryModel,
+  setRepositoryProvider,
+  toggleRepository,
+} from "./mutations.js";
 import { openSseStream, SharedChangeTicker } from "./stream.js";
 
 export interface ConsoleActions {
@@ -219,6 +224,44 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
     });
     return reply.send({ ok: true, enabled });
   });
+  app.post<{ Params: { id: string }; Body: { model?: string } }>(
+    "/repos/:id/model",
+    async (request, reply) => {
+      const id = positiveInteger(request.params.id);
+      const model = request.body?.model;
+      if (typeof model !== "string" || model.length === 0)
+        return reply.code(400).send({ error: "model-required" });
+      const result = setRepositoryModel(options.db, id, model);
+      if (!result.ok) {
+        return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
+      }
+      options.operatorActions.record({
+        action: "repository-model",
+        target: `repository:${id}`,
+        effect: result.model,
+      });
+      return reply.send({ ok: true, model: result.model });
+    },
+  );
+  app.post<{ Params: { id: string }; Body: { provider?: string } }>(
+    "/repos/:id/provider",
+    async (request, reply) => {
+      const id = positiveInteger(request.params.id);
+      const provider = request.body?.provider;
+      if (typeof provider !== "string")
+        return reply.code(400).send({ error: "provider-required" });
+      const result = setRepositoryProvider(options.db, id, provider);
+      if (!result.ok) {
+        return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
+      }
+      options.operatorActions.record({
+        action: "repository-provider",
+        target: `repository:${id}`,
+        effect: result.provider,
+      });
+      return reply.send({ ok: true, provider: result.provider });
+    },
+  );
   app.post<{ Params: { id: string }; Body: { confirm?: string; prNumber?: number } }>(
     "/workspaces/:id/reset",
     async (request, reply) => {
