@@ -117,7 +117,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
             providerCatalog.snapshot(),
             options.effortOptions ?? REASONING_EFFORTS,
           ),
-          { stream: "/stream" },
+          { stream: "/stream", wide: true },
         ),
       ),
   );

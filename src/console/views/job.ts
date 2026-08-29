@@ -113,7 +113,7 @@ function statStrip(model: JobDetail): string {
   const steps = activity
     ? `${String(activity.toolCalls)} tool call${activity.toolCalls === 1 ? "" : "s"} · ${String(activity.iterations)} iteration${activity.iterations === 1 ? "" : "s"}`
     : "no transcript yet";
-  return `<div class="job-stats">${metric("Elapsed", elapsed, model.job.finished_at ? "finished" : "still running")}${metric("Attempts", String(model.attempts.length), latest ? `latest ${escapeHtml(latest.outcome ?? "in progress")}` : "none started")}${metric("Agent steps", activity ? String(activity.blocks.length) : "—", steps)}${metric("Validation", validation.value, validation.note)}${metric("Log", String(model.logTotal), logCount(model))}</div>`;
+  return `<div class="stat-strip">${metric("Elapsed", elapsed, model.job.finished_at ? "finished" : "still running")}${metric("Attempts", String(model.attempts.length), latest ? `latest ${escapeHtml(latest.outcome ?? "in progress")}` : "none started")}${metric("Agent steps", activity ? String(activity.blocks.length) : "—", steps)}${metric("Validation", validation.value, validation.note)}${metric("Log", String(model.logTotal), logCount(model))}</div>`;
 }
 
 function actionControls(model: JobDetail): string {
@@ -146,7 +146,7 @@ function jobHeader(model: JobDetail): string {
   const prUrl = `https://github.com/${repo}/pull/${String(pr)}`;
   const title = `<div class="job-title"><h1>${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span><span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
   const links = `<p class="job-links"><a href="${prUrl}">Pull request #${String(pr)} ↗</a><a href="${prUrl}#discussion_r${String(comment)}">Triggering comment discussion_r${String(comment)} ↗</a></p>`;
-  return `<header class="job-head"><nav class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></nav>${title}${links}${statStrip(model)}<p class="sr-status" data-live-status role="status"></p></header>`;
+  return `<header class="page-head"><nav class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></nav>${title}${links}${statStrip(model)}<p class="sr-status" data-live-status role="status"></p></header>`;
 }
 
 /**

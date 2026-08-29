@@ -40,8 +40,7 @@ section.panel > h3 { font-size: .8rem; font-weight: 700; text-transform: upperca
   letter-spacing: .05em; color: var(--muted); margin: 1rem 0 .4rem; }
 .panel-foot { margin: .8rem 0 0; padding-top: .6rem; border-top: 1px solid var(--border); font-size: .85rem; }
 .panel-foot strong { color: var(--muted); margin-right: .4rem; }
-.health { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); margin-bottom: 1.3rem; }
-.health .metric { background: var(--surface); border: 1px solid var(--border); border-radius: .5rem; padding: .75rem; }
+
 .metric span { display: block; font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .metric strong { display: block; font-size: 1.35rem; line-height: 1.25; font-variant-numeric: tabular-nums; }
 .metric small { color: var(--muted); }
@@ -74,9 +73,20 @@ input:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .model-provider-picker { display: grid; gap: .55rem; min-width: min(100%, 34rem); }
 .model-provider-picker label { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: .45rem; align-items: center; }
 .model-provider-picker select, .model-provider-picker input { min-width: 0; width: 100%; }
-.model-picker-description, .model-picker-hint { color: var(--muted); display: block; grid-column: 2; font-size: .8rem; overflow-wrap: anywhere; }
-.model-picker-description { color: var(--text); }
-.catalog-note { color: var(--muted); margin-top: -.75rem; }
+.model-picker-meta, .model-picker-description, .model-picker-hint { grid-column: 2; }
+.model-picker-meta { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; min-width: 0; }
+.model-picker-meta strong { font-size: .88rem; }
+.model-picker-description, .model-picker-hint { color: var(--muted); display: block; font-size: .8rem; overflow-wrap: anywhere; }
+.model-picker-description { max-width: 42rem; }
+.model-picker-id { color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+.model-picker-badges { display: inline-flex; align-items: center; gap: .25rem; flex-wrap: wrap; }
+.model-badge { display: inline-flex; align-items: center; border: 1px solid currentColor; border-radius: 999px; padding: .08rem .42rem; font-size: .66rem; font-weight: 800; letter-spacing: .04em; line-height: 1.35; }
+.model-badge-recommended, .model-badge-current { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.model-badge-free { color: var(--success); background: var(--success-bg); }
+.model-badge-pass { color: var(--interrupted); background: var(--interrupted-bg); }
+.model-badge-new { color: var(--cancelled); background: var(--cancelled-bg); }
+.model-badge-flagship { color: var(--failure); background: var(--failure-bg); }
+.model-badge-default { color: var(--muted); background: var(--surface-muted); }
 label { display: inline-flex; gap: .45rem; align-items: center; }
 .chip { display: inline-flex; align-items: center; gap: .3rem; background: var(--surface-muted);
   border: 1px solid var(--border); border-radius: 999px; padding: .12rem .6rem; font-size: .78rem; color: var(--muted); }
@@ -119,7 +129,7 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "head" "activity" "log" "aside"; }
 #job-detail-region { display: contents; }
-.job-head { grid-area: head; }
+.job-page .page-head { grid-area: head; }
 .activity-panel { grid-area: activity; }
 #job-log-region { grid-area: log; display: flex; min-width: 0; }
 .job-aside { grid-area: aside; }
@@ -127,7 +137,7 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
   .job-page { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
     grid-template-areas: "head head" "activity log" "aside aside"; }
 }
-.job-head { background: var(--surface); border: 1px solid var(--border); border-radius: .65rem;
+.page-head { background: var(--surface); border: 1px solid var(--border); border-radius: .65rem;
   padding: .9rem 1rem 1rem; box-shadow: 0 2px 8px #0000000d; }
 .crumbs { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
 .job-title { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: .4rem 0 0; }
@@ -136,12 +146,14 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .job-id { font-size: .78rem; font-variant-numeric: tabular-nums; }
 .job-actions { margin-left: auto; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; font-size: .85rem; }
 .job-links { display: flex; gap: 1.1rem; flex-wrap: wrap; margin: .6rem 0 0; font-size: .85rem; }
-.job-stats { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); margin-top: .9rem; }
-.job-stats .metric { background: var(--surface-muted); border: 1px solid var(--border); border-radius: .5rem; padding: .55rem .7rem; }
-.job-stats .metric strong { font-size: 1.2rem; }
-.job-stats .metric small { font-size: .74rem; }
-.job-head .sr-status { min-height: 0; font-size: .82rem; margin: .55rem 0 0; }
-.job-head .sr-status:empty { display: none; }
+.stat-strip { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); margin-top: .9rem; }
+.stat-strip .metric { background: var(--surface-muted); border: 1px solid var(--border); border-radius: .5rem; padding: .55rem .7rem; }
+.stat-strip .metric strong { font-size: 1.2rem; }
+.stat-strip .metric small { font-size: .74rem; }
+.stat-strip .stale { border-color: var(--failure); }
+.stat-strip .stale strong { color: var(--failure); }
+.page-head .sr-status { min-height: 0; font-size: .82rem; margin: .6rem 0 0; }
+.page-head .sr-status:empty { display: none; }
 .job-aside { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
 .job-aside .span-all { grid-column: 1 / -1; }
 @media (min-width: 900px) {
@@ -185,6 +197,53 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .attempt-folds { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .7rem; }
 .attempt-folds > details { flex: 1 1 11rem; min-width: 0; }
 .attempt-folds summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
+
+/* Dashboard -----------------------------------------------------------------
+   Health, then the work, then the configuration. The lanes are the reason the
+   page is open, so they get the full width above the repository cards. */
+.dash-page { display: grid; gap: 1rem; }
+.page-title { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
+.page-title h1 { margin: 0; font-size: 1.4rem; letter-spacing: -.01em; }
+.page-summary { font-size: .85rem; }
+.lanes { align-content: start; }
+.lane { display: flex; flex-direction: column; border-top: 3px solid var(--lane, var(--border)); }
+.lane-running { --lane: var(--accent); }
+.lane-queued, .lane-recent { --lane: var(--muted); }
+section.lane > h2 { color: var(--lane, var(--muted)); border-bottom-color: var(--border); }
+.lane-count { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted);
+  background: var(--surface-muted); border-radius: 999px; padding: .05rem .5rem; font-size: .78rem; }
+.job-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; max-height: 30rem; overflow: auto; }
+.job-row { border: 1px solid var(--border); border-radius: .45rem; background: var(--surface-muted); padding: .5rem .65rem; }
+.job-row:hover { border-color: var(--lane, var(--accent)); }
+.job-row-main { display: flex; align-items: center; gap: .5rem; text-decoration: none; color: inherit; }
+.job-row-repo { font-weight: 700; font-size: .92rem; overflow-wrap: anywhere; }
+.job-row-main:hover .job-row-repo { text-decoration: underline; }
+.job-row-pr { color: var(--muted); font-weight: 500; }
+.job-row-main > .status-pill { margin-left: auto; flex-shrink: 0; }
+.job-row-meta { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; margin-top: .3rem;
+  font-size: .78rem; color: var(--muted); }
+.job-row-meta code { font-size: .74rem; background: var(--surface); border: 1px solid var(--border);
+  border-radius: .25rem; padding: 0 .3rem; }
+.job-row-elapsed { margin-left: auto; font-variant-numeric: tabular-nums; }
+.lane-empty { border: 1px dashed var(--border); border-radius: .45rem; padding: 1.1rem; text-align: center;
+  margin: 0; font-size: .85rem; }
+/* Repository cards: state first, then the pickers, then what gets run. */
+.repo-card { display: flex; flex-direction: column; gap: .6rem; }
+.repo-head { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+.repo-head h3 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.repo-head button { margin-left: auto; }
+.repo-chips { display: flex; gap: .35rem; flex-wrap: wrap; margin: 0; }
+.repo-chips .chip code { font-size: .76rem; }
+.repo-validation h4 { margin: 0 0 .35rem; font-size: .72rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); }
+.cmd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem; }
+.cmd-list code { display: inline-block; background: var(--surface-muted); border: 1px solid var(--border);
+  border-radius: .3rem; padding: .1rem .4rem; font-size: .76rem; }
+.state { display: inline-flex; align-items: center; border-radius: 999px; padding: .12rem .55rem;
+  font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.state-on { color: var(--success); background: var(--success-bg); }
+.state-off { color: var(--muted); background: var(--surface-muted); }
+.catalog-note { color: var(--muted); margin: -.25rem 0 1rem; font-size: .82rem; }
 
 /* Live log ------------------------------------------------------------------
    A dense, scannable stream rather than a wall of JSON: fixed-width time and
@@ -328,18 +387,39 @@ export const clientScript = `
     return select && !select.hidden ? select.value : (input?.value || '').trim();
   };
   const modelLabel = (model) => {
-    const tier = model.tier === 'recommended' ? ' · RECOMMENDED' : model.tier === 'free' ? ' · FREE' : model.tier === 'subscribed' ? ' · PASS' : '';
-    const tags = Array.isArray(model.tags) && model.tags.length ? ' · ' + model.tags.join(' · ') : '';
-    return (model.name || model.id) + tier + tags;
+    return model.name || model.id;
   };
-  const modelDescription = (model) => [model.description, 'ID: ' + model.id].filter(Boolean).join(' · ');
+  const modelDescription = (model) => model.description || '';
   const providerLabel = (provider) => (provider.name || provider.id) + ' — ' + (provider.auth || 'provider credentials');
+  const modelBadgeLabels = (model) => {
+    const tier = model.tier === 'recommended' ? 'RECOMMENDED' : model.tier === 'free' ? 'FREE' : model.tier === 'subscribed' ? 'PASS' : '';
+    return [...new Set([tier, ...(Array.isArray(model.tags) ? model.tags : [])].filter(Boolean))];
+  };
+  const modelBadgeClass = (label) => { const normalized = String(label).toLowerCase().replace(/[^a-z0-9]+/gu, '-'); return 'model-badge-' + (normalized || 'default'); };
+  const renderModelBadges = (root, model) => {
+    const badges = root.querySelector('[data-repo-model-badges]');
+    if (!badges) return;
+    badges.textContent = '';
+    modelBadgeLabels(model).forEach((label) => {
+      const badge = document.createElement('span'); badge.className = 'model-badge ' + modelBadgeClass(label); badge.textContent = label; badges.append(badge);
+    });
+  };
   const updateModelDescription = (root) => {
     const description = root.querySelector('[data-repo-model-description]');
+    const name = root.querySelector('[data-repo-model-name]');
+    const id = root.querySelector('[data-repo-model-id]');
     if (!description) return;
     const select = root.querySelector('[data-repo-model-select]');
     const option = select && !select.hidden ? select.selectedOptions[0] : null;
-    description.textContent = option?.dataset.modelDescription || (modelFor(root) ? 'ID: ' + modelFor(root) : 'Choose a model.');
+    const modelId = option?.value || modelFor(root);
+    const modelName = option?.dataset.modelName || modelId || 'Choose a model';
+    if (name) name.textContent = modelName;
+    if (id) { id.textContent = modelId ? 'ID: ' + modelId : ''; id.hidden = !modelId; }
+    renderModelBadges(root, {
+      tier: option?.dataset.modelTier || undefined,
+      tags: option?.dataset.modelTags ? option.dataset.modelTags.split('|').filter(Boolean) : [],
+    });
+    description.textContent = option?.dataset.modelDescription || (modelId ? 'Custom provider model.' : 'Choose a model.');
   };
   const syncPicker = (root, preferredModel) => {
     const providerSelect = root.querySelector('[data-repo-provider-select]');
@@ -394,7 +474,7 @@ export const clientScript = `
         models.push({ id: currentModel, name: currentModel, description: 'Current repository model.', tags: ['CURRENT'] });
       }
       models.forEach((model) => {
-        const option = document.createElement('option'); option.value = model.id; option.textContent = modelLabel(model); option.dataset.providerId = provider.id; option.dataset.modelDescription = modelDescription(model); group.append(option);
+        const option = document.createElement('option'); option.value = model.id; option.textContent = modelLabel(model); option.dataset.providerId = provider.id; option.dataset.modelName = model.name || model.id; option.dataset.modelTier = model.tier || ''; option.dataset.modelTags = Array.isArray(model.tags) ? model.tags.join('|') : ''; option.dataset.modelDescription = modelDescription(model); group.append(option);
       });
       modelSelect.append(group);
     });
@@ -519,7 +599,7 @@ export const clientScript = `
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
       status(payload.enabled === undefined ? 'Action completed' : (payload.enabled ? 'Repository enabled' : 'Repository disabled'));
-      if (payload.enabled !== undefined) { const label = button.parentElement.querySelector('[data-enabled]'); if (label) label.textContent = payload.enabled ? 'enabled' : 'disabled'; button.textContent = payload.enabled ? 'Disable' : 'Enable'; }
+      if (payload.enabled !== undefined) { const label = button.parentElement.querySelector('[data-enabled]'); if (label) { label.textContent = payload.enabled ? 'enabled' : 'disabled'; label.className = 'state state-' + (payload.enabled ? 'on' : 'off'); } button.textContent = payload.enabled ? 'Disable' : 'Enable'; }
       button.disabled = false;
     } catch (error) { status(error instanceof Error ? error.message : 'Action refused'); button.disabled = false; }
   });
