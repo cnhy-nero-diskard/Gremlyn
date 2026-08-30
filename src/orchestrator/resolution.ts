@@ -53,10 +53,12 @@ function samePath(left: string, right: string): boolean {
 }
 
 /**
- * A retry may inherit edits only from a run that Gremlyn itself stopped
- * abruptly. The deterministic path and recorded head are checked again after
- * GitHub context reconstruction, so a force-push or a manually supplied path
- * cannot turn this into a general dirty-workspace bypass.
+ * A retry may inherit edits only from a run that stopped abruptly rather than
+ * completing its own cleanup — interrupted, cancelled, timed out, or the agent
+ * process itself exiting nonzero mid-run. The deterministic path and recorded
+ * head are checked again after GitHub context reconstruction, so a force-push
+ * or a manually supplied path cannot turn this into a general dirty-workspace
+ * bypass.
  */
 function canResumeRetainedWorkspace(
   attempt: AttemptRow | undefined,
@@ -71,7 +73,8 @@ function canResumeRetainedWorkspace(
   return (
     attempt.outcome === "failed" &&
     attempt.failure_stage === "running" &&
-    attempt.failure_reason === "agent-timeout"
+    (attempt.failure_reason === "agent-timeout" ||
+      attempt.failure_reason === "agent-nonzero-exit")
   );
 }
 

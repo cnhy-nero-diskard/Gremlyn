@@ -195,7 +195,30 @@ test("retry resumes edits from an abruptly timed-out agent", async () => {
   data.store.close();
 });
 
-test("retry does not inherit a dirty workspace from an ordinary agent failure", async () => {
+test("retry resumes edits from an agent that exited nonzero mid-run", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+    failure_reason: string;
+  };
+  assert.equal(attempt.failure_reason, "agent-nonzero-exit");
+  const { writeFileSync, readFileSync } = await import("node:fs");
+  const retained = join(attempt.workspace_path, "agent-progress.txt");
+  writeFileSync(retained, "retain this\n", "utf8");
+  data.store.db
+    .prepare("UPDATE attempts SET has_uncommitted_changes = 1 WHERE id = ?")
+    .run(attempt.id);
+
+  await assert.rejects(() => data.orchestrator.retry(job.id));
+  assert.equal(data.executor.runs.length, 2, "retry reached the agent instead of failing as dirty");
+  assert.equal(readFileSync(retained, "utf8"), "retain this\n");
+  data.store.close();
+});
+
+test("retry does not inherit a dirty workspace from an agent process crash", async () => {
   const data = await setup("failure");
   await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
@@ -206,11 +229,15 @@ test("retry does not inherit a dirty workspace from an ordinary agent failure", 
   const { writeFileSync } = await import("node:fs");
   writeFileSync(join(attempt.workspace_path, "manual-edit.txt"), "do not inherit\n", "utf8");
   data.store.db
-    .prepare("UPDATE attempts SET has_uncommitted_changes = 1 WHERE id = ?")
+    .prepare(
+      `UPDATE attempts
+       SET failure_reason = 'agent-process-crash', has_uncommitted_changes = 1
+       WHERE id = ?`,
+    )
     .run(attempt.id);
 
   await assert.rejects(() => data.orchestrator.retry(job.id));
-  assert.equal(data.executor.runs.length, 1, "ordinary failure must not bypass dirty protection");
+  assert.equal(data.executor.runs.length, 1, "process crash must not bypass dirty protection");
   assert.equal(
     (
       data.store.db
