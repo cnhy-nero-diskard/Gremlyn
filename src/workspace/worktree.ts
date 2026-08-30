@@ -11,10 +11,13 @@ import {
 } from "./gitops.js";
 
 /**
- * Worktree management (design D9, workspace-isolation spec).
+ * Workspace management (design D9, workspace-isolation spec).
  *
  * Workspaces live at `<workspace_root>/pr-<number>` — derived from registry
  * configuration and an integer PR number, never from GitHub-supplied text.
+ * They are normally linked worktrees. If the configured source checkout is
+ * itself on the PR branch, Git cannot link that branch a second time, so the
+ * workspace is an independent clone with the same branch checked out.
  * Dirty means stop: an unsafe workspace fails the job, it is never
  * discarded implicitly.
  */
@@ -67,7 +70,7 @@ export function isBeneath(candidate: string, root: string): boolean {
 
 /**
  * Bring the workspace for a pull request to the expected state:
- * fetch current remote state, create or fast-forward the worktree, and
+ * fetch current remote state, create or fast-forward the checkout, and
  * verify it ends on the expected branch at the expected commit.
  */
 export async function prepareWorkspace(options: {
@@ -88,7 +91,7 @@ export async function prepareWorkspace(options: {
 
   const existed = existsSync(path);
   if (!existed) {
-    await createWorktree(sourcePath, path, headBranch);
+    await createWorkspaceCheckout(sourcePath, path, headBranch);
     // Fast-forward to the recorded head; the local branch may lag the remote.
     try {
       await git(["merge", "--ff-only", expectedSha], { cwd: path });
@@ -100,6 +103,9 @@ export async function prepareWorkspace(options: {
     }
   } else {
     await assertValidWorktree(path);
+    // A standalone fallback clone has its own object database and remote
+    // refs; refresh it independently before resolving the recorded head.
+    await git(["fetch", "origin", "--prune"], { cwd: path });
     if ((await unmergedEntries(path)).length > 0 || (await mergeInProgress(path))) {
       throw new WorkspaceError(
         "workspace-conflicted",
@@ -204,7 +210,11 @@ async function worktreeHoldingBranch(
   return undefined;
 }
 
-async function createWorktree(sourcePath: string, path: string, branch: string): Promise<void> {
+async function createWorkspaceCheckout(
+  sourcePath: string,
+  path: string,
+  branch: string,
+): Promise<void> {
   // Drop registrations whose directories are gone before asking for a new one.
   // Git treats a stale ("prunable") entry as still holding its branch, so
   // `worktree add` fails with "already used by worktree at <path>" and the job
@@ -220,7 +230,11 @@ async function createWorktree(sourcePath: string, path: string, branch: string):
   // stealing or force-adding it would corrupt that working copy. Name it
   // precisely instead of surfacing git's raw error as "workspace-corrupted".
   const holder = await worktreeHoldingBranch(sourcePath, branch);
-  if (holder !== undefined && resolve(holder) !== resolve(path)) {
+  if (holder !== undefined && !samePath(holder, path)) {
+    if (samePath(holder, sourcePath)) {
+      await createStandaloneCheckout(sourcePath, path, branch);
+      return;
+    }
     throw new WorkspaceError(
       "workspace-branch-in-use",
       `branch ${branch} is already checked out at ${holder}`,
@@ -241,11 +255,42 @@ async function createWorktree(sourcePath: string, path: string, branch: string):
   }
 }
 
+function samePath(left: string, right: string): boolean {
+  const leftResolved = resolve(left);
+  const rightResolved = resolve(right);
+  return process.platform === "win32"
+    ? leftResolved.toLowerCase() === rightResolved.toLowerCase()
+    : leftResolved === rightResolved;
+}
+
+/**
+ * Create a separate repository when the configured source checkout already
+ * holds the requested branch. A normal clone is intentionally used instead
+ * of switching or mutating the source checkout: the source may be the
+ * developer's primary checkout and may contain unrelated local changes.
+ */
+async function createStandaloneCheckout(
+  sourcePath: string,
+  path: string,
+  branch: string,
+): Promise<void> {
+  const remoteUrl = (await git(["remote", "get-url", "origin"], { cwd: sourcePath })).stdout.trim();
+  if (remoteUrl.length === 0) {
+    throw new WorkspaceError(
+      "workspace-diverged",
+      `source checkout ${sourcePath} has no usable origin for an independent workspace`,
+    );
+  }
+  await git(["clone", "--no-local", "--branch", branch, remoteUrl, path], {
+    cwd: sourcePath,
+  });
+}
+
 /**
  * Copy repository-relative gitignored files from the source checkout into the
  * workspace.
  *
- * `git worktree add` populates tracked content only, so files a build needs but
+ * A Git checkout populates tracked content only, so files a build needs but
  * git deliberately does not carry — `local.properties`, `.env` — are absent from
  * every freshly created workspace. The agent and the validation commands then
  * fail on an environment gap that has nothing to do with the review feedback:

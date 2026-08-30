@@ -71,9 +71,10 @@ agents:
 repositories:
   - owner: your-github-login
     name: your-repo
-    # Local source repository. Never mutated: fetch and worktree add only.
+    # Local source repository. Never mutated: fetch plus isolated checkout
+    # setup only.
     source_path: D:/code/your-repo
-    # Root under which per-PR disposable worktrees are created.
+    # Root under which per-PR disposable isolated checkouts are created.
     # Must not be inside the source repository.
     workspace_root: D:/code/gremlyn-workspaces/your-repo
     agent: cline
@@ -82,13 +83,13 @@ repositories:
     # Optional; defaults to the agent's highest supported tier.
     effort: xhigh
     enabled: true
-    # Validation run in the worktree after the agent exits, in order, each as
+    # Validation run in the workspace after the agent exits, in order, each as
     # an argument vector (no shell). Empty list means inspection only.
     validation_commands:
       - [npm, run, build]
       - [npm, test]
     # Repository-relative gitignored files copied from source_path into every
-    # prepared worktree. `git worktree add` carries tracked content only, so a
+    # prepared workspace. Git checkouts carry tracked content only, so a
     # build input git deliberately ignores (local.properties, .env) is missing
     # from every fresh workspace and validation fails on the environment rather
     # than on the agent's work. Each entry must be gitignored: publication

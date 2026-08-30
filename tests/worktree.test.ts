@@ -32,6 +32,48 @@ test("worktree create ends on the expected branch at the expected commit", async
   assert.equal(await headSha(prepared.path), expectedSha);
 });
 
+test("source checkout already on the PR branch uses an independent clone", async () => {
+  const repo = await createTempRepo();
+  const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
+  await git(["checkout", repo.headBranch], { cwd: repo.sourcePath });
+  writeFileSync(join(repo.sourcePath, "developer-notes.txt"), "keep in source\n", "utf8");
+  const sourceStatus = await statusEntries(repo.sourcePath);
+
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 93,
+    headBranch: repo.headBranch,
+    headSha: expectedSha,
+  });
+
+  assert.equal(prepared.created, true);
+  assert.equal(await currentBranch(prepared.path), repo.headBranch);
+  assert.equal(await headSha(prepared.path), expectedSha);
+  assert.deepEqual(await statusEntries(repo.sourcePath), sourceStatus);
+  assert.equal(await currentBranch(repo.sourcePath), repo.headBranch);
+  const registered = await git(["worktree", "list", "--porcelain"], { cwd: repo.sourcePath });
+  assert.equal(registered.stdout.includes(prepared.path), false);
+
+  const nextSha = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    "follow-up.txt",
+    "follow-up\n",
+    "follow-up feature work",
+  );
+  const refreshed = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 93,
+    headBranch: repo.headBranch,
+    headSha: nextSha,
+  });
+  assert.equal(refreshed.created, false);
+  assert.equal(await headSha(refreshed.path), nextSha);
+  assert.deepEqual(await statusEntries(repo.sourcePath), sourceStatus);
+});
+
 test("existing clean workspace is refreshed to the current head", async () => {
   const repo = await createTempRepo();
   const firstSha = await remoteSha(repo.remotePath, repo.headBranch);

@@ -37,6 +37,41 @@ test("a full job leaves the dirty source checkout tree, index, and branch unchan
   }
 });
 
+test("a full job adapts when the source checkout already holds the PR branch", async () => {
+  const repo = await createTempRepo();
+  await git(["checkout", repo.headBranch], { cwd: repo.sourcePath });
+  writeFileSync(join(repo.sourcePath, "developer-notes.txt"), "keep in source\n", "utf8");
+  const before = {
+    branch: await currentBranch(repo.sourcePath),
+    status: await statusEntries(repo.sourcePath),
+  };
+  const fixture = await makeFixture(repo, 93, 9300);
+
+  try {
+    const result = await runWalkingSkeleton({
+      ...fixture.options,
+      executor: new FakeExecutor({
+        outcome: "success",
+        edits: { "resolution.txt": "resolved from source checkout\n" },
+      }),
+    });
+    assert.equal(result.kind, "succeeded");
+    assert.deepEqual(
+      {
+        branch: await currentBranch(repo.sourcePath),
+        status: await statusEntries(repo.sourcePath),
+      },
+      before,
+    );
+    assert.equal(
+      readFileSync(join(workspacePathFor(repo.workspaceRoot, 93), "resolution.txt"), "utf8"),
+      "resolved from source checkout\n",
+    );
+  } finally {
+    fixture.store.close();
+  }
+});
+
 test("a head move during execution blocks publication and retains agent work", async () => {
   const repo = await createTempRepo();
   const fixture = await makeFixture(repo, 22, 2200);
