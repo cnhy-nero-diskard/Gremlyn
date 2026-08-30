@@ -261,7 +261,7 @@ section.lane > h2 { color: var(--lane, var(--muted)); border-bottom-color: var(-
 .live-badge-off { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; vertical-align: middle; }
 @keyframes log-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .live-badge::before { animation: none; } }
-.log-stream { max-height: 26rem; overflow: auto; border: 1px solid var(--border); border-radius: .45rem;
+.log-stream { max-height: 20rem; overflow: auto; border: 1px solid var(--border); border-radius: .45rem;
   background: var(--surface-muted); font-family: var(--mono); font-size: .82rem; }
 .log-line { display: grid; grid-template-columns: 6.2rem 3.6rem 1fr; gap: .5rem; align-items: baseline;
   padding: .28rem .6rem; border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
@@ -297,7 +297,7 @@ section.lane > h2 { color: var(--lane, var(--muted)); border-bottom-color: var(-
 .follow-toggle { margin-left: auto; font-size: .82rem; color: var(--muted); white-space: nowrap; }
 .activity-stat { font-weight: 700; color: var(--text); }
 .activity-stream { list-style: none; margin: 0; padding: 0 0 0 1.15rem; display: grid; gap: .45rem;
-  align-content: start; max-height: 32rem; overflow: auto; position: relative; }
+  align-content: start; max-height: 24rem; overflow: auto; position: relative; }
 /* The rail, painted as a background rather than an absolutely positioned
    pseudo-element: inside a scroll container an abspos rail is only as tall as
    one visible page and scrolls away, leaving every dot below it unconnected. */
@@ -345,7 +345,7 @@ pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font
    height and let their stream scroll inside. Placed after the log and activity
    blocks above so it overrides the standalone max-heights they set. */
 .activity-panel, #job-log-region > .panel { display: flex; flex-direction: column;
-  height: min(82vh, 64rem); min-height: 20rem; overflow: hidden; resize: vertical; }
+  height: min(46vh, 28rem); min-height: 14rem; overflow: hidden; resize: vertical; }
 /* Nothing to scroll yet: an empty transcript should not hold open a screenful
    of blank card just because a running one would fill it. */
 .activity-panel:not(:has(.activity-stream)) { height: auto; min-height: 0; resize: none; }

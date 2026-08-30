@@ -234,11 +234,16 @@ export function agentActivity(activity: AgentActivity | null, controls = ""): st
   const summary = bar(
     `<span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(clockTime(activity.updatedAt))}`,
   );
+  const lastSeq = activity.blocks[activity.blocks.length - 1]?.seq;
   const blocks = activity.blocks
     .map((block) => {
       const label = ACTIVITY_LABELS[block.kind] ?? block.kind;
       const open = block.done ? "" : " is-open";
       const pending = block.done ? "" : '<span class="activity-open">writing…</span>';
+      // The newest step opens by default so the operator sees what the agent
+      // is doing right now without a click; older steps stay as the operator
+      // left them (a live update never re-collapses a step once expanded).
+      const latest = block.seq === lastSeq ? " open" : "";
       const head =
         `<span class="activity-kind">${escapeHtml(label)}</span>` +
         `<time class="activity-time" datetime="${escapeHtml(block.at)}">${escapeHtml(clockTime(block.at))}</time>` +
@@ -249,7 +254,7 @@ export function agentActivity(activity: AgentActivity | null, controls = ""): st
       if (block.kind === "tool") {
         const { name, input } = toolParts(block.text);
         const args = input
-          ? `<details class="activity-args" data-details-key="activity-args-${String(block.seq)}"><summary>arguments</summary><pre class="activity-text">${escapeHtml(input)}</pre></details>`
+          ? `<details class="activity-args" data-details-key="activity-args-${String(block.seq)}"${latest}><summary>arguments</summary><pre class="activity-text">${escapeHtml(input)}</pre></details>`
           : "";
         return shell(
           `<div class="activity-head">${head}</div><p class="activity-tool-name"><code>${escapeHtml(name)}</code></p>${args}`,
@@ -257,7 +262,7 @@ export function agentActivity(activity: AgentActivity | null, controls = ""): st
       }
       if (block.kind === "reasoning") {
         return shell(
-          `<details class="activity-fold" data-details-key="activity-${String(block.seq)}"><summary><span class="activity-head">${head}</span></summary><pre class="activity-text">${escapeHtml(block.text)}</pre></details>`,
+          `<details class="activity-fold" data-details-key="activity-${String(block.seq)}"${latest}><summary><span class="activity-head">${head}</span></summary><pre class="activity-text">${escapeHtml(block.text)}</pre></details>`,
         );
       }
       return shell(
