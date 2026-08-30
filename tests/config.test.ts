@@ -155,3 +155,39 @@ test("environment overlay overrides file values", () => {
   assert.equal(config.pollIntervalSec, 5);
   assert.equal(config.logLevel, "debug");
 });
+
+test("workspace_seed_files loads as a string list and defaults to empty", () => {
+  const withSeeds = loadConfig(
+    writeConfig(
+      VALID_CONFIG.replace(
+        "    validation_commands: []",
+        "    validation_commands: []\n    workspace_seed_files: [local.properties, config/.env]",
+      ),
+    ),
+    VALID_ENV,
+  );
+  assert.deepEqual(withSeeds.repositories[0]?.workspaceSeedFiles, [
+    "local.properties",
+    "config/.env",
+  ]);
+
+  const withoutSeeds = loadConfig(writeConfig(VALID_CONFIG), VALID_ENV);
+  assert.deepEqual(withoutSeeds.repositories[0]?.workspaceSeedFiles, []);
+});
+
+test("workspace_seed_files rejects a non-list value", () => {
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(
+          VALID_CONFIG.replace(
+            "    validation_commands: []",
+            "    validation_commands: []\n    workspace_seed_files: local.properties",
+          ),
+        ),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError && /workspace_seed_files must be a list of strings/u.test(error.message),
+  );
+});

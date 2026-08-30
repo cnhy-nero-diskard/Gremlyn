@@ -292,13 +292,17 @@ section.lane > h2 { color: var(--lane, var(--muted)); border-bottom-color: var(-
    A vertical timeline: one rail down the left, a dot per step, colour-coded by
    what the agent was doing. Colour alone never carries the meaning — each step
    also states its kind — so the three types stay distinguishable without it. */
-.activity-summary { font-size: .85rem; margin: 0 0 .7rem; }
+.activity-summary { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+  font-size: .85rem; margin: 0 0 .7rem; }
+.follow-toggle { margin-left: auto; font-size: .82rem; color: var(--muted); white-space: nowrap; }
 .activity-stat { font-weight: 700; color: var(--text); }
 .activity-stream { list-style: none; margin: 0; padding: 0 0 0 1.15rem; display: grid; gap: .45rem;
   align-content: start; max-height: 32rem; overflow: auto; position: relative; }
-/* The rail itself, behind the dots. */
-.activity-stream::before { content: ""; position: absolute; left: .32rem; top: .3rem; bottom: .3rem;
-  width: 2px; background: var(--border); border-radius: 2px; }
+/* The rail, painted as a background rather than an absolutely positioned
+   pseudo-element: inside a scroll container an abspos rail is only as tall as
+   one visible page and scrolls away, leaving every dot below it unconnected. */
+.activity-stream { background-image: linear-gradient(var(--border), var(--border));
+  background-repeat: no-repeat; background-position: .32rem 0; background-size: 2px 100%; }
 .activity-block { position: relative; background: var(--surface-muted); border: 1px solid var(--border);
   border-left: 3px solid var(--kind, var(--border)); border-radius: .45rem; padding: .45rem .65rem; }
 .activity-dot { position: absolute; left: -1.02rem; top: .75rem; width: .55rem; height: .55rem;
@@ -320,12 +324,13 @@ pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font
 
 /* The step still being written: a travelling sheen along its left edge and a
    pulsing dot, so a live attempt is obvious at a glance from the rail alone. */
-.activity-block.is-open { border-left-color: var(--kind, var(--accent)); overflow: hidden; }
+.activity-block.is-open { border-left-color: var(--kind, var(--accent)); }
 .activity-block.is-open::after { content: ""; position: absolute; left: -3px; top: 0; width: 3px; height: 40%;
   background: linear-gradient(180deg, transparent, var(--kind, var(--accent)), transparent);
   animation: activity-sheen 1.8s ease-in-out infinite; }
 .activity-block.is-open .activity-dot { animation: activity-ping 1.4s ease-out infinite; }
-@keyframes activity-sheen { 0% { top: -40%; } 100% { top: 100%; } }
+/* Travels within the block: the sheen is 40% tall, so 0%..60% never escapes. */
+@keyframes activity-sheen { 0% { top: 0; } 100% { top: 60%; } }
 @keyframes activity-ping {
   0% { box-shadow: 0 0 0 3px var(--surface), 0 0 0 3px var(--kind, var(--accent)); }
   70% { box-shadow: 0 0 0 3px var(--surface), 0 0 0 9px transparent; }
@@ -340,7 +345,10 @@ pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font
    height and let their stream scroll inside. Placed after the log and activity
    blocks above so it overrides the standalone max-heights they set. */
 .activity-panel, #job-log-region > .panel { display: flex; flex-direction: column;
-  min-height: min(66vh, 46rem); max-height: min(80vh, 62rem); }
+  height: min(82vh, 64rem); min-height: 20rem; overflow: hidden; resize: vertical; }
+/* Nothing to scroll yet: an empty transcript should not hold open a screenful
+   of blank card just because a running one would fill it. */
+.activity-panel:not(:has(.activity-stream)) { height: auto; min-height: 0; resize: none; }
 #job-log-region > .panel { flex: 1; min-width: 0; }
 .activity-panel > .activity-stream, #log-viewer > .log-stream { flex: 1; min-height: 0; max-height: none; }
 `;
@@ -529,7 +537,15 @@ export const clientScript = `
     });
     return state;
   };
+  const activityState = (root) => {
+    const follow = root.querySelector('[data-activity-follow]');
+    return follow ? { follow: follow.checked } : null;
+  };
   const remember = (root) => ({
+    // A dragged panel height lives in an inline style on an element the swap
+    // destroys, so it has to be carried across like any other operator input.
+    sizes: Object.fromEntries([...root.querySelectorAll('[data-resizable]')].map((el) => [el.dataset.resizable, el.style.height])),
+    activity: activityState(root),
     // Keyed where a stable identity exists: a live transcript appends blocks,
     // and index-based restore would reopen whichever element slid into the slot.
     details: [...root.querySelectorAll('details')].map((d) => d.open),
@@ -539,6 +555,10 @@ export const clientScript = `
     scrolls: scrollState(root),
   });
   const restore = (root, state) => {
+    root.querySelectorAll('[data-resizable]').forEach((el) => {
+      const saved = state.sizes && state.sizes[el.dataset.resizable];
+      if (saved) el.style.height = saved;
+    });
     [...root.querySelectorAll('details')].forEach((d, i) => {
       const key = d.dataset.detailsKey;
       if (key && state.detailKeys && state.detailKeys[key] !== undefined) { d.open = state.detailKeys[key]; return; }
@@ -552,6 +572,12 @@ export const clientScript = `
       // holds the operator's place, sticking to the bottom only if it was
       // already there.
       if (el.dataset.scrollKeep === 'log') return;
+      if (el.dataset.scrollKeep === 'activity' && state.activity) {
+        const follow = root.querySelector('[data-activity-follow]');
+        if (follow) follow.checked = state.activity.follow;
+        el.scrollTop = (state.activity.follow || saved.pinned) ? el.scrollHeight : saved.top;
+        return;
+      }
       el.scrollTop = saved.pinned ? el.scrollHeight : saved.top;
     });
     if (state.log) {
@@ -621,6 +647,11 @@ export const clientScript = `
       if (stream) stream.scrollTop = stream.scrollHeight;
       return;
     }
+    if (target instanceof HTMLInputElement && target.matches('[data-activity-follow]') && target.checked) {
+      const stream = document.querySelector('[data-scroll-keep="activity"]');
+      if (stream) stream.scrollTop = stream.scrollHeight;
+      return;
+    }
     if ((target instanceof HTMLSelectElement || target instanceof HTMLInputElement) && target.matches('[data-repo-provider-select], [data-repo-provider-input], [data-repo-model-select], [data-repo-model-input], [data-repo-effort]')) {
       const root = target.closest('[data-repo-picker]'); if (!root) return;
       const previousProvider = root.dataset.savedProvider || providerFor(root); const previousModel = root.dataset.savedModel || modelFor(root); const previousEffort = root.dataset.savedEffort || effortFor(root);
@@ -632,6 +663,9 @@ export const clientScript = `
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
   const initialStream = document.querySelector('[data-log-items]');
   if (initialStream) initialStream.scrollTop = initialStream.scrollHeight;
+  const initialActivity = document.querySelector('[data-scroll-keep="activity"]');
+  const initialFollow = document.querySelector('[data-activity-follow]');
+  if (initialActivity && initialFollow?.checked) initialActivity.scrollTop = initialActivity.scrollHeight;
   document.querySelectorAll('[data-repo-picker]').forEach((root) => { root.dataset.savedProvider = providerFor(root); root.dataset.savedModel = modelFor(root); root.dataset.savedEffort = effortFor(root); syncPicker(root); });
   void refreshModelCatalog();
   const signIn = document.querySelector('[data-sign-in]');

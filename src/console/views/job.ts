@@ -161,7 +161,12 @@ function activityPanel(model: JobDetail): string {
   const attempt = latest
     ? ` <span class="muted panel-note">attempt ${String(latest.attempt_number)}</span>`
     : "";
-  return `<section class="panel activity-panel"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null)}</section>`;
+  // Default the pin to whether the agent is still writing: on a live job you
+  // want the newest step, on a finished one you want to read from where you
+  // left off. The operator's own choice survives every stream tick after that.
+  const live = LIVE_STATUSES.includes(model.job.status);
+  const follow = `<label class="follow-toggle" title="Pin to the newest step while the agent runs"><input type="checkbox" data-activity-follow${live ? " checked" : ""}> Follow</label>`;
+  return `<section class="panel activity-panel" data-resizable="activity"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null, follow)}</section>`;
 }
 
 /**
@@ -195,7 +200,7 @@ export function jobRegions(model: JobDetail): {
   const logControls = `<div class="actions log-controls"><label class="log-search">Search <input data-log-filter placeholder="Filter entries"></label><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div>`;
   return {
     "job-detail-region": `${jobHeader(model)}${activityPanel(model)}${jobAside(model)}`,
-    "job-log-region": `<section class="panel" id="log-viewer"><h2>Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs)}</div></section>`,
+    "job-log-region": `<section class="panel" id="log-viewer" data-resizable="log"><h2>Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs)}</div></section>`,
   };
 }
 

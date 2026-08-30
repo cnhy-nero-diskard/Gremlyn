@@ -278,6 +278,7 @@ export class ResolutionOrchestrator {
         prNumber,
         headBranch: context.headBranch,
         headSha: context.headSha,
+        seedFiles: repository.workspaceSeedFiles,
       });
       workspacePath = workspace.path;
       this.jobs.recordPreparation(attemptId, workspace.path, workspace.headSha);

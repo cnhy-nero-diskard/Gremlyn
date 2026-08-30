@@ -12,7 +12,7 @@ import {
 } from "../src/workspace/worktree.js";
 import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
 import { resetWorkspace } from "../src/workspace/reset.js";
-import { createTempRepo, pushCommit, remoteSha } from "./helpers/gitrepo.js";
+import { createTempRepo, pushCommit, remoteSha, type TempRepo } from "./helpers/gitrepo.js";
 
 const AUTHOR = ["-c", "user.name=Test", "-c", "user.email=test@example.com"];
 
@@ -311,4 +311,107 @@ test("a live worktree holding the branch fails as branch-in-use, not corruption"
     },
   );
   assert.equal(existsSync(live), true, "the live worktree must survive");
+});
+
+/** A feature-branch commit that ignores `local.properties`, plus the file itself. */
+async function repoWithIgnoredSeed(): Promise<{ repo: TempRepo; headSha: string }> {
+  const repo = await createTempRepo();
+  const headSha = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    ".gitignore",
+    "local.properties\n",
+    "ignore local.properties",
+  );
+  return { repo, headSha };
+}
+
+test("gitignored seed files are copied into a freshly created workspace", async () => {
+  const { repo, headSha: expectedSha } = await repoWithIgnoredSeed();
+  writeFileSync(join(repo.sourcePath, "local.properties"), "sdk.dir=/opt/sdk\n", "utf8");
+
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 51,
+    headBranch: repo.headBranch,
+    headSha: expectedSha,
+    seedFiles: ["local.properties"],
+  });
+
+  assert.equal(readFileSync(join(prepared.path, "local.properties"), "utf8"), "sdk.dir=/opt/sdk\n");
+  // Ignored, so it never makes the workspace dirty and is never committed.
+  assert.deepEqual(await statusEntries(prepared.path), []);
+});
+
+test("a seed file deleted from an existing workspace is restored on the next preparation", async () => {
+  const { repo, headSha: expectedSha } = await repoWithIgnoredSeed();
+  writeFileSync(join(repo.sourcePath, "local.properties"), "sdk.dir=/opt/sdk\n", "utf8");
+  const options = {
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 52,
+    headBranch: repo.headBranch,
+    headSha: expectedSha,
+    seedFiles: ["local.properties"],
+  };
+  const first = await prepareWorkspace(options);
+  rmSync(join(first.path, "local.properties"));
+
+  const second = await prepareWorkspace(options);
+
+  assert.equal(second.created, false);
+  assert.equal(existsSync(join(second.path, "local.properties")), true);
+});
+
+test("a seed file git tracks is refused rather than copied", async () => {
+  const repo = await createTempRepo();
+  const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
+  // `feature.txt` is committed, so seeding it would be picked up by `git add -A`.
+  await assert.rejects(
+    prepareWorkspace({
+      sourcePath: repo.sourcePath,
+      workspaceRoot: repo.workspaceRoot,
+      prNumber: 53,
+      headBranch: repo.headBranch,
+      headSha: expectedSha,
+      seedFiles: ["feature.txt"],
+    }),
+    (error: unknown) => error instanceof WorkspaceError && error.reason === "workspace-seed-failed",
+  );
+});
+
+test("a seed file missing from the source checkout fails with a seed reason", async () => {
+  const { repo, headSha: expectedSha } = await repoWithIgnoredSeed();
+
+  await assert.rejects(
+    prepareWorkspace({
+      sourcePath: repo.sourcePath,
+      workspaceRoot: repo.workspaceRoot,
+      prNumber: 54,
+      headBranch: repo.headBranch,
+      headSha: expectedSha,
+      seedFiles: ["local.properties"],
+    }),
+    (error: unknown) => error instanceof WorkspaceError && error.reason === "workspace-seed-failed",
+  );
+});
+
+test("a seed path escaping the workspace is refused", async () => {
+  const repo = await createTempRepo();
+  const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
+  for (const escape of ["../outside.txt", "/etc/passwd"]) {
+    await assert.rejects(
+      prepareWorkspace({
+        sourcePath: repo.sourcePath,
+        workspaceRoot: repo.workspaceRoot,
+        prNumber: 55,
+        headBranch: repo.headBranch,
+        headSha: expectedSha,
+        seedFiles: [escape],
+      }),
+      (error: unknown) =>
+        error instanceof WorkspaceError && error.reason === "workspace-seed-failed",
+    );
+  }
 });

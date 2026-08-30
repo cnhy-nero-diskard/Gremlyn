@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { copyFile, mkdir } from "node:fs/promises";
+import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import {
   currentBranch,
   git,
@@ -27,6 +27,7 @@ export type WorkspaceFailureReason =
   | "workspace-not-worktree"
   | "workspace-outside-root"
   | "workspace-branch-in-use"
+  | "workspace-seed-failed"
   | "head-changed";
 
 export class WorkspaceError extends Error {
@@ -75,6 +76,8 @@ export async function prepareWorkspace(options: {
   prNumber: number;
   headBranch: string;
   headSha: string;
+  /** Repository-relative gitignored files copied from the source checkout. */
+  seedFiles?: readonly string[];
 }): Promise<PreparedWorkspace> {
   const { sourcePath, workspaceRoot, prNumber, headBranch } = options;
   const expectedSha = options.headSha;
@@ -143,6 +146,7 @@ export async function prepareWorkspace(options: {
       `workspace ${path} is at ${actualSha}, expected ${expectedSha}`,
     );
   }
+  await seedIgnoredFiles(sourcePath, path, options.seedFiles ?? []);
   return { path, branch: headBranch, headSha: actualSha, created: !existed };
 }
 
@@ -234,5 +238,67 @@ async function createWorktree(sourcePath: string, path: string, branch: string):
     await git(["worktree", "add", "--track", "-b", branch, path, `origin/${branch}`], {
       cwd: sourcePath,
     });
+  }
+}
+
+/**
+ * Copy repository-relative gitignored files from the source checkout into the
+ * workspace.
+ *
+ * `git worktree add` populates tracked content only, so files a build needs but
+ * git deliberately does not carry — `local.properties`, `.env` — are absent from
+ * every freshly created workspace. The agent and the validation commands then
+ * fail on an environment gap that has nothing to do with the review feedback:
+ * Gradle reports "SDK location not found" and the job dies at `validating` with
+ * `validation-failed`, which reads as the agent's work being wrong. Seeding runs
+ * on every preparation, not just creation, so a workspace whose seed file was
+ * removed heals on the next job instead of failing identically forever.
+ *
+ * Each entry must be gitignored in the workspace. That is not a convenience
+ * check: publication commits with `git add -A`, so a seeded file git tracks
+ * would be committed to the pull request — leaking a machine-local path, or a
+ * secret, into someone's branch. A tracked path is a configuration error and
+ * fails the job rather than being copied.
+ */
+async function seedIgnoredFiles(
+  sourcePath: string,
+  workspacePath: string,
+  seedFiles: readonly string[],
+): Promise<void> {
+  for (const entry of seedFiles) {
+    const relative = normalize(entry);
+    // Confine to the workspace: an absolute path or a `..` escape would write
+    // outside the workspace root, which is the one place writes are allowed.
+    if (isAbsolute(relative) || relative.split(/[\\/]/u).includes("..")) {
+      throw new WorkspaceError(
+        "workspace-seed-failed",
+        `seed file ${entry} must be a relative path inside the repository`,
+      );
+    }
+    const from = join(sourcePath, relative);
+    const to = join(workspacePath, relative);
+    if (!existsSync(from)) {
+      throw new WorkspaceError(
+        "workspace-seed-failed",
+        `seed file ${entry} does not exist in source checkout ${sourcePath}`,
+      );
+    }
+    // `check-ignore` exits 1 when the path is not ignored, which `git` throws on.
+    // The index is deliberately consulted: a path git tracks is never reported
+    // as ignored, so a file both tracked and named in `.gitignore` is still
+    // refused rather than seeded into a commit.
+    const ignored = await git(["check-ignore", "--quiet", relative], {
+      cwd: workspacePath,
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (!ignored) {
+      throw new WorkspaceError(
+        "workspace-seed-failed",
+        `seed file ${entry} is not gitignored in ${workspacePath}; seeding it would commit it`,
+      );
+    }
+    await mkdir(dirname(to), { recursive: true });
+    await copyFile(from, to);
   }
 }

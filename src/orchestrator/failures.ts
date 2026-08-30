@@ -12,6 +12,7 @@ export const FAILURE_REASONS = [
   "workspace-invalid",
   "workspace-conflicted",
   "workspace-branch-in-use",
+  "workspace-seed-failed",
   "git-conflict",
   "agent-cli-missing",
   "model-unavailable",
@@ -106,7 +107,11 @@ export function classifyFailure(error: unknown, stage: FailureStage): StageFailu
             // operator has to release that worktree, and no retry will help.
             error.reason === "workspace-branch-in-use"
             ? "workspace-branch-in-use"
-            : "workspace-corrupted";
+            : // A missing or mis-declared seed file is a configuration fault the
+              // operator fixes in the registry, not a damaged worktree to reset.
+              error.reason === "workspace-seed-failed"
+              ? "workspace-seed-failed"
+              : "workspace-corrupted";
     return new StageFailure(stage, reason, error.message);
   }
   if (error instanceof GitHubError) {

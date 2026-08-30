@@ -42,6 +42,11 @@ export interface RepoConfig {
   effort: ReasoningEffort;
   enabled: boolean;
   validationCommands: string[][];
+  /**
+   * Repository-relative gitignored files copied from `sourcePath` into every
+   * prepared workspace, for build inputs git deliberately does not carry.
+   */
+  workspaceSeedFiles: string[];
   agentInstructions?: string;
   allowedModels: string[];
 }
@@ -138,6 +143,7 @@ interface RawRepoEntry {
   effort?: unknown;
   enabled?: unknown;
   validation_commands?: unknown;
+  workspace_seed_files?: unknown;
   agent_instructions?: unknown;
   allowed_models?: unknown;
 }
@@ -168,6 +174,7 @@ function parseRepositories(
     const model = asString(r.model);
     const enabled = asBoolean(r.enabled) ?? true;
     const validationCommands = asCommandList(r.validation_commands);
+    const workspaceSeedFiles = asStringList(r.workspace_seed_files);
     const agentInstructions = asString(r.agent_instructions);
     const allowedModels = asStringList(r.allowed_models) ?? [];
     for (const [field, value] of [
@@ -183,6 +190,9 @@ function parseRepositories(
     }
     if (r.validation_commands !== undefined && validationCommands === undefined) {
       problems.push(`${label}.validation_commands must be a list of argument arrays`);
+    }
+    if (r.workspace_seed_files !== undefined && workspaceSeedFiles === undefined) {
+      problems.push(`${label}.workspace_seed_files must be a list of strings`);
     }
     // Agent must exist; effort must be within the agent's supported tiers.
     let effort: ReasoningEffort | undefined;
@@ -214,6 +224,7 @@ function parseRepositories(
         effort,
         enabled,
         validationCommands: validationCommands ?? [],
+        workspaceSeedFiles: workspaceSeedFiles ?? [],
         ...(agentInstructions !== undefined ? { agentInstructions } : {}),
         allowedModels,
       });

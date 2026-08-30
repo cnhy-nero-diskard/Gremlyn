@@ -87,6 +87,13 @@ repositories:
     validation_commands:
       - [npm, run, build]
       - [npm, test]
+    # Repository-relative gitignored files copied from source_path into every
+    # prepared worktree. `git worktree add` carries tracked content only, so a
+    # build input git deliberately ignores (local.properties, .env) is missing
+    # from every fresh workspace and validation fails on the environment rather
+    # than on the agent's work. Each entry must be gitignored: publication
+    # commits with `git add -A`, so a tracked path would be pushed to the PR.
+    workspace_seed_files: []
     # Optional repository-specific instructions appended to every prompt.
     agent_instructions: |
       Follow the existing code conventions in this repository.

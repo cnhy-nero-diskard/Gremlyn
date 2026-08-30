@@ -225,11 +225,15 @@ function toolParts(text: string): { name: string; input: string } {
  * An unfinished block is marked as still being written, because a transcript
  * that simply stops is indistinguishable from a stalled agent.
  */
-export function agentActivity(activity: AgentActivity | null): string {
+export function agentActivity(activity: AgentActivity | null, controls = ""): string {
+  const bar = (inner: string): string =>
+    `<div class="activity-summary"><span class="muted">${inner}</span>${controls}</div>`;
   if (!activity || activity.blocks.length === 0) {
-    return '<p class="muted">No agent activity captured yet.</p>';
+    return `${bar("No agent activity captured yet.")}`;
   }
-  const summary = `<p class="muted activity-summary"><span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(clockTime(activity.updatedAt))}</p>`;
+  const summary = bar(
+    `<span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(clockTime(activity.updatedAt))}`,
+  );
   const blocks = activity.blocks
     .map((block) => {
       const label = ACTIVITY_LABELS[block.kind] ?? block.kind;

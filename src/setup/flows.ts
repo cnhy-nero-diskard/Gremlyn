@@ -248,6 +248,9 @@ export async function addRepository(options: AddRepositoryOptions): Promise<Flow
     effort,
     enabled: options.enabled ?? true,
     validationCommands,
+    // Not inferred during registration: seeds are per-repository build inputs
+    // the operator declares in the registry when a build needs one.
+    workspaceSeedFiles: [],
     allowedModels,
     ...(options.agentInstructions !== undefined
       ? { agentInstructions: options.agentInstructions }
@@ -679,6 +682,11 @@ function toYamlRepository(entry: RepoConfig): Record<string, unknown> {
     enabled: entry.enabled,
     allowed_models: [...entry.allowedModels],
     validation_commands: entry.validationCommands.map((command) => [...command]),
+    // Omitted when empty, but round-tripped so rewriting a registry entry never
+    // silently drops seeds an operator declared by hand.
+    ...(entry.workspaceSeedFiles.length > 0
+      ? { workspace_seed_files: [...entry.workspaceSeedFiles] }
+      : {}),
     ...(entry.agentInstructions !== undefined
       ? { agent_instructions: entry.agentInstructions }
       : {}),
