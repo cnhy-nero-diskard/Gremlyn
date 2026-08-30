@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { RepoConfig } from "../config/loader.js";
 import type { RuntimeRepository } from "../orchestrator/resolution.js";
+import type { ReasoningEffort } from "../types.js";
 
 /** Upsert file configuration into the durable repository registry. */
 export function syncRepositories(
@@ -17,16 +18,13 @@ export function syncRepositories(
        source_path = excluded.source_path,
        workspace_root = excluded.workspace_root,
        agent = excluded.agent,
-       model = excluded.model,
-       provider = excluded.provider,
-       effort = excluded.effort,
        enabled = excluded.enabled,
        validation_commands = excluded.validation_commands,
        agent_instructions = excluded.agent_instructions,
        allowed_models = excluded.allowed_models`,
   );
   const select = db.prepare(
-    "SELECT id, timeout_seconds FROM repositories WHERE owner = ? AND name = ?",
+    "SELECT id, model, provider, effort, timeout_seconds FROM repositories WHERE owner = ? AND name = ?",
   );
   return db.transaction(() =>
     repositories.map((repository) => {
@@ -45,13 +43,23 @@ export function syncRepositories(
         JSON.stringify(repository.allowedModels),
         initialTimeoutSec ?? null,
       );
+      // Provider/model/effort are operator-editable from the console and are
+      // excluded from the ON CONFLICT update above, so a prior operator
+      // choice can differ from what's in the config file; read back the
+      // row that actually won so the runtime and dashboard agree.
       const row = select.get(repository.owner, repository.name) as {
         id: number;
+        model: string;
+        provider: string;
+        effort: ReasoningEffort;
         timeout_seconds: number | null;
       };
       return {
         ...repository,
         id: row.id,
+        model: row.model,
+        provider: row.provider,
+        effort: row.effort,
         ...(row.timeout_seconds === null ? {} : { timeoutSec: row.timeout_seconds }),
       };
     }),
