@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
 import {
@@ -20,12 +20,18 @@ import type { Logger } from "../log/logger.js";
 import { createRedactor } from "../log/redact.js";
 import { publishIfEligible } from "../publish/policy.js";
 import { reportAttemptOutcome } from "../publish/report.js";
-import { JobStore } from "../store/jobs.js";
-import type { AgentExecutor, FailureStage, JobStatus, NormalizedEvent, ParsedCommand } from "../types.js";
+import { JobStore, type AttemptRow } from "../store/jobs.js";
+import type {
+  AgentExecutor,
+  FailureStage,
+  JobStatus,
+  NormalizedEvent,
+  ParsedCommand,
+} from "../types.js";
 import { inspectWorkspace } from "../validate/inspection.js";
 import { runValidationCommands } from "../validate/runner.js";
 import { statusEntries } from "../workspace/gitops.js";
-import { prepareWorkspace } from "../workspace/worktree.js";
+import { prepareWorkspace, workspacePathFor } from "../workspace/worktree.js";
 import {
   agentFailureReason,
   isAgentAuthenticationFailure,
@@ -38,8 +44,60 @@ import { reactionForStatus } from "./reactions.js";
 /** Snapshot cadence for live agent activity: responsive without thrashing disk. */
 const ACTIVITY_FLUSH_MS = 400;
 
+function samePath(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+/**
+ * A retry may inherit edits only from a run that Gremlyn itself stopped
+ * abruptly. The deterministic path and recorded head are checked again after
+ * GitHub context reconstruction, so a force-push or a manually supplied path
+ * cannot turn this into a general dirty-workspace bypass.
+ */
+function canResumeRetainedWorkspace(
+  attempt: AttemptRow | undefined,
+  workspaceRoot: string,
+  prNumber: number,
+): boolean {
+  if (!attempt?.workspace_path || !attempt.head_sha_at_prepare) return false;
+  if (!samePath(attempt.workspace_path, workspacePathFor(workspaceRoot, prNumber))) return false;
+  if (attempt.outcome === "interrupted") return true;
+  if (attempt.has_uncommitted_changes !== 1) return false;
+  if (attempt.outcome === "cancelled") return true;
+  return (
+    attempt.outcome === "failed" &&
+    attempt.failure_stage === "running" &&
+    attempt.failure_reason === "agent-timeout"
+  );
+}
+
+/**
+ * Find the newest resumable workspace, ignoring retries that failed before a
+ * workspace was prepared. A later attempt that did touch the workspace is a
+ * hard boundary: older provenance must never override it.
+ */
+function retainedWorkspaceAttempt(
+  attempts: readonly AttemptRow[],
+  workspaceRoot: string,
+  prNumber: number,
+): AttemptRow | undefined {
+  for (let index = attempts.length - 1; index >= 0; index -= 1) {
+    const attempt = attempts[index];
+    if (!attempt) continue;
+    if (!attempt.workspace_path) continue;
+    return canResumeRetainedWorkspace(attempt, workspaceRoot, prNumber) ? attempt : undefined;
+  }
+  return undefined;
+}
+
 export interface RuntimeRepository extends RepoConfig {
   id: number;
+  /** Undefined means the agent may run until it exits or is cancelled. */
+  timeoutSec?: number;
 }
 
 export interface ResolutionOrchestratorOptions {
@@ -47,7 +105,8 @@ export interface ResolutionOrchestratorOptions {
   dataDir: string;
   allowedAuthors: string[];
   orchestratorLogin: string;
-  timeoutSec: number;
+  /** Test/legacy fallback; repository settings take precedence. */
+  timeoutSec?: number;
   retries: number;
   github: GitHubClient;
   registry: CommandRegistry;
@@ -176,6 +235,11 @@ export class ResolutionOrchestrator {
     const job = this.jobs.getJob(jobId);
     const repository = this.repositories.get(job.repo_id);
     if (!repository) throw new Error(`repository ${job.repo_id} is not registered at runtime`);
+    const priorAttempt = retainedWorkspaceAttempt(
+      this.jobs.listAttempts(jobId),
+      repository.workspaceRoot,
+      job.pr_number,
+    );
     const attempt = this.jobs.retryJob({
       jobId,
       agent: repository.agent,
@@ -191,6 +255,12 @@ export class ResolutionOrchestrator {
       job.comment_id,
       repository.model,
       { name: job.command, args: [] },
+      canResumeRetainedWorkspace(priorAttempt, repository.workspaceRoot, job.pr_number)
+        ? {
+            workspacePath: priorAttempt!.workspace_path!,
+            headSha: priorAttempt!.head_sha_at_prepare!,
+          }
+        : undefined,
     );
   }
 
@@ -202,6 +272,7 @@ export class ResolutionOrchestrator {
     commentId: number,
     model: string,
     command: ParsedCommand,
+    retainedWorkspace?: { workspacePath: string; headSha: string },
   ): Promise<QueueResult<{ commitSha?: string }>> {
     return this.queue.enqueue({
       jobId,
@@ -225,6 +296,7 @@ export class ResolutionOrchestrator {
           commentId,
           model,
           command,
+          ...(retainedWorkspace === undefined ? {} : { retainedWorkspace }),
           signal,
         }),
       onRejected: async (reason) => {
@@ -253,6 +325,7 @@ export class ResolutionOrchestrator {
     commentId: number;
     model: string;
     command: ParsedCommand;
+    retainedWorkspace?: { workspacePath: string; headSha: string };
     signal: AbortSignal;
   }): Promise<{ commitSha?: string }> {
     const { jobId, attemptId, repository, prNumber, commentId, signal } = input;
@@ -279,6 +352,13 @@ export class ResolutionOrchestrator {
         headBranch: context.headBranch,
         headSha: context.headSha,
         seedFiles: repository.workspaceSeedFiles,
+        resumeDirtyWorkspace:
+          input.retainedWorkspace !== undefined &&
+          samePath(
+            input.retainedWorkspace.workspacePath,
+            workspacePathFor(repository.workspaceRoot, prNumber),
+          ) &&
+          input.retainedWorkspace.headSha === context.headSha,
       });
       workspacePath = workspace.path;
       this.jobs.recordPreparation(attemptId, workspace.path, workspace.headSha);
@@ -340,7 +420,9 @@ export class ResolutionOrchestrator {
         effort: repository.effort,
         prompt: buildResolutionPrompt(context, this.options.orchestratorLogin),
         env: buildAgentEnvironment(),
-        timeoutSec: this.options.timeoutSec,
+        ...((repository.timeoutSec ?? this.options.timeoutSec) === undefined
+          ? {}
+          : { timeoutSec: repository.timeoutSec ?? this.options.timeoutSec }),
         retries: this.options.retries,
         dataDir: attemptDataDir,
         signal,

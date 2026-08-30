@@ -55,6 +55,30 @@ test("loads a valid config", () => {
   assert.equal(repo.agent, "cline");
   // No effort configured: defaults to the agent's highest tier.
   assert.equal(repo.effort, "xhigh");
+  assert.equal(config.agentTimeoutSec, undefined);
+});
+
+test("accepts zero agent timeout as unlimited", () => {
+  const config = loadConfig(
+    writeConfig(`${VALID_CONFIG}\nagent_defaults:\n  timeout_seconds: 0\n`),
+    VALID_ENV,
+  );
+  assert.equal(config.agentTimeoutSec, undefined);
+});
+
+test("rejects a fractional or negative agent timeout", () => {
+  for (const value of ["1.5", "-1"]) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nagent_defaults:\n  timeout_seconds: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /timeout_seconds must be a non-negative integer/u.test(error.message),
+    );
+  }
 });
 
 test("rejects a config with a missing GitHub token", () => {
@@ -143,7 +167,10 @@ test("requires explicit git commit attribution", () => {
 
 test("accepts a model without an allowed_models restriction", () => {
   const config = VALID_CONFIG.replace("model: test-provider/model-1", "model: test-provider/other");
-  assert.equal(loadConfig(writeConfig(config), VALID_ENV).repositories[0]?.model, "test-provider/other");
+  assert.equal(
+    loadConfig(writeConfig(config), VALID_ENV).repositories[0]?.model,
+    "test-provider/other",
+  );
 });
 
 test("environment overlay overrides file values", () => {
@@ -188,6 +215,7 @@ test("workspace_seed_files rejects a non-list value", () => {
         VALID_ENV,
       ),
     (error: unknown) =>
-      error instanceof ConfigError && /workspace_seed_files must be a list of strings/u.test(error.message),
+      error instanceof ConfigError &&
+      /workspace_seed_files must be a list of strings/u.test(error.message),
   );
 });

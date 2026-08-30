@@ -13,8 +13,7 @@ export function repositoryExists(db: Database.Database, repoId: number): boolean
 }
 
 export type SetRepositoryModelResult =
-  | { ok: true; model: string }
-  | { ok: false; reason: "not-found" };
+  { ok: true; model: string } | { ok: false; reason: "not-found" };
 
 /** Set a repository's default model. */
 export function setRepositoryModel(
@@ -29,8 +28,7 @@ export function setRepositoryModel(
 }
 
 export type SetRepositoryProviderResult =
-  | { ok: true; provider: string }
-  | { ok: false; reason: "not-found" | "provider-required" };
+  { ok: true; provider: string } | { ok: false; reason: "not-found" | "provider-required" };
 
 export type SetRepositoryModelProviderResult =
   | { ok: true; provider: string; model: string; effort: ReasoningEffort }
@@ -69,7 +67,12 @@ export function setRepositoryModelProvider(
     trimmedEffort,
     repoId,
   );
-  return { ok: true, provider: trimmedProvider, model: trimmedModel, effort: trimmedEffort as ReasoningEffort };
+  return {
+    ok: true,
+    provider: trimmedProvider,
+    model: trimmedModel,
+    effort: trimmedEffort as ReasoningEffort,
+  };
 }
 
 /** Set a repository's default provider. Providers are opaque ids passed through to the agent CLI. */
@@ -83,4 +86,31 @@ export function setRepositoryProvider(
   if (!trimmed) return { ok: false, reason: "provider-required" };
   db.prepare("UPDATE repositories SET provider = ? WHERE id = ?").run(trimmed, repoId);
   return { ok: true, provider: trimmed };
+}
+
+export type SetRepositoryTimeoutResult =
+  | { ok: true; timeoutSeconds: number | null }
+  | { ok: false; reason: "not-found" | "timeout-invalid" };
+
+/** Set the live per-repository agent timeout; null means no outer limit. */
+export function setRepositoryTimeout(
+  db: Database.Database,
+  repoId: number,
+  value: unknown,
+): SetRepositoryTimeoutResult {
+  if (!repositoryExists(db, repoId)) return { ok: false, reason: "not-found" };
+  if (value === null || (typeof value === "string" && value.trim() === "")) {
+    db.prepare("UPDATE repositories SET timeout_seconds = NULL WHERE id = ?").run(repoId);
+    return { ok: true, timeoutSeconds: null };
+  }
+  const seconds = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(seconds) || seconds < 0) {
+    return { ok: false, reason: "timeout-invalid" };
+  }
+  if (seconds === 0) {
+    db.prepare("UPDATE repositories SET timeout_seconds = NULL WHERE id = ?").run(repoId);
+    return { ok: true, timeoutSeconds: null };
+  }
+  db.prepare("UPDATE repositories SET timeout_seconds = ? WHERE id = ?").run(seconds, repoId);
+  return { ok: true, timeoutSeconds: seconds };
 }

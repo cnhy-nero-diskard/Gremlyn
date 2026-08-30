@@ -10,6 +10,7 @@ export const FAILURE_REASONS = [
   "pull-request-closed",
   "workspace-corrupted",
   "workspace-invalid",
+  "workspace-dirty",
   "workspace-conflicted",
   "workspace-branch-in-use",
   "workspace-seed-failed",
@@ -101,17 +102,19 @@ export function classifyFailure(error: unknown, stage: FailureStage): StageFailu
     const reason: FailureReason =
       error.reason === "head-changed"
         ? "head-changed"
-        : error.reason === "workspace-conflicted"
-          ? "git-conflict"
-          : // Another checkout owns the branch. Distinct from corruption: the
-            // operator has to release that worktree, and no retry will help.
-            error.reason === "workspace-branch-in-use"
-            ? "workspace-branch-in-use"
-            : // A missing or mis-declared seed file is a configuration fault the
-              // operator fixes in the registry, not a damaged worktree to reset.
-              error.reason === "workspace-seed-failed"
-              ? "workspace-seed-failed"
-              : "workspace-corrupted";
+        : error.reason === "workspace-dirty"
+          ? "workspace-dirty"
+          : error.reason === "workspace-conflicted"
+            ? "git-conflict"
+            : // Another checkout owns the branch. Distinct from corruption: the
+              // operator has to release that worktree, and no retry will help.
+              error.reason === "workspace-branch-in-use"
+              ? "workspace-branch-in-use"
+              : // A missing or mis-declared seed file is a configuration fault the
+                // operator fixes in the registry, not a damaged worktree to reset.
+                error.reason === "workspace-seed-failed"
+                ? "workspace-seed-failed"
+                : "workspace-corrupted";
     return new StageFailure(stage, reason, error.message);
   }
   if (error instanceof GitHubError) {

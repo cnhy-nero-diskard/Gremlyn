@@ -39,8 +39,9 @@ console:
   token_env: GREMLYN_CONSOLE_TOKEN
 
 agent_defaults:
-  # Hard limit per agent invocation, in seconds.
-  timeout_seconds: 1800
+  # Initial per-repository timeout in seconds. 0 means no limit; the live
+  # value can be changed from the repository card in the console.
+  timeout_seconds: 0
   # Bounded consecutive-mistake allowance passed to the agent.
   retries: 2
 

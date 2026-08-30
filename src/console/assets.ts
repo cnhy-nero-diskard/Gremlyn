@@ -503,6 +503,7 @@ export const clientScript = `
     syncPicker(root, model);
   };
   const effortFor = (root) => root.querySelector('[data-repo-effort]')?.value || '';
+  const timeoutFor = (root) => root.querySelector('[data-repo-timeout]')?.value.trim() || '';
   const savePicker = async (root, previousProvider, previousModel, previousEffort) => {
     const provider = providerFor(root); const model = modelFor(root); const effort = effortFor(root); const id = root.dataset.repoId;
     const controls = [...root.querySelectorAll('select, input')]; controls.forEach((control) => { control.disabled = true; }); status('Saving model, provider, and effort…');
@@ -515,6 +516,21 @@ export const clientScript = `
       setPickerSelection(root, previousProvider, previousModel, previousEffort);
       status(error instanceof Error ? error.message : 'Update refused');
     } finally { controls.forEach((control) => { control.disabled = false; }); }
+  };
+  const saveTimeout = async (root, previousTimeout) => {
+    const input = root.querySelector('[data-repo-timeout]'); const id = root.dataset.repoId;
+    if (!input) return;
+    input.disabled = true; status('Saving agent timeout…');
+    const raw = input.value.trim(); const timeoutSeconds = raw === '' ? null : Number(raw);
+    try {
+      const response = await fetch('/repos/' + id + '/timeout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ timeoutSeconds }) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
+      root.dataset.savedTimeout = payload.timeoutSeconds === null ? '' : String(payload.timeoutSeconds); status(payload.timeoutSeconds === null ? 'Agent timeout disabled' : 'Agent timeout updated');
+    } catch (error) {
+      input.value = previousTimeout;
+      status(error instanceof Error ? error.message : 'Update refused');
+    } finally { input.disabled = false; }
   };
   const refreshModelCatalog = async () => {
     try {
@@ -658,6 +674,10 @@ export const clientScript = `
       if (target.matches('[data-repo-provider-select]')) syncPicker(root); else updateModelDescription(root);
       await savePicker(root, previousProvider, previousModel, previousEffort);
     }
+    if (target instanceof HTMLInputElement && target.matches('[data-repo-timeout]')) {
+      const root = target.closest('[data-repo-picker]'); if (!root) return;
+      await saveTimeout(root, root.dataset.savedTimeout || '');
+    }
   });
   // The log arrives server-rendered and is refreshed by the stream swap above;
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
@@ -666,7 +686,7 @@ export const clientScript = `
   const initialActivity = document.querySelector('[data-scroll-keep="activity"]');
   const initialFollow = document.querySelector('[data-activity-follow]');
   if (initialActivity && initialFollow?.checked) initialActivity.scrollTop = initialActivity.scrollHeight;
-  document.querySelectorAll('[data-repo-picker]').forEach((root) => { root.dataset.savedProvider = providerFor(root); root.dataset.savedModel = modelFor(root); root.dataset.savedEffort = effortFor(root); syncPicker(root); });
+  document.querySelectorAll('[data-repo-picker]').forEach((root) => { root.dataset.savedProvider = providerFor(root); root.dataset.savedModel = modelFor(root); root.dataset.savedEffort = effortFor(root); root.dataset.savedTimeout = timeoutFor(root); syncPicker(root); });
   void refreshModelCatalog();
   const signIn = document.querySelector('[data-sign-in]');
   if (signIn) signIn.addEventListener('click', async () => { const token = document.querySelector('#token').value; const response = await fetch('/auth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }); if (response.ok) window.location.href = '/'; else document.querySelector('[data-auth-error]').textContent = 'Invalid token'; });

@@ -9,6 +9,7 @@ import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
 import { Logger } from "../src/log/logger.js";
 import { FAILURE_REASONS } from "../src/orchestrator/failures.js";
 import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
+import { JobStore } from "../src/store/jobs.js";
 import { Store } from "../src/store/db.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
@@ -164,6 +165,98 @@ test("failed agent never pushes and records stage, files, commit, and push facts
   assert.deepEqual(
     data.github.reactionHistory.map((r) => r.content),
     ["eyes", "rocket", "confused"],
+  );
+  data.store.close();
+});
+
+test("retry resumes edits from an abruptly timed-out agent", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+  };
+  const { writeFileSync, readFileSync } = await import("node:fs");
+  const retained = join(attempt.workspace_path, "agent-progress.txt");
+  writeFileSync(retained, "retain this\n", "utf8");
+  data.store.db
+    .prepare(
+      `UPDATE attempts
+       SET outcome = 'failed', failure_stage = 'running', failure_reason = 'agent-timeout',
+           has_uncommitted_changes = 1
+       WHERE id = ?`,
+    )
+    .run(attempt.id);
+
+  await assert.rejects(() => data.orchestrator.retry(job.id));
+  assert.equal(data.executor.runs.length, 2, "retry reached the agent instead of failing as dirty");
+  assert.equal(readFileSync(retained, "utf8"), "retain this\n");
+  data.store.close();
+});
+
+test("retry does not inherit a dirty workspace from an ordinary agent failure", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+  };
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(attempt.workspace_path, "manual-edit.txt"), "do not inherit\n", "utf8");
+  data.store.db
+    .prepare("UPDATE attempts SET has_uncommitted_changes = 1 WHERE id = ?")
+    .run(attempt.id);
+
+  await assert.rejects(() => data.orchestrator.retry(job.id));
+  assert.equal(data.executor.runs.length, 1, "ordinary failure must not bypass dirty protection");
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT failure_reason FROM attempts WHERE attempt_number = 2")
+        .get() as { failure_reason: string }
+    ).failure_reason,
+    "workspace-dirty",
+  );
+  data.store.close();
+});
+
+test("retry can recover an abrupt workspace after a later preparation-only failure", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const first = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+    head_sha_at_prepare: string;
+  };
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(first.workspace_path, "agent-progress.txt"), "retain this\n", "utf8");
+  data.store.db
+    .prepare(
+      `UPDATE attempts
+       SET outcome = 'failed', failure_stage = 'running', failure_reason = 'agent-timeout',
+           has_uncommitted_changes = 1
+       WHERE id = ?`,
+    )
+    .run(first.id);
+
+  const jobs = new JobStore(data.store.db);
+  const second = jobs.retryJob({
+    jobId: job.id,
+    agent: "fake",
+    model: "fixture/model",
+    provider: "fixture",
+    effort: "xhigh",
+  });
+  jobs.finishFailure(job.id, second.attemptId, "preparing", "workspace-corrupted");
+
+  await assert.rejects(() => data.orchestrator.retry(job.id));
+  assert.equal(
+    data.executor.runs.length,
+    2,
+    "preparation-only retries do not erase abrupt provenance",
   );
   data.store.close();
 });

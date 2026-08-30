@@ -113,7 +113,8 @@ export interface AgentRunOptions {
   effort: ReasoningEffort;
   prompt: string;
   env: Record<string, string>;
-  timeoutSec: number;
+  /** Undefined disables the outer agent timeout. */
+  timeoutSec?: number;
   retries: number;
   dataDir: string;
   signal: AbortSignal;

@@ -75,13 +75,24 @@ state, has diverged from the remote head, or is not a valid git checkout — the
 system SHALL fail the job with a specific reason rather than discarding the
 workspace contents.
 
-Recovery from such a state SHALL require an explicit operator action.
+Recovery from such a state SHALL require an explicit operator action, except
+that a retry MAY resume retained edits from an interrupted, cancelled, or
+timed-out running attempt when the deterministic workspace path and recorded
+PR head still match and the workspace is not conflicted or diverged.
 
-#### Scenario: Leftover modifications from an interrupted attempt
+#### Scenario: Leftover modifications without an abrupt-run retry
 
-- **WHEN** preparation finds uncommitted modifications in the workspace
+- **WHEN** preparation finds uncommitted modifications in the workspace without
+  a validated abrupt-run retry
 - **THEN** the job fails with a reason identifying the unexpected state, the
   modifications are preserved, and no agent runs
+
+#### Scenario: Retry resumes an abruptly ended attempt
+
+- **WHEN** a retry follows an interrupted, cancelled, or timed-out running
+  attempt whose deterministic workspace is still at the same recorded PR head
+- **THEN** the job keeps the retained modifications, prepares that workspace
+  without discarding them, and runs the agent there
 
 #### Scenario: Conflicted workspace
 

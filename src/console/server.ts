@@ -13,6 +13,7 @@ import {
   setRepositoryModel,
   setRepositoryModelProvider,
   setRepositoryProvider,
+  setRepositoryTimeout,
   toggleRepository,
 } from "./mutations.js";
 import { openSseStream, SharedChangeTicker } from "./stream.js";
@@ -281,8 +282,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
     async (request, reply) => {
       const id = positiveInteger(request.params.id);
       const provider = request.body?.provider;
-      if (typeof provider !== "string")
-        return reply.code(400).send({ error: "provider-required" });
+      if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
       const result = setRepositoryProvider(options.db, id, provider);
       if (!result.ok) {
         return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
@@ -296,34 +296,56 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       return reply.send({ ok: true, provider: result.provider });
     },
   );
-  app.post<{ Params: { id: string }; Body: { provider?: string; model?: string; effort?: string } }>(
-    "/repos/:id/model-provider",
+  app.post<{
+    Params: { id: string };
+    Body: { provider?: string; model?: string; effort?: string };
+  }>("/repos/:id/model-provider", async (request, reply) => {
+    const id = positiveInteger(request.params.id);
+    const provider = request.body?.provider;
+    const model = request.body?.model;
+    const effort = request.body?.effort;
+    if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
+    if (typeof model !== "string") return reply.code(400).send({ error: "model-required" });
+    if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
+    const result = setRepositoryModelProvider(
+      options.db,
+      id,
+      provider,
+      model,
+      effort,
+      options.effortOptions ?? REASONING_EFFORTS,
+    );
+    if (!result.ok) {
+      return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
+    }
+    options.operatorActions.record({
+      action: "repository-model-provider",
+      target: `repository:${id}`,
+      effect: `${result.provider}/${result.model}/${result.effort}`,
+    });
+    await options.actions?.repositorySettingsChanged?.(id);
+    return reply.send({
+      ok: true,
+      provider: result.provider,
+      model: result.model,
+      effort: result.effort,
+    });
+  });
+  app.post<{ Params: { id: string }; Body: { timeoutSeconds?: unknown } }>(
+    "/repos/:id/timeout",
     async (request, reply) => {
       const id = positiveInteger(request.params.id);
-      const provider = request.body?.provider;
-      const model = request.body?.model;
-      const effort = request.body?.effort;
-      if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
-      if (typeof model !== "string") return reply.code(400).send({ error: "model-required" });
-      if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
-      const result = setRepositoryModelProvider(
-        options.db,
-        id,
-        provider,
-        model,
-        effort,
-        options.effortOptions ?? REASONING_EFFORTS,
-      );
+      const result = setRepositoryTimeout(options.db, id, request.body?.timeoutSeconds);
       if (!result.ok) {
         return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
       }
       options.operatorActions.record({
-        action: "repository-model-provider",
+        action: "repository-timeout",
         target: `repository:${id}`,
-        effect: `${result.provider}/${result.model}/${result.effort}`,
+        effect: result.timeoutSeconds === null ? "unlimited" : String(result.timeoutSeconds),
       });
       await options.actions?.repositorySettingsChanged?.(id);
-      return reply.send({ ok: true, provider: result.provider, model: result.model, effort: result.effort });
+      return reply.send({ ok: true, timeoutSeconds: result.timeoutSeconds });
     },
   );
   app.post<{ Params: { id: string }; Body: { confirm?: string; prNumber?: number } }>(

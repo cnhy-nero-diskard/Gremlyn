@@ -6,12 +6,13 @@ import type { RuntimeRepository } from "../orchestrator/resolution.js";
 export function syncRepositories(
   db: Database.Database,
   repositories: readonly RepoConfig[],
+  initialTimeoutSec?: number,
 ): RuntimeRepository[] {
   const upsert = db.prepare(
     `INSERT INTO repositories
        (owner, name, source_path, workspace_root, agent, model, provider, effort,
-        enabled, validation_commands, agent_instructions, allowed_models)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        enabled, validation_commands, agent_instructions, allowed_models, timeout_seconds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(owner, name) DO UPDATE SET
        source_path = excluded.source_path,
        workspace_root = excluded.workspace_root,
@@ -24,7 +25,9 @@ export function syncRepositories(
        agent_instructions = excluded.agent_instructions,
        allowed_models = excluded.allowed_models`,
   );
-  const select = db.prepare("SELECT id FROM repositories WHERE owner = ? AND name = ?");
+  const select = db.prepare(
+    "SELECT id, timeout_seconds FROM repositories WHERE owner = ? AND name = ?",
+  );
   return db.transaction(() =>
     repositories.map((repository) => {
       upsert.run(
@@ -40,9 +43,17 @@ export function syncRepositories(
         JSON.stringify(repository.validationCommands),
         repository.agentInstructions ?? null,
         JSON.stringify(repository.allowedModels),
+        initialTimeoutSec ?? null,
       );
-      const row = select.get(repository.owner, repository.name) as { id: number };
-      return { ...repository, id: row.id };
+      const row = select.get(repository.owner, repository.name) as {
+        id: number;
+        timeout_seconds: number | null;
+      };
+      return {
+        ...repository,
+        id: row.id,
+        ...(row.timeout_seconds === null ? {} : { timeoutSec: row.timeout_seconds }),
+      };
     }),
   )();
 }

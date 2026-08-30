@@ -49,8 +49,7 @@ function modelBadgeClass(label: string): string {
 function modelBadges(model: ProviderModelOption): string {
   return modelBadgeLabels(model)
     .map(
-      (label) =>
-        `<span class="model-badge ${modelBadgeClass(label)}">${escapeHtml(label)}</span>`,
+      (label) => `<span class="model-badge ${modelBadgeClass(label)}">${escapeHtml(label)}</span>`,
     )
     .join("");
 }
@@ -120,11 +119,17 @@ function modelProviderControl(
   const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${catalog.providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
   const modelInput = `<input name="repo-model-input-${repo.id}" data-repo-model-input data-repo-field="model" value="${escapeHtml(repo.model ?? "")}" placeholder="model id"${knownProvider ? " hidden" : ""}>`;
   const effort = `<select name="repo-effort-${repo.id}" data-repo-effort data-repo-field="effort">${effortOptions(repo, configuredEfforts)}</select>`;
+  const timeout = `<input name="repo-timeout-${repo.id}" data-repo-timeout type="number" min="1" step="1" inputmode="numeric" value="${repo.timeout_seconds === null || repo.timeout_seconds === undefined ? "" : String(repo.timeout_seconds)}" placeholder="No limit" aria-label="Agent timeout in seconds">`;
   const selectedModel = knownProvider?.models.find((model) => model.id === repo.model);
   const currentModel =
     selectedModel ??
     (repo.model
-      ? { id: repo.model, name: repo.model, description: "Current repository model.", tags: ["CURRENT"] }
+      ? {
+          id: repo.model,
+          name: repo.model,
+          description: "Current repository model.",
+          tags: ["CURRENT"],
+        }
       : undefined);
   const modelHint = currentModel ? modelDescription(currentModel) : "Choose a model.";
   const modelMeta = currentModel
@@ -133,7 +138,7 @@ function modelProviderControl(
   const hint = knownProvider
     ? `${knownProvider.description} All catalog models are selectable.`
     : "Custom provider; enter the exact provider and model ids.";
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Effort tiers come from the configured agent.</small></div>`;
+  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
 }
 
 export function repositoryCards(

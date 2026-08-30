@@ -194,6 +194,8 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /acme\/widgets/);
   assert.match(response.body, /data-repo-picker/);
   assert.match(response.body, /data-repo-effort/);
+  assert.match(response.body, /data-repo-timeout/);
+  assert.match(response.body, /Blank timeout means no limit/);
   assert.match(response.body, />Extra high<\/option>/);
   assert.match(response.body, /<optgroup label="Cline/);
   assert.match(response.body, /data-model-description=/);
@@ -599,9 +601,18 @@ test("scrollable panels and keyed details survive a live region swap", () => {
   // activity panel snaps back to the top several times a second.
   const model = jobRegions({
     job: {
-      id: 1, repo_id: 1, pr_number: 2, comment_id: 3, command: "RESOLVE", status: "running",
-      owner: "acme", name: "widgets", thread_id: null, review_context: null,
-      created_at: "2026-08-28T18:00:00.000Z", finished_at: null,
+      id: 1,
+      repo_id: 1,
+      pr_number: 2,
+      comment_id: 3,
+      command: "RESOLVE",
+      status: "running",
+      owner: "acme",
+      name: "widgets",
+      thread_id: null,
+      review_context: null,
+      created_at: "2026-08-28T18:00:00.000Z",
+      finished_at: null,
     },
     attempts: [],
     timeline: [],
@@ -613,8 +624,20 @@ test("scrollable panels and keyed details survive a live region swap", () => {
 
   const html = agentActivity({
     blocks: [
-      { seq: 1, kind: "reasoning", at: "2026-08-28T18:00:00.000Z", text: "**Planning**", done: true },
-      { seq: 2, kind: "text", at: "2026-08-28T18:00:01.000Z", text: "Plan: read the repo", done: false },
+      {
+        seq: 1,
+        kind: "reasoning",
+        at: "2026-08-28T18:00:00.000Z",
+        text: "**Planning**",
+        done: true,
+      },
+      {
+        seq: 2,
+        kind: "text",
+        at: "2026-08-28T18:00:01.000Z",
+        text: "Plan: read the repo",
+        done: false,
+      },
     ],
     toolCalls: 2,
     iterations: 1,
@@ -632,27 +655,78 @@ test("scrollable panels and keyed details survive a live region swap", () => {
 
 test("the agent transcript leads the job page and each step states its kind", () => {
   const attempt = {
-    id: 9, job_id: 1, attempt_number: 2, agent: "cline", model: "m", provider: "p", effort: "xhigh",
-    workspace_path: null, head_sha_at_prepare: null, started_at: null, ended_at: null,
-    agent_exit_code: null, agent_session_id: null, outcome: null, failure_stage: null,
-    failure_reason: null, commit_sha: null, pushed: 0, report_status: null,
-    has_uncommitted_changes: 0, output_ref: null, output: "",
+    id: 9,
+    job_id: 1,
+    attempt_number: 2,
+    agent: "cline",
+    model: "m",
+    provider: "p",
+    effort: "xhigh",
+    workspace_path: null,
+    head_sha_at_prepare: null,
+    started_at: null,
+    ended_at: null,
+    agent_exit_code: null,
+    agent_session_id: null,
+    outcome: null,
+    failure_stage: null,
+    failure_reason: null,
+    commit_sha: null,
+    pushed: 0,
+    report_status: null,
+    has_uncommitted_changes: 0,
+    output_ref: null,
+    output: "",
     activity: {
       blocks: [
-        { seq: 1, kind: "reasoning", at: "2026-08-29T06:28:20.000Z", text: "**Planning**", done: true },
-        { seq: 2, kind: "tool", at: "2026-08-29T06:28:21.000Z", text: "run_commands\n{\n  \"a\": 1\n}", done: true },
-        { seq: 3, kind: "text", at: "2026-08-29T06:28:22.000Z", text: "Working on it", done: false },
+        {
+          seq: 1,
+          kind: "reasoning",
+          at: "2026-08-29T06:28:20.000Z",
+          text: "**Planning**",
+          done: true,
+        },
+        {
+          seq: 2,
+          kind: "tool",
+          at: "2026-08-29T06:28:21.000Z",
+          text: 'run_commands\n{\n  "a": 1\n}',
+          done: true,
+        },
+        {
+          seq: 3,
+          kind: "text",
+          at: "2026-08-29T06:28:22.000Z",
+          text: "Working on it",
+          done: false,
+        },
       ],
-      toolCalls: 1, iterations: 1, usage: null, updatedAt: "2026-08-29T06:28:22.000Z",
+      toolCalls: 1,
+      iterations: 1,
+      usage: null,
+      updatedAt: "2026-08-29T06:28:22.000Z",
     },
   };
   const regions = jobRegions({
     job: {
-      id: 1, repo_id: 1, pr_number: 2, comment_id: 3, command: "RESOLVE", status: "running",
-      owner: "acme", name: "widgets", thread_id: null, review_context: null,
-      created_at: "2026-08-29T06:28:00.000Z", finished_at: null,
+      id: 1,
+      repo_id: 1,
+      pr_number: 2,
+      comment_id: 3,
+      command: "RESOLVE",
+      status: "running",
+      owner: "acme",
+      name: "widgets",
+      thread_id: null,
+      review_context: null,
+      created_at: "2026-08-29T06:28:00.000Z",
+      finished_at: null,
     },
-    attempts: [attempt], timeline: [], validation: [], logs: [], logTotal: 0,
+    attempts: [attempt],
+    timeline: [],
+    validation: [],
+    logs: [],
+    logTotal: 0,
   } as never);
   const detail = regions["job-detail-region"];
 
@@ -699,7 +773,9 @@ test("model/provider/effort updates are atomic, unrestricted, audited, and notif
     effort: "high",
   });
   assert.deepEqual(
-    data.store.db.prepare("SELECT provider, model, effort FROM repositories WHERE id = ?").get(data.repoId),
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(data.repoId),
     { provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
   );
   assert.equal(settingsChanges, 1);
@@ -722,6 +798,62 @@ test("model/provider/effort updates are atomic, unrestricted, audited, and notif
     new OperatorActionStore(data.store.db).list()[0]?.action,
     "repository-model-provider",
   );
+  await app.close();
+  data.store.close();
+});
+
+test("repository agent timeout is configurable live and blank disables the limit", async () => {
+  const data = fixture();
+  let settingsChanges = 0;
+  data.options.actions = {
+    ...data.options.actions,
+    repositorySettingsChanged: () => {
+      settingsChanges += 1;
+    },
+  };
+  const app = buildConsoleServer(data.options);
+  const limited = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/timeout`,
+    headers: AUTH,
+    payload: { timeoutSeconds: 3600 },
+  });
+  assert.equal(limited.statusCode, 200);
+  assert.deepEqual(limited.json(), { ok: true, timeoutSeconds: 3600 });
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT timeout_seconds FROM repositories WHERE id = ?")
+        .get(data.repoId) as { timeout_seconds: number | null }
+    ).timeout_seconds,
+    3600,
+  );
+
+  const unlimited = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/timeout`,
+    headers: AUTH,
+    payload: { timeoutSeconds: null },
+  });
+  assert.equal(unlimited.statusCode, 200);
+  assert.deepEqual(unlimited.json(), { ok: true, timeoutSeconds: null });
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT timeout_seconds FROM repositories WHERE id = ?")
+        .get(data.repoId) as { timeout_seconds: number | null }
+    ).timeout_seconds,
+    null,
+  );
+  assert.equal(settingsChanges, 2);
+
+  const invalid = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/timeout`,
+    headers: AUTH,
+    payload: { timeoutSeconds: -1 },
+  });
+  assert.equal(invalid.statusCode, 400);
   await app.close();
   data.store.close();
 });

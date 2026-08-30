@@ -52,7 +52,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     executors.set(definition.id, executor);
   }
 
-  const repositories = syncRepositories(store.db, config.repositories);
+  const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
   const registry = createDefaultCommandRegistry();
   const credentialSources = new Map(
     Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
@@ -62,7 +62,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     dataDir: config.dataDir,
     allowedAuthors: config.allowedAuthors,
     orchestratorLogin: config.orchestratorLogin,
-    timeoutSec: config.agentTimeoutSec,
     retries: config.agentRetries,
     github,
     registry,
@@ -107,14 +106,22 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         const existing = repositories[index];
         if (!existing) return;
         const row = store.db
-          .prepare("SELECT model, provider, effort FROM repositories WHERE id = ?")
-          .get(repoId) as { model: string; provider: string; effort: string } | undefined;
+          .prepare("SELECT model, provider, effort, timeout_seconds FROM repositories WHERE id = ?")
+          .get(repoId) as
+          | {
+              model: string;
+              provider: string;
+              effort: string;
+              timeout_seconds: number | null;
+            }
+          | undefined;
         if (!row) return;
         const updated = {
           ...existing,
           model: row.model,
           provider: row.provider,
           effort: row.effort as ReasoningEffort,
+          ...(row.timeout_seconds === null ? {} : { timeoutSec: row.timeout_seconds }),
         };
         repositories[index] = updated;
         orchestrator.registerRepository(updated);

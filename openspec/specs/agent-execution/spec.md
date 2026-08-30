@@ -117,9 +117,11 @@ and SHALL NOT be readable by any other attempt.
 
 ### Requirement: Bounded execution
 
-Every agent invocation SHALL have a configured maximum duration and a bounded
-retry allowance. On exceeding the duration the system SHALL terminate the agent
-process and fail the attempt with a timeout reason.
+Every agent invocation SHALL have a bounded retry allowance and MAY have a
+configured maximum duration. When a duration is configured and exceeded, the
+system SHALL terminate the agent process and fail the attempt with a timeout
+reason. An unset or zero duration SHALL leave the agent running until it exits
+or is cancelled.
 
 Work left in the workspace by a timed-out agent SHALL be preserved for inspection
 and SHALL NOT be committed or pushed.

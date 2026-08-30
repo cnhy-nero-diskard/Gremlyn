@@ -144,4 +144,10 @@ CREATE TABLE operator_actions (
 ALTER TABLE jobs ADD COLUMN review_context TEXT;
 `,
   },
+  {
+    id: "0004_repository_agent_timeout",
+    sql: `
+ALTER TABLE repositories ADD COLUMN timeout_seconds INTEGER;
+`,
+  },
 ];

@@ -26,6 +26,7 @@ export interface RepositorySummary {
   model?: string;
   provider?: string;
   effort?: string;
+  timeout_seconds?: number | null;
   validation_commands?: string;
   agent_instructions?: string | null;
   allowed_models?: string;
@@ -281,7 +282,7 @@ export function readDashboard(
     .prepare(
       `SELECT id, owner, name, enabled, source_path, workspace_root, agent,
               model, provider, effort, validation_commands, agent_instructions,
-              allowed_models
+              allowed_models, timeout_seconds
        FROM repositories ORDER BY owner, name`,
     )
     .all()

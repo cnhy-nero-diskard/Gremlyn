@@ -18,8 +18,9 @@ import {
  * They are normally linked worktrees. If the configured source checkout is
  * itself on the PR branch, Git cannot link that branch a second time, so the
  * workspace is an independent clone with the same branch checked out.
- * Dirty means stop: an unsafe workspace fails the job, it is never
- * discarded implicitly.
+ * Dirty means stop unless the retry was positively identified as resuming a
+ * retained workspace from an abruptly ended Gremlyn attempt. Even then the
+ * branch and recorded head must match; conflicts and divergence never resume.
  */
 
 export type WorkspaceFailureReason =
@@ -81,6 +82,8 @@ export async function prepareWorkspace(options: {
   headSha: string;
   /** Repository-relative gitignored files copied from the source checkout. */
   seedFiles?: readonly string[];
+  /** Permit edits only for a validated abrupt-run retry. */
+  resumeDirtyWorkspace?: boolean;
 }): Promise<PreparedWorkspace> {
   const { sourcePath, workspaceRoot, prNumber, headBranch } = options;
   const expectedSha = options.headSha;
@@ -118,7 +121,13 @@ export async function prepareWorkspace(options: {
     }
     // Refresh: dirty means stop (design D9) — never discard.
     const dirty = (await statusEntries(path)).length > 0;
-    if (dirty) {
+    if (branch !== headBranch && dirty) {
+      throw new WorkspaceError(
+        "workspace-dirty",
+        `workspace ${path} has uncommitted modifications`,
+      );
+    }
+    if (dirty && !options.resumeDirtyWorkspace) {
       throw new WorkspaceError(
         "workspace-dirty",
         `workspace ${path} has uncommitted modifications`,
@@ -134,14 +143,24 @@ export async function prepareWorkspace(options: {
         );
       }
     }
-    // Fast-forward only; divergence means stop, not rewrite.
-    try {
-      await git(["merge", "--ff-only", expectedSha], { cwd: path });
-    } catch {
-      throw new WorkspaceError(
-        "workspace-diverged",
-        `workspace ${path} cannot fast-forward to ${expectedSha}`,
-      );
+    if (dirty && options.resumeDirtyWorkspace) {
+      const actualSha = await headSha(path);
+      if (actualSha !== expectedSha) {
+        throw new WorkspaceError(
+          "workspace-diverged",
+          `workspace ${path} is dirty at ${actualSha}, expected ${expectedSha}`,
+        );
+      }
+    } else {
+      // Fast-forward only; divergence means stop, not rewrite.
+      try {
+        await git(["merge", "--ff-only", expectedSha], { cwd: path });
+      } catch {
+        throw new WorkspaceError(
+          "workspace-diverged",
+          `workspace ${path} cannot fast-forward to ${expectedSha}`,
+        );
+      }
     }
   }
 

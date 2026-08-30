@@ -132,6 +132,62 @@ test("dirty workspace fails with workspace-dirty and contents are preserved", as
   assert.equal(readFileSync(join(prepared.path, "leftover.txt"), "utf8"), "interrupted work\n");
 });
 
+test("validated abrupt-run retry resumes a dirty workspace at the same head", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 10,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "retained.txt"), "keep me\n", "utf8");
+
+  const resumed = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 10,
+    headBranch: repo.headBranch,
+    headSha: sha,
+    resumeDirtyWorkspace: true,
+  });
+  assert.equal(resumed.created, false);
+  assert.equal(readFileSync(join(resumed.path, "retained.txt"), "utf8"), "keep me\n");
+});
+
+test("dirty resume still refuses a workspace whose base head diverged", async () => {
+  const repo = await createTempRepo();
+  const firstSha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 12,
+    headBranch: repo.headBranch,
+    headSha: firstSha,
+  });
+  writeFileSync(join(prepared.path, "retained.txt"), "keep me\n", "utf8");
+  const secondSha = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    "next.txt",
+    "next\n",
+    "advance",
+  );
+
+  await assert.rejects(
+    prepareWorkspace({
+      sourcePath: repo.sourcePath,
+      workspaceRoot: repo.workspaceRoot,
+      prNumber: 12,
+      headBranch: repo.headBranch,
+      headSha: secondSha,
+      resumeDirtyWorkspace: true,
+    }),
+    (err: unknown) => err instanceof WorkspaceError && err.reason === "workspace-diverged",
+  );
+});
+
 test("workspace path derives from root and PR number only", () => {
   const attackerBranch = "../../outside";
   assert.equal(workspacePathFor("/root", 42), join("/root", "pr-42"));

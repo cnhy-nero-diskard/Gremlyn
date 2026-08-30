@@ -177,6 +177,7 @@ export class ClineExecutor implements AgentExecutor {
 
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const startedAt = new Date().toISOString();
+    const hasTimeout = opts.timeoutSec !== undefined && opts.timeoutSec > 0;
     const args = [
       "-c",
       opts.cwd,
@@ -185,8 +186,7 @@ export class ClineExecutor implements AgentExecutor {
       "-P",
       opts.provider,
       "--json",
-      "-t",
-      String(opts.timeoutSec),
+      ...(hasTimeout ? ["-t", String(opts.timeoutSec!)] : []),
       "--thinking",
       opts.effort,
       "--data-dir",
@@ -204,7 +204,7 @@ export class ClineExecutor implements AgentExecutor {
     const result = await this.runProcess(this.binary, args, {
       cwd: opts.cwd,
       env: opts.env,
-      timeoutMs: opts.timeoutSec * 1_000,
+      ...(hasTimeout ? { timeoutMs: opts.timeoutSec! * 1_000 } : {}),
       signal: opts.signal,
       ...(opts.onLine ? { onLine: opts.onLine } : {}),
     });

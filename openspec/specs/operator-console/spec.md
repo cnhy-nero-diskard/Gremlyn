@@ -70,8 +70,9 @@ running jobs without requiring a manual page reload.
 ### Requirement: Operator actions
 
 The console SHALL offer retrying a failed, cancelled, or interrupted job;
-cancelling a queued or running job; enabling or disabling a repository; and
-navigating to the pull request and the triggering comment on GitHub.
+cancelling a queued or running job; enabling or disabling a repository;
+configuring its agent timeout, including no limit; and navigating to the pull
+request and the triggering comment on GitHub.
 
 Every operator action SHALL be recorded with its time and effect.
 

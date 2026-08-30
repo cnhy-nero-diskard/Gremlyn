@@ -65,7 +65,8 @@ export interface AppConfig {
   consoleHost: string;
   consolePort: number;
   consoleToken: string;
-  agentTimeoutSec: number;
+  /** Initial per-repository agent timeout; undefined means no limit. */
+  agentTimeoutSec?: number;
   agentRetries: number;
   allowedAuthors: string[];
   agents: Record<string, AgentDefinition>;
@@ -290,7 +291,8 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   }
 
   // Agent defaults.
-  const agentTimeoutSec = asNumber(raw.agent_defaults?.timeout_seconds) ?? 1800;
+  const configuredAgentTimeoutSec = asNumber(raw.agent_defaults?.timeout_seconds);
+  const agentTimeoutSec = configuredAgentTimeoutSec === 0 ? undefined : configuredAgentTimeoutSec;
   const agentRetries = asNumber(raw.agent_defaults?.retries) ?? 2;
   // Cline rejects a retry budget below 1 with a warning and silently falls back
   // to its own default, so an out-of-range value here would not be the value
@@ -301,9 +303,12 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
         "the agent CLI ignores anything lower and substitutes its own default",
     );
   }
-  if (!Number.isFinite(agentTimeoutSec) || agentTimeoutSec <= 0) {
+  if (
+    configuredAgentTimeoutSec !== undefined &&
+    (!Number.isInteger(configuredAgentTimeoutSec) || configuredAgentTimeoutSec < 0)
+  ) {
     problems.push(
-      `agent_defaults.timeout_seconds must be a positive number (got ${String(agentTimeoutSec)})`,
+      `agent_defaults.timeout_seconds must be a non-negative integer (got ${String(configuredAgentTimeoutSec)})`,
     );
   }
 
@@ -373,7 +378,7 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     consoleHost,
     consolePort,
     consoleToken: consoleToken as string,
-    agentTimeoutSec,
+    ...(agentTimeoutSec === undefined ? {} : { agentTimeoutSec }),
     agentRetries,
     allowedAuthors,
     agents,

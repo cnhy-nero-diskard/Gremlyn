@@ -164,7 +164,29 @@ test("Cline executor passes prompt and controls as argv with no worktree flag", 
   assert.equal(args[args.indexOf("--retries") + 1], "2");
   assert.equal(args.includes("--worktree"), false);
   assert.equal(runOptions.cwd, opts.cwd);
+  assert.equal(runOptions.timeoutMs, 45_000);
   assert.equal(result.sessionId, "session-7");
+});
+
+test("Cline omits the CLI and process timeout when no limit is configured", async () => {
+  let passedArgs: readonly string[] = [];
+  let passedTimeout: number | undefined;
+  const runner: ProcessRunner = (_binary, args, runOptions) => {
+    passedArgs = args;
+    passedTimeout = runOptions.timeoutMs;
+    return Promise.resolve({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      isCanceled: false,
+    });
+  };
+  await new ClineExecutor("cline-test", runner).run(
+    options(mkdtempSync(join(tmpdir(), "gremlyn-cline-")), { timeoutSec: undefined }),
+  );
+  assert.equal(passedArgs.includes("-t"), false);
+  assert.equal(passedTimeout, undefined);
 });
 
 test("Cline receives an absolute data dir when its cwd differs from Gremlyn's", async () => {
