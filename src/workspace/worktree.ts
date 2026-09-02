@@ -5,6 +5,7 @@ import {
   currentBranch,
   git,
   headSha,
+  isAncestor,
   mergeInProgress,
   statusEntries,
   unmergedEntries,
@@ -88,6 +89,10 @@ export async function prepareWorkspace(options: {
   const { sourcePath, workspaceRoot, prNumber, headBranch } = options;
   const expectedSha = options.headSha;
   const path = workspacePathFor(workspaceRoot, prNumber);
+  // Set when a stray local commit ahead of `expectedSha` was fast-forward
+  // pushed to reconcile the workspace (see below) — the final invariant
+  // check then compares against that new head instead of the stale one.
+  let reconciledSha: string | undefined;
 
   await mkdir(workspaceRoot, { recursive: true });
   await git(["fetch", "origin", "--prune"], { cwd: sourcePath });
@@ -152,20 +157,43 @@ export async function prepareWorkspace(options: {
         );
       }
     } else {
-      // Fast-forward only; divergence means stop, not rewrite.
-      try {
-        await git(["merge", "--ff-only", expectedSha], { cwd: path });
-      } catch {
-        throw new WorkspaceError(
-          "workspace-diverged",
-          `workspace ${path} cannot fast-forward to ${expectedSha}`,
-        );
+      const localSha = await headSha(path);
+      if (localSha !== expectedSha && (await isAncestor(path, expectedSha, localSha))) {
+        // The workspace already contains everything at `expectedSha` plus at
+        // least one further commit, with an otherwise clean tree — a prior
+        // agent run committed its own fix but never published it (the cause
+        // behind a `no-changes` publish block that then wedges every retry
+        // as `workspace-diverged`). Nothing here is missing or conflicting,
+        // so finishing that publish is a plain fast-forward, never a force
+        // push, and discarding the commit instead would silently throw away
+        // real, already-validated work.
+        try {
+          await git(["push", "origin", `${localSha}:${headBranch}`], { cwd: path });
+        } catch (error) {
+          throw new WorkspaceError(
+            "workspace-diverged",
+            `workspace ${path} at ${localSha} is ahead of expected ${expectedSha} and could not be reconciled: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        reconciledSha = localSha;
+      } else {
+        // Fast-forward only; divergence means stop, not rewrite.
+        try {
+          await git(["merge", "--ff-only", expectedSha], { cwd: path });
+        } catch {
+          throw new WorkspaceError(
+            "workspace-diverged",
+            `workspace ${path} cannot fast-forward to ${expectedSha}`,
+          );
+        }
       }
     }
   }
 
   const actualSha = await headSha(path);
-  if (actualSha !== expectedSha) {
+  if (actualSha !== (reconciledSha ?? expectedSha)) {
     throw new WorkspaceError(
       "workspace-diverged",
       `workspace ${path} is at ${actualSha}, expected ${expectedSha}`,

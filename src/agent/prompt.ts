@@ -20,6 +20,7 @@ export const RESOLUTION_INSTRUCTIONS = `Resolve the review feedback in the prepa
 - Inspect the surrounding implementation before modifying code.
 - Make the smallest correct change consistent with existing conventions.
 - Leave unrelated functionality alone and do not merge the pull request.
+- Do not run \`git commit\`, \`git push\`, or otherwise publish your changes. Leave edits uncommitted in the working tree; the orchestrator commits and pushes on your behalf after validation.
 - Run relevant validation for the affected area.
 - If the feedback is incorrect, obsolete, ambiguous, or cannot be implemented safely, explain the problem instead of inventing a change.
 - Report what changed, which files were touched, what validation ran, and whether the feedback is resolved.`;

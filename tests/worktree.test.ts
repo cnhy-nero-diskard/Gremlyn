@@ -274,6 +274,40 @@ test("diverged workspace fails specifically and preserves local commits", async 
   assert.equal(readFileSync(join(prepared.path, "local.txt"), "utf8"), "local\n");
 });
 
+test("a clean workspace ahead of the expected head is reconciled by pushing forward", async () => {
+  const repo = await createTempRepo();
+  const originalSha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 15,
+    headBranch: repo.headBranch,
+    headSha: originalSha,
+  });
+  // A prior agent run committed its own fix but never pushed it — the
+  // workspace is clean, just ahead of what the remote (and this attempt's
+  // recorded expectation) still shows.
+  writeFileSync(join(prepared.path, "self-committed.txt"), "agent fix\n", "utf8");
+  await git(["add", "self-committed.txt"], { cwd: prepared.path });
+  await git([...AUTHOR, "commit", "-m", "Resolve review feedback (comment 1)"], {
+    cwd: prepared.path,
+  });
+  const aheadSha = await headSha(prepared.path);
+
+  const reconciled = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 15,
+    headBranch: repo.headBranch,
+    headSha: originalSha,
+  });
+
+  assert.equal(reconciled.created, false);
+  assert.equal(reconciled.headSha, aheadSha);
+  assert.equal(await headSha(reconciled.path), aheadSha);
+  assert.equal(await remoteSha(repo.remotePath, repo.headBranch), aheadSha);
+});
+
 test("non-worktree workspace fails specifically and preserves contents", async () => {
   const repo = await createTempRepo();
   const sha = await remoteSha(repo.remotePath, repo.headBranch);
