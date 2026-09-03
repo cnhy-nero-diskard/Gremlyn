@@ -212,6 +212,53 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   data.store.close();
 });
 
+test("an OpenCode repository renders on the dashboard and its settings are configurable through the console", async () => {
+  // OpenCode has no ProviderCatalog entries (design D-opencode's non-goal), so
+  // its repository must be configurable purely through the existing
+  // agent-agnostic "Custom provider" free-text path — the same route used
+  // above for Cline — with no console-side change.
+  const data = fixture();
+  const opencodeRepoId = Number(
+    data.store.db
+      .prepare(
+        `INSERT INTO repositories
+           (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      )
+      .run(
+        "acme",
+        "opencode-widgets",
+        "source-2",
+        "workspaces-2",
+        "opencode",
+        "opencode/claude-sonnet-5",
+        "",
+        "high",
+      ).lastInsertRowid,
+  );
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(dashboard.statusCode, 200);
+  assert.match(dashboard.body, /acme\/opencode-widgets/);
+  assert.match(dashboard.body, /opencode\/claude-sonnet-5/);
+
+  const updated = await app.inject({
+    method: "POST",
+    url: `/repos/${opencodeRepoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "opencode", model: "opencode/gpt-5.4", effort: "xhigh" },
+  });
+  assert.equal(updated.statusCode, 200);
+  assert.deepEqual(
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(opencodeRepoId),
+    { provider: "opencode", model: "opencode/gpt-5.4", effort: "xhigh" },
+  );
+  await app.close();
+  data.store.close();
+});
+
 test("job detail separates attempts and shows context, failure, output, validation, commit, and reporting", async () => {
   const data = fixture();
   const app = buildConsoleServer(data.options);
