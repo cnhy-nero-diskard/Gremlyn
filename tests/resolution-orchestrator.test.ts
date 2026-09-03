@@ -15,7 +15,10 @@ import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
 import { createTempRepo, remoteSha } from "./helpers/gitrepo.js";
 
-async function setup(outcome: "files-modified" | "failure") {
+async function setup(
+  outcome: "files-modified" | "failure",
+  opts: { retries?: number; honorsRetries?: boolean } = {},
+) {
   const gitRepo = await createTempRepo();
   const initialSha = await remoteSha(gitRepo.remotePath, gitRepo.headBranch);
   const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-runtime-"));
@@ -79,6 +82,7 @@ async function setup(outcome: "files-modified" | "failure") {
   const executor = new FakeExecutor({
     outcome,
     edits: { "resolved.txt": "resolved\n" },
+    ...(opts.honorsRetries === undefined ? {} : { honorsRetries: opts.honorsRetries }),
   });
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
@@ -86,7 +90,7 @@ async function setup(outcome: "files-modified" | "failure") {
     allowedAuthors: ["developer"],
     orchestratorLogin: "gremlyn-bot",
     timeoutSec: 30,
-    retries: 1,
+    retries: opts.retries ?? 1,
     github,
     registry: createDefaultCommandRegistry(),
     executors: new Map([["fake", executor]]),
@@ -166,6 +170,23 @@ test("failed agent never pushes and records stage, files, commit, and push facts
     data.github.reactionHistory.map((r) => r.content),
     ["eyes", "rocket", "confused"],
   );
+  data.store.close();
+});
+
+test("an executor with no CLI retry allowance is bounded by the orchestrator itself", async () => {
+  // Cline bounds retries via its own --retries flag; an executor that declares
+  // it does not (honorsRetries: false, as OpenCode will) has no such flag, so
+  // the orchestrator must re-invoke the whole attempt itself, still bounded.
+  const data = await setup("failure", { retries: 3, honorsRetries: false });
+  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  assert.equal(data.executor.runs.length, 3, "expected exactly the configured number of invocations");
+  data.store.close();
+});
+
+test("an executor that honors its own retries is invoked exactly once per attempt", async () => {
+  const data = await setup("failure", { retries: 3, honorsRetries: true });
+  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  assert.equal(data.executor.runs.length, 1, "the orchestrator must not add its own retry loop");
   data.store.close();
 });
 
