@@ -7,11 +7,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultRunner, extractSessionId, extractSupportedEfforts } from "../src/agent/cline.js";
+import { extractSessionId, extractSupportedEfforts } from "../src/agent/cline.js";
+import { defaultRunner, resolveWindowsShim } from "../src/agent/launcher.js";
 import { ConfigError, loadConfig } from "../src/config/loader.js";
+import { writeShimFixture } from "./helpers/shim.js";
 
 /** Captured verbatim from a real `cline --json` run. */
 const REAL_STREAM = [
@@ -202,6 +205,65 @@ repositories:
   );
 });
 
+test(
+  "a shim wrapping a native executable resolves to that executable directly",
+  { skip: process.platform !== "win32" },
+  () => {
+    const { dir, entryPath } = writeShimFixture("opencode", "node_modules/opencode-ai/bin/opencode.exe");
+    const resolved = resolveWindowsShim(join(dir, "opencode.cmd"));
+    assert.deepEqual(resolved, { binary: entryPath, prefix: [] });
+  },
+);
+
+test(
+  "a shim wrapping a Node script still resolves via process.execPath",
+  { skip: process.platform !== "win32" },
+  () => {
+    const { dir, entryPath } = writeShimFixture("cline", "node_modules/cline-ai/bin/cline.js");
+    const resolved = resolveWindowsShim(join(dir, "cline.cmd"));
+    assert.deepEqual(resolved, { binary: process.execPath, prefix: [entryPath] });
+  },
+);
+
+test(
+  "no shim on PATH falls back to undefined",
+  { skip: process.platform !== "win32" },
+  () => {
+    assert.equal(resolveWindowsShim("gremlyn-no-such-binary-anywhere"), undefined);
+  },
+);
+
+test(
+  "a shim whose final line has no regex match falls back to undefined",
+  { skip: process.platform !== "win32" },
+  () => {
+    const { dir } = writeShimFixture("broken", "entry.js");
+    writeFileSync(join(dir, "broken.cmd"), "@ECHO off\r\necho no anchor line here\r\n", "utf8");
+    assert.equal(resolveWindowsShim(join(dir, "broken.cmd")), undefined);
+  },
+);
+
+test(
+  "a shim whose entry is missing on disk falls back to undefined",
+  { skip: process.platform !== "win32" },
+  () => {
+    const { dir } = writeShimFixture("ghost", "entry.js");
+    rmSync(join(dir, "entry.js"));
+    assert.equal(resolveWindowsShim(join(dir, "ghost.cmd")), undefined);
+  },
+);
+
+test(
+  "a shim path that cannot be read as a file falls back to undefined",
+  { skip: process.platform !== "win32" },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), "gremlyn-shim-"));
+    // A directory named like a shim: exists on disk, but readFileSync throws.
+    mkdirSync(join(dir, "unreadable.cmd"));
+    assert.equal(resolveWindowsShim(join(dir, "unreadable.cmd")), undefined);
+  },
+);
+
 /**
  * A prompt carrying a review thread plus repository instructions runs past
  * cmd.exe's 8191-character command line. Node will not exec a `.cmd` directly
@@ -222,6 +284,41 @@ test(
       !/command line is too long/iu.test(result.stderr),
       `spawn hit the cmd.exe cap: ${result.stderr}`,
     );
+    assert.equal(result.exitCode, 0);
+  },
+);
+
+/** True when a natively-packaged CLI is installed to verify the fix against, beyond fixtures. */
+function opencodeAvailable(): boolean {
+  if (process.platform !== "win32") return false;
+  try {
+    execSync("where opencode", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The fixture tests above assert resolveWindowsShim's decision without
+ * spawning anything. This confirms the decision is actually correct against a
+ * real natively-packaged CLI (opencode 1.18.27): before the fix this died in
+ * milliseconds with `MZx SyntaxError` from Node parsing the PE header.
+ */
+test(
+  "an argv past cmd.exe's limit still reaches a natively-packaged CLI",
+  { skip: !opencodeAvailable() },
+  async () => {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    );
+    const oversized = "y".repeat(20_000);
+    const result = await defaultRunner("opencode", ["--version", oversized], { env });
+    assert.ok(
+      !/command line is too long/iu.test(result.stderr),
+      `spawn hit the cmd.exe cap: ${result.stderr}`,
+    );
+    assert.ok(!/SyntaxError/u.test(result.stderr), `native binary was parsed as JS: ${result.stderr}`);
     assert.equal(result.exitCode, 0);
   },
 );
