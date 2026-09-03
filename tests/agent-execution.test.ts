@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ClineExecutor, AgentVersionError, type ProcessRunner } from "../src/agent/cline.js";
+import { ClineExecutor, AgentVersionError } from "../src/agent/cline.js";
+import type { ProcessRunner } from "../src/agent/launcher.js";
 import { buildAgentEnvironment } from "../src/agent/environment.js";
 import { writeAgentOutput } from "../src/agent/output.js";
 import {
@@ -277,5 +278,5 @@ test("Cline version mismatch fails as a startup configuration error", async () =
       isCanceled: false,
     });
   const executor = new ClineExecutor("cline", runner);
-  await assert.rejects(() => executor.checkVersion("3.0.60", {}), AgentVersionError);
+  await assert.rejects(() => executor.checkVersion({}), AgentVersionError);
 });

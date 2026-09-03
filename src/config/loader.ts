@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import { CREDENTIAL_SEED_FILES, OPENCODE_CREDENTIAL_FILES } from "../agent/credentials.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 
 /**
@@ -23,12 +24,25 @@ export class ConfigError extends Error {
 
 export interface AgentDefinition {
   id: string;
+  /** Which registered executor runs this agent. Defaults to `id` when omitted. */
+  kind: string;
   binary: string;
   /** Supported reasoning-effort tiers ordered ascending; the last is the ceiling. */
   efforts: ReasoningEffort[];
-  /** Directory holding the operator-authenticated cline data (e.g. ~/.cline/data). Read-only. */
+  /** Directory holding the operator-authenticated agent data (e.g. ~/.cline/data). Read-only. */
   credentialSource: string;
+  /** Credential files to seed from credentialSource, defaulted per executor kind. */
+  credentialFiles: string[];
 }
+
+/** Per-kind default credential set, since the files an agent needs differ by CLI. */
+const DEFAULT_CREDENTIAL_FILES: Record<string, readonly string[]> = {
+  cline: CREDENTIAL_SEED_FILES,
+  opencode: OPENCODE_CREDENTIAL_FILES,
+};
+
+/** Kinds whose CLI takes a first-class provider argument distinct from the model id. */
+const KINDS_REQUIRING_PROVIDER = new Set(["cline"]);
 
 export interface RepoConfig {
   owner: string;
@@ -96,7 +110,16 @@ interface RawConfig {
     retries?: unknown;
   };
   allowed_authors?: unknown;
-  agents?: Record<string, { binary?: unknown; efforts?: unknown; credential_source?: unknown }>;
+  agents?: Record<
+    string,
+    {
+      kind?: unknown;
+      binary?: unknown;
+      efforts?: unknown;
+      credential_source?: unknown;
+      credential_files?: unknown;
+    }
+  >;
   repositories?: unknown;
 }
 
@@ -171,7 +194,7 @@ function parseRepositories(
     const sourcePath = asString(r.source_path);
     const workspaceRoot = asString(r.workspace_root);
     const agent = asString(r.agent);
-    const provider = asString(r.provider);
+    const provider = asString(r.provider) ?? "";
     const model = asString(r.model);
     const enabled = asBoolean(r.enabled) ?? true;
     const validationCommands = asCommandList(r.validation_commands);
@@ -184,7 +207,6 @@ function parseRepositories(
       ["source_path", sourcePath],
       ["workspace_root", workspaceRoot],
       ["agent", agent],
-      ["provider", provider],
       ["model", model],
     ] as const) {
       if (!value) problems.push(`${label}.${field} is required`);
@@ -212,8 +234,16 @@ function parseRepositories(
             `(supports: ${agentDef.efforts.join(", ")})`,
         );
       }
+      // Which settings are required depends on the named agent: a provider is
+      // meaningful to Cline's `-P` argument but is folded into OpenCode's
+      // model id, so an OpenCode entry must not be rejected for omitting it.
+      if (KINDS_REQUIRING_PROVIDER.has(agentDef.kind) && !provider) {
+        problems.push(
+          `${label}.provider is required for agent "${agent}" (kind "${agentDef.kind}")`,
+        );
+      }
     }
-    if (owner && name && sourcePath && workspaceRoot && agent && provider && model && effort) {
+    if (owner && name && sourcePath && workspaceRoot && agent && model && effort) {
       repositories.push({
         owner,
         name,
@@ -331,7 +361,17 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     problems.push("agents must be a map of agent id to definition");
   } else {
     for (const [id, def] of Object.entries(rawAgents as Record<string, unknown>)) {
-      const d = def as { binary?: unknown; efforts?: unknown; credential_source?: unknown };
+      const d = def as {
+        kind?: unknown;
+        binary?: unknown;
+        efforts?: unknown;
+        credential_source?: unknown;
+        credential_files?: unknown;
+      };
+      // Id stays a free operator label; the kind selects the registered
+      // executor and defaults to the id so an existing single-agent config
+      // with no kind field keeps resolving to the executor it always used.
+      const kind = asString(d?.kind) ?? id;
       const binary = asString(d?.binary) ?? id;
       const credentialSource = asString(d?.credential_source);
       if (!credentialSource) {
@@ -354,8 +394,14 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
         problems.push(`agents.${id}.efforts must be ordered from lowest to highest`);
         continue;
       }
+      const credentialFilesRaw = asStringList(d?.credential_files);
+      if (d?.credential_files !== undefined && credentialFilesRaw === undefined) {
+        problems.push(`agents.${id}.credential_files must be a list of strings`);
+        continue;
+      }
+      const credentialFiles = credentialFilesRaw ?? DEFAULT_CREDENTIAL_FILES[kind] ?? [];
       if (!credentialSource) continue;
-      agents[id] = { id, binary, efforts, credentialSource };
+      agents[id] = { id, kind, binary, efforts, credentialSource, credentialFiles: [...credentialFiles] };
     }
   }
 

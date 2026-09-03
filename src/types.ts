@@ -122,8 +122,29 @@ export interface AgentRunOptions {
   onLine?: (line: string) => void;
 }
 
-/** The replaceable executor seam (design D10). */
+/**
+ * The replaceable executor seam (design D10), generalized to more than one
+ * registered agent CLI (design D-opencode).
+ */
 export interface AgentExecutor {
   readonly id: string;
+  /**
+   * True when the executor's own CLI bounds retries itself (e.g. Cline's
+   * `--retries`). When false, the orchestrator bounds whole invocations of
+   * {@link run} itself, since the CLI offers no equivalent.
+   */
+  readonly honorsRetries: boolean;
+  /**
+   * Verify the installed CLI is the release this executor's invocation
+   * surface was probed against. Each executor carries its own expected
+   * version rather than the caller supplying one.
+   */
+  checkVersion(env: Record<string, string>): Promise<void>;
+  /**
+   * Environment entries this executor needs for the given attempt beyond the
+   * allowlisted host variables — e.g. an isolated state directory pointed to
+   * by environment rather than by argument. Defaults to none.
+   */
+  additionalEnvironment(dataDir: string): Record<string, string>;
   run(opts: AgentRunOptions): Promise<AgentResult>;
 }

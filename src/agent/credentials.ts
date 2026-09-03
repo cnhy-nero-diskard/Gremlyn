@@ -45,6 +45,14 @@ export const CREDENTIAL_SEED_FILES = ["secrets.json", "settings/providers.json"]
 export type CredentialSeedFile = (typeof CREDENTIAL_SEED_FILES)[number];
 
 /**
+ * OpenCode's credential seed set (design D-opencode). `opencode debug paths`
+ * keeps the operator's authenticated credential in a single file under its
+ * data root, unlike Cline's two-file split — probe-verified against opencode
+ * 1.18.27: a paid model fails unseeded (`UnknownError`) and succeeds seeded.
+ */
+export const OPENCODE_CREDENTIAL_FILES = ["auth.json"] as const;
+
+/**
  * Seed the declared credential files from a configured source directory into a
  * fresh attempt data directory, with owner-only permissions (0o600).
  *

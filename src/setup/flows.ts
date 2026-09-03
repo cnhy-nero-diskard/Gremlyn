@@ -555,10 +555,7 @@ export async function checkPrerequisites(
         const checkVersion =
           io.checkAgentVersion ??
           (async (agent: AgentDefinition) => {
-            await new ClineExecutor(agent.binary).checkVersion(
-              EXPECTED_CLINE_VERSION,
-              buildAgentEnvironment(env),
-            );
+            await new ClineExecutor(agent.binary).checkVersion(buildAgentEnvironment(env));
           });
         await checkVersion(definition);
         prerequisites.push({
@@ -732,11 +729,16 @@ function isExampleRepository(entry: RepoConfig): boolean {
 
 function isExampleRepositoryRecord(entry: Record<string, unknown>): boolean {
   const sourcePath = typeof entry.source_path === "string" ? entry.source_path : "";
-  return (
-    entry.owner === "your-github-login" &&
-    entry.name === "your-repo" &&
-    (sourcePath.includes("your-repo") || sourcePath.includes("your\\\\repo"))
-  );
+  if (entry.owner !== "your-github-login") return false;
+  // config.example.yaml ships two placeholder repositories (Cline, OpenCode);
+  // both must be recognized as scaffolding rather than a real registration.
+  if (entry.name === "your-repo") {
+    return sourcePath.includes("your-repo") || sourcePath.includes("your\\\\repo");
+  }
+  if (entry.name === "your-opencode-repo") {
+    return sourcePath.includes("your-opencode-repo") || sourcePath.includes("your\\\\opencode-repo");
+  }
+  return false;
 }
 
 type RequiredPick<T, K extends keyof T> = T & { [P in K]-?: NonNullable<T[P]> };

@@ -27,6 +27,8 @@ export class FakeExecutor implements AgentExecutor {
   readonly id = "fake";
   /** Every invocation, in order, for assertion. */
   readonly runs: FakeRun[] = [];
+  /** Defaults to true: most tests simulate one invocation per attempt. */
+  readonly honorsRetries: boolean;
 
   constructor(
     private readonly behavior: {
@@ -40,8 +42,20 @@ export class FakeExecutor implements AgentExecutor {
       sessionId?: string;
       /** Artificial delay in ms before "completing" (timeout testing). */
       delayMs?: number;
+      /** Simulate an executor whose CLI has no retry allowance of its own. */
+      honorsRetries?: boolean;
     },
-  ) {}
+  ) {
+    this.honorsRetries = behavior.honorsRetries ?? true;
+  }
+
+  async checkVersion(): Promise<void> {
+    // A fake CLI is always the expected version.
+  }
+
+  additionalEnvironment(): Record<string, string> {
+    return {};
+  }
 
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const startedAt = new Date().toISOString();
