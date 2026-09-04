@@ -204,17 +204,24 @@ change beyond `agent: opencode`:
   `C:/Users/<you>/.local/share/opencode`). Isolation, seeding, owner-only
   permissions, and teardown per attempt all work identically to Cline.
 - **Provider**: OpenCode has no separate provider argument — it is folded into
-  the model id as `opencode/<model>` (`opencode models opencode` lists them).
-  A repository naming an OpenCode agent does not need a `provider` field at
-  all. The console's repository settings offer an "OpenCode" entry in the
-  Provider picker listing every model Zen serves (the full `opencode models
-opencode` output for the pinned release); picking "Custom provider" instead
-  (shared with Cline) still works for any other `provider/model` OpenCode
-  understands — an installation-specific one you authenticated yourself, say
-  — and whatever is typed there is accepted and ignored by the executor
-  either way. Bumping the pinned OpenCode version means re-pasting that
-  command's output into `OPENCODE_MODEL_IDS` in
-  `src/agent/provider-catalog.ts`.
+  the model id as `<namespace>/<model>` (`opencode models` lists every id the
+  installation can reach). A repository naming an OpenCode agent does not need
+  a `provider` field at all. The console's repository settings offer two
+  entries in the Provider picker, one per OpenCode-hosted namespace:
+  **OpenCode Zen** (`opencode/<model>`, pay-as-you-go) and **OpenCode Go**
+  (`opencode-go/<model>`, the Go subscription). The two are genuinely separate
+  providers, not billing modes of one: `auth.json` holds a distinct credential
+  for each, and their model rosters only partly overlap — Go alone serves
+  `glm-5.3`, `longcat-2.0`, the `hy*` tiers and `qwen3.7`/`3.8`, while Zen
+  alone serves the Anthropic and most GPT tiers. Both are covered by the same
+  seeded `auth.json`, so selecting a Go model needs no configuration beyond
+  having run `opencode auth login` for the Go plan. Picking "Custom provider"
+  instead (shared with Cline) still works for any other `provider/model`
+  OpenCode understands — an installation-specific one you authenticated
+  yourself, say — and whatever is typed there is accepted and ignored by the
+  executor either way. Bumping the pinned OpenCode version means re-pasting
+  that command's output into `OPENCODE_ZEN_MODEL_IDS` and
+  `OPENCODE_GO_MODEL_IDS` in `src/agent/provider-catalog.ts`.
 - **Retries**: OpenCode's CLI has no retry flag, so `agent_defaults.retries`
   is enforced by Gremlyn itself, re-running the whole invocation up to that
   many times on failure — see the comment in `config.example.yaml`. This
@@ -229,6 +236,14 @@ Verify an OpenCode installation the same way as Cline:
 
 ```powershell
 npm run probe:agent -- --kind opencode --provider <id> --model opencode/<model> --seed-source C:/Users/<you>/.local/share/opencode
+```
+
+Use the model id you actually intend to run, including a Go one — the Zen and
+Go namespaces authenticate independently, so a green Zen probe says nothing
+about Go:
+
+```powershell
+npm run probe:agent -- --kind opencode --provider "" --model opencode-go/kimi-k3 --seed-source C:/Users/<you>/.local/share/opencode
 ```
 
 ## Start and verify connectivity

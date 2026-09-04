@@ -10,6 +10,11 @@ import {
 } from "../agent/credentials.js";
 import { ACTIVITY_LINE_MAPPERS, ActivityRecorder, writeActivity } from "../agent/activity.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
+import {
+  bundledProviderCatalog,
+  providerSupportsAgentKind,
+  type ProviderCatalogSnapshot,
+} from "../agent/provider-catalog.js";
 import { writeAgentOutput } from "../agent/output.js";
 import { buildResolutionPrompt } from "../agent/prompt.js";
 import { reconstructReviewContext } from "../context/review.js";
@@ -141,6 +146,8 @@ export interface ResolutionOrchestratorOptions {
   concurrency: number;
   commitAuthor: { name: string; email: string };
   operatorActions?: Pick<OperatorActionStore, "record">;
+  /** Provider/executor pairing reference; defaults to the bundled catalog. */
+  providerCatalog?: ProviderCatalogSnapshot;
 }
 
 export class ResolutionOrchestrator {
@@ -372,6 +379,37 @@ export class ResolutionOrchestrator {
     try {
       this.jobs.setStatus(jobId, stage, attemptId);
       await this.reactToStatus(repository, commentId, stage);
+      // A provider its executor cannot drive is not merely an authentication
+      // problem. Cline's `opencode` provider executes tools server-side, inside
+      // a long-lived `opencode serve` process whose working directory is fixed
+      // when *that server* starts — so `-c <workspace>` is ignored and every
+      // edit lands in whatever checkout the server happened to be launched in,
+      // outside this attempt's workspace. The run then looks successful while
+      // the workspace stays untouched, and the attempt fails as `no-changes`
+      // with the real work stranded in another repository.
+      //
+      // Startup only warns about the pairing
+      // (reportRepositoryProviderMismatches); refuse it here, where the run
+      // would otherwise write outside its own workspace. An unknown provider id
+      // is operator-supplied and stays usable — the catalog makes no claim
+      // about it — as does an agent with no registered executor, which the
+      // `agent-cli-missing` check below still reports.
+      const configuredExecutor = this.options.executors.get(repository.agent);
+      if (
+        configuredExecutor !== undefined &&
+        !providerSupportsAgentKind(
+          this.options.providerCatalog ?? bundledProviderCatalog(),
+          repository.provider,
+          configuredExecutor.id,
+        )
+      ) {
+        throw new StageFailure(
+          stage,
+          "provider-executor-mismatch",
+          `provider ${repository.provider} cannot be driven by the ${configuredExecutor.id} agent; ` +
+            `tool execution would not be confined to this attempt's workspace`,
+        );
+      }
       const context = await reconstructReviewContext(this.options.github, {
         owner: repository.owner,
         repo: repository.name,

@@ -16,6 +16,7 @@ export const FAILURE_REASONS = [
   "workspace-seed-failed",
   "git-conflict",
   "agent-cli-missing",
+  "provider-executor-mismatch",
   "model-unavailable",
   "agent-process-crash",
   "agent-timeout",

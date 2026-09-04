@@ -104,7 +104,9 @@ agents:
     # silently (see design D-opencode's Risks); bound this list to what your
     # models actually support, the same caution as for Cline above.
     efforts: [none, low, medium, high, xhigh, max]
-    # Holds auth.json (`opencode debug paths` reports its data root).
+    # Holds auth.json (`opencode debug paths` reports its data root). One
+    # file carries every OpenCode namespace you have logged into — Zen and
+    # Go included — so no extra field is needed to reach a Go model.
     credential_source: C:/Users/you/.local/share/opencode
 
 repositories:
@@ -150,10 +152,14 @@ repositories:
     # No `provider` field: OpenCode folds the provider into the model id
     # (`provider/model`) instead of taking it as a separate argument, so it
     # is not required here — unlike the Cline entry above. In the console's
-    # repository settings, an "OpenCode" entry in the Provider picker lists
-    # every model Zen serves (`opencode models opencode`); "Custom provider"
-    # (shared with Cline) still works for any other provider/model OpenCode
-    # understands. Either way, whatever is typed there is accepted but ignored.
+    # repository settings, the Provider picker carries one entry per
+    # OpenCode-hosted namespace — "OpenCode Zen" (`opencode/<model>`,
+    # pay-as-you-go) and "OpenCode Go" (`opencode-go/<model>`, the Go
+    # subscription) — each listing that namespace's own models
+    # (`opencode models`). The same seeded auth.json authenticates both.
+    # "Custom provider" (shared with Cline) still works for any other
+    # provider/model OpenCode understands. Either way, whatever is typed
+    # there is accepted but ignored.
     model: opencode/claude-sonnet-5
     effort: high
     enabled: true

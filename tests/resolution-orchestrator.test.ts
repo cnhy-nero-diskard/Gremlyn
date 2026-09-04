@@ -255,6 +255,41 @@ test("failed, timed-out, and cancelled adopted attempts release their claims", a
   cancelled.store.close();
 });
 
+/**
+ * A provider its executor cannot drive is refused before the agent starts.
+ * Cline's `opencode` provider executes tools inside a separate long-lived
+ * `opencode serve` process whose working directory is fixed when that server
+ * starts, so the attempt's workspace argument is ignored and the agent edits
+ * an unrelated checkout â a run that reports success while the workspace it
+ * was given stays empty. Startup only warns about the pairing, so the refusal
+ * has to happen per attempt.
+ */
+test("a provider the executor cannot drive is refused before the agent runs", async () => {
+  const data = await setup("files-modified");
+  data.repository.provider = "opencode";
+  await assert.rejects(() => resolveEvent(data));
+  assert.equal(data.executor.runs.length, 0);
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    failure_stage: string;
+    failure_reason: string;
+    workspace_path: string | null;
+  };
+  assert.equal(attempt.failure_stage, "preparing");
+  assert.equal(attempt.failure_reason, "provider-executor-mismatch");
+  assert.equal(attempt.workspace_path, null);
+  assert.equal(await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch), data.initialSha);
+  data.store.close();
+});
+
+test("an unknown provider id stays usable because the catalog makes no claim about it", async () => {
+  const data = await setup("files-modified");
+  data.repository.provider = "an-operator-supplied-provider";
+  const result = await resolveEvent(data);
+  assert.equal(result.kind, "completed");
+  assert.equal(data.executor.runs.length, 1);
+  data.store.close();
+});
+
 test("failed agent never pushes and records stage, files, commit, and push facts", async () => {
   const data = await setup("failure");
   await assert.rejects(() => resolveEvent(data));

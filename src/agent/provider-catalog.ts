@@ -7,18 +7,20 @@
  * kept as a separate provider: Cline uses bare Codex model ids there, while
  * Cline usage-billing models use provider-qualified ids.
  *
- * The OpenCode entry is a curated, static list of `opencode/<model>` ids from
- * its built-in Zen gateway — the one namespace every installation can reach
- * without extra provider auth. It exists purely to save typing for the
- * common case; picking "Custom provider" and typing any `provider/model`
- * OpenCode itself understands (per `opencode models opencode`) still works,
- * per config.example.yaml.
+ * The two OpenCode entries are curated, static lists of ids from OpenCode's
+ * own hosted namespaces: `opencode/<model>` is the pay-as-you-go Zen gateway
+ * every installation can reach, and `opencode-go/<model>` is the OpenCode Go
+ * subscription — a *separate* namespace with its own credential entry in
+ * `auth.json` and its own model roster, not an alias of Zen's. They exist
+ * purely to save typing for the common cases; picking "Custom provider" and
+ * typing any `provider/model` OpenCode itself understands (per `opencode
+ * models`) still works, per config.example.yaml.
  *
  * Every entry names the executor kinds (`AgentDefinition.kind`) it belongs
  * to: the Cline billing, ClinePass, and Codex entries serve Cline
- * repositories, while the OpenCode gateway serves OpenCode ones. The console
- * filters the picker by a repository's agent kind, so a card never offers a
- * provider its own executor could not authenticate against.
+ * repositories, while both OpenCode namespaces serve OpenCode ones. The
+ * console filters the picker by a repository's agent kind, so a card never
+ * offers a provider its own executor could not authenticate against.
  */
 
 export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models";
@@ -199,20 +201,21 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
 };
 
 /**
- * The `opencode/<model>` ids OpenCode's built-in Zen gateway serves, verbatim
- * from `opencode models opencode` on the pinned 1.18.27 (see
+ * The `opencode/<model>` ids OpenCode's pay-as-you-go Zen gateway serves,
+ * verbatim from `opencode models` on the pinned 1.18.27 (see
  * EXPECTED_OPENCODE_VERSION). OpenCode also accepts other configured
  * providers folded into the same `-m` argument (e.g.
  * `anthropic/claude-opus-5`), but those depend on each installation's own
- * `opencode auth login` state, so only the always-available `opencode/`
- * namespace is enumerated here; the "Custom provider" path
- * (config.example.yaml) remains the way to target anything else.
+ * `opencode auth login` state, so only OpenCode's own hosted namespaces are
+ * enumerated here (see OPENCODE_GO_MODEL_IDS for the other); the "Custom
+ * provider" path (config.example.yaml) remains the way to target anything
+ * else.
  *
  * Kept as bare ids rather than hand-written entries: names come from the same
  * `modelName` humanization the live Cline feed gets, so a version bump is a
  * paste of the command's output rather than 60-odd descriptions to invent.
  */
-const OPENCODE_MODEL_IDS: readonly string[] = [
+const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/big-pickle",
   "opencode/claude-fable-5",
   "opencode/claude-fable-5-1",
@@ -280,16 +283,66 @@ const OPENCODE_MODEL_IDS: readonly string[] = [
 ];
 
 /**
- * Zen exposes no per-model descriptions over the CLI, so the badge is the one
- * thing worth deriving: the `-free` suffix is Zen's own no-cost marker and is
- * what an operator actually scans this list for.
+ * The `opencode-go/<model>` ids the OpenCode Go subscription serves, verbatim
+ * from `opencode models` on the pinned 1.18.27.
+ *
+ * Go is its own provider, not a billing mode of Zen: `auth.json` carries a
+ * distinct `opencode-go` credential beside the `opencode` one, and the two
+ * rosters only partly overlap (Go alone serves glm-5.3, longcat-2.0, the hy*
+ * and qwen3.7/3.8 tiers; Zen alone serves the Anthropic and most GPT tiers).
+ * Enumerating only Zen therefore left every Go model unreachable from the
+ * picker, even though the executor passes `-m` through verbatim and the
+ * seeded `auth.json` already authenticates both.
  */
-function opencodeModels(): ProviderModelOption[] {
-  return OPENCODE_MODEL_IDS.map((id) => ({
-    id,
-    name: modelName(id),
-    ...(id.endsWith("-free") ? { tier: "free" as const } : {}),
-  }));
+const OPENCODE_GO_MODEL_IDS: readonly string[] = [
+  "opencode-go/deepseek-v4-flash",
+  "opencode-go/deepseek-v4-flash-vision-exp",
+  "opencode-go/deepseek-v4-pro",
+  "opencode-go/glm-5.1",
+  "opencode-go/glm-5.2",
+  "opencode-go/glm-5.3",
+  "opencode-go/glm-5.3-flash",
+  "opencode-go/gpt-5.6-luna",
+  "opencode-go/grok-4.6",
+  "opencode-go/hy3",
+  "opencode-go/hy4-preview",
+  "opencode-go/kimi-k2.6",
+  "opencode-go/kimi-k2.7-code",
+  "opencode-go/kimi-k3",
+  "opencode-go/longcat-2.0",
+  "opencode-go/mimo-v2.5",
+  "opencode-go/mimo-v2.5-pro",
+  "opencode-go/minimax-m2.7",
+  "opencode-go/minimax-m3",
+  "opencode-go/muse-spark-1.2-contributor",
+  "opencode-go/muse-spark-1.3-contributor",
+  "opencode-go/omen-alpha",
+  "opencode-go/qwen3.6-plus",
+  "opencode-go/qwen3.7-max",
+  "opencode-go/qwen3.7-plus",
+  "opencode-go/qwen3.8-flash",
+  "opencode-go/qwen3.8-max",
+];
+
+/**
+ * OpenCode exposes no per-model descriptions over the CLI, so the badge is the
+ * one thing worth deriving: the `-free` suffix is Zen's own no-cost marker and
+ * is what an operator actually scans that list for. Go's roster carries no
+ * such suffix — every model on it is covered by the subscription — so its
+ * entries take a uniform tier via `includedTier` instead.
+ */
+function opencodeModels(
+  ids: readonly string[],
+  includedTier?: NonNullable<ProviderModelOption["tier"]>,
+): ProviderModelOption[] {
+  return ids.map((id) => {
+    const tier = id.endsWith("-free") ? ("free" as const) : includedTier;
+    return {
+      id,
+      name: modelName(id),
+      ...(tier === undefined ? {} : { tier }),
+    };
+  });
 }
 
 const CODEX_MODELS: ProviderModelOption[] = [
@@ -354,16 +407,18 @@ function mergeFeaturedModels(
 
 function modelName(id: string): string {
   const slug = id.split("/").at(-1) ?? id;
-  return slug
-    // OpenCode carries Anthropic's dashed version suffixes (claude-haiku-4-5),
-    // where the separator is a decimal point rather than a word break; Cline's
-    // ids already dot theirs, so this only rescues the former from "Haiku 4 5".
-    .replace(/(?<=\d)-(?=\d)/gu, ".")
-    .replace(/[-_]+/gu, " ")
-    .replace(/\b\w/gu, (letter) => letter.toUpperCase())
-    .replace(/\bGpt\b/gu, "GPT")
-    .replace(/\bAi\b/gu, "AI")
-    .replace(/\bGlm\b/gu, "GLM");
+  return (
+    slug
+      // OpenCode carries Anthropic's dashed version suffixes (claude-haiku-4-5),
+      // where the separator is a decimal point rather than a word break; Cline's
+      // ids already dot theirs, so this only rescues the former from "Haiku 4 5".
+      .replace(/(?<=\d)-(?=\d)/gu, ".")
+      .replace(/[-_]+/gu, " ")
+      .replace(/\b\w/gu, (letter) => letter.toUpperCase())
+      .replace(/\bGpt\b/gu, "GPT")
+      .replace(/\bAi\b/gu, "AI")
+      .replace(/\bGlm\b/gu, "GLM")
+  );
 }
 
 function provider(
@@ -433,11 +488,20 @@ function makeCatalog(
       provider(
         "opencode",
         ["opencode"],
-        "OpenCode",
-        "OpenCode's built-in Zen gateway models, folded into the model id.",
+        "OpenCode Zen",
+        "OpenCode's pay-as-you-go Zen gateway models, folded into the model id.",
         "opencode auth login",
         "opencode/claude-sonnet-5",
-        opencodeModels(),
+        opencodeModels(OPENCODE_ZEN_MODEL_IDS),
+      ),
+      provider(
+        "opencode-go",
+        ["opencode"],
+        "OpenCode Go",
+        "OpenCode Go subscription models, folded into the model id.",
+        "opencode auth login (Go plan)",
+        "opencode-go/kimi-k3",
+        opencodeModels(OPENCODE_GO_MODEL_IDS, "subscribed"),
       ),
     ],
   };
