@@ -1,6 +1,13 @@
 import type { GitHubClient } from "../github/client.js";
 import type { JobStore } from "../store/jobs.js";
 
+/**
+ * The success reply names a commit the caller supplies, never one read back
+ * from the attempt record. That matters now that `commit_sha` is recorded
+ * before the push: a sha in the record is not evidence of publication, so a
+ * reply built from one could claim work reached the pull request when it did
+ * not. The orchestrator only builds a `success` outcome after the push.
+ */
 export type ReportOutcome =
   | {
       kind: "success";

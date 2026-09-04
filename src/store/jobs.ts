@@ -212,10 +212,24 @@ export class JobStore {
       );
   }
 
-  recordPublication(attemptId: number, commitSha: string): void {
+  /**
+   * Record the commit as soon as it exists, before any push is attempted, so a
+   * commit that never leaves the machine is still named in the record — one
+   * cancelled between commit and push, or one whose push failed. `pushed`
+   * stays 0 until {@link recordPush}, which makes
+   * `commit_sha != null AND pushed = 0` the representation of a workspace
+   * holding an unpushed commit. Readers that treat a recorded sha as proof of
+   * publication must consult `pushed`.
+   */
+  recordCommit(attemptId: number, commitSha: string): void {
     this.db
-      .prepare("UPDATE attempts SET commit_sha = ?, pushed = 1 WHERE id = ?")
+      .prepare("UPDATE attempts SET commit_sha = ?, pushed = 0 WHERE id = ?")
       .run(commitSha, attemptId);
+  }
+
+  /** The recorded commit left the machine. */
+  recordPush(attemptId: number): void {
+    this.db.prepare("UPDATE attempts SET pushed = 1 WHERE id = ?").run(attemptId);
   }
 
   recordReportStatus(attemptId: number, status: "posted" | "failed"): void {
