@@ -12,6 +12,7 @@ import { commandsView, auditView } from "./views/commands.js";
 import {
   repositoryAgent,
   repositoryExists,
+  setRepositoryEffort,
   setRepositoryModel,
   setRepositoryModelProvider,
   setRepositoryProvider,
@@ -378,6 +379,26 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       effort: result.effort,
     });
   });
+  app.post<{ Params: { id: string }; Body: { effort?: string } }>(
+    "/repos/:id/effort",
+    async (request, reply) => {
+      const id = positiveInteger(request.params.id);
+      const effort = request.body?.effort;
+      if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
+      const { efforts } = agentOptionsFor(options.agents, repositoryAgent(options.db, id));
+      const result = setRepositoryEffort(options.db, id, effort, efforts);
+      if (!result.ok) {
+        return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
+      }
+      options.operatorActions.record({
+        action: "repository-effort",
+        target: `repository:${id}`,
+        effect: result.effort,
+      });
+      await options.actions?.repositorySettingsChanged?.(id);
+      return reply.send({ ok: true, effort: result.effort });
+    },
+  );
   app.post<{ Params: { id: string }; Body: { timeoutSeconds?: unknown } }>(
     "/repos/:id/timeout",
     async (request, reply) => {

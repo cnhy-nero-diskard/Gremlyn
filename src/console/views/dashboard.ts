@@ -146,15 +146,20 @@ function modelProviderControl(
   const { efforts, providerOptional, kind } = agentOptionsFor(repo, agents);
   const providers = providersForKind(catalog, kind);
   const knownProvider = providers.find((provider) => provider.id === providerId);
+  const knownProviderForAnotherKind = catalog.providers.find((provider) => provider.id === providerId);
+  const providerMismatch = providerId.length > 0 && !knownProvider && knownProviderForAnotherKind !== undefined;
   // An empty provider is a real state for provider-optional agents, not an
   // unnamed custom one — render it as its own selectable option so saving the
   // card round-trips the empty value instead of coercing it to a custom id.
   const emptyProvider = providerOptional && providerId === "";
-  const providerValue = knownProvider || emptyProvider ? providerId : CUSTOM_PROVIDER;
+  const providerValue = knownProvider || emptyProvider || providerMismatch ? providerId : CUSTOM_PROVIDER;
   const emptyOption = providerOptional
     ? `<option value=""${emptyProvider ? " selected" : ""}>None — provider is folded into the model id</option>`
     : "";
-  const providerOptions = [emptyOption]
+  const mismatchOption = providerMismatch
+    ? `<option value="${escapeHtml(providerId)}" data-provider-mismatch selected>Current provider: ${escapeHtml(providerId)} (not supported by ${escapeHtml(kind ?? "this agent")})</option>`
+    : "";
+  const providerOptions = [mismatchOption, emptyOption]
     .concat(
       providers.map(
         (provider) =>
@@ -165,7 +170,8 @@ function modelProviderControl(
       `<option value="${CUSTOM_PROVIDER}"${providerValue === CUSTOM_PROVIDER ? " selected" : ""}>Custom provider</option>`,
     )
     .join("");
-  const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(knownProvider || emptyProvider ? "" : providerId)}" placeholder="provider id"${knownProvider || emptyProvider ? " hidden" : ""}>`;
+  const providerIsSelectable = knownProvider || emptyProvider || providerMismatch;
+  const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(providerIsSelectable ? "" : providerId)}" placeholder="provider id"${providerIsSelectable ? " hidden" : ""}>`;
   const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
   const modelInput = `<input name="repo-model-input-${repo.id}" data-repo-model-input data-repo-field="model" value="${escapeHtml(repo.model ?? "")}" placeholder="model id"${knownProvider ? " hidden" : ""}>`;
   const effort = `<select name="repo-effort-${repo.id}" data-repo-effort data-repo-field="effort">${effortOptions(repo, efforts)}</select>`;
@@ -189,8 +195,10 @@ function modelProviderControl(
     ? `${knownProvider.description} All catalog models are selectable.`
     : emptyProvider
       ? "No separate provider; enter the model id in provider/model form."
+      : providerMismatch
+        ? `Provider ${providerId} is not supported by the configured ${kind ?? "agent"}; choose a supported provider to replace it.`
       : "Custom provider; enter the exact provider and model ids.";
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"${kind ? ` data-agent-kind="${escapeHtml(kind)}"` : ""}${providerOptional ? " data-provider-optional" : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
+  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}" data-saved-provider="${escapeHtml(providerId)}" data-saved-model="${escapeHtml(repo.model ?? "")}" data-saved-effort="${escapeHtml(repo.effort ?? "")}" data-saved-timeout="${escapeHtml(repo.timeout_seconds === null || repo.timeout_seconds === undefined ? "" : String(repo.timeout_seconds))}"${kind ? ` data-agent-kind="${escapeHtml(kind)}"` : ""}${providerOptional ? " data-provider-optional" : ""}${providerMismatch ? ` data-provider-mismatch="${escapeHtml(providerId)}"` : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label>${providerMismatch ? `<small class="model-picker-mismatch" data-provider-mismatch-message>Provider mismatch: the persisted provider is not supported by this repository's configured agent.</small>` : ""}<label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
 }
 
 export function repositoryCards(

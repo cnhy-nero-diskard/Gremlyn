@@ -12,13 +12,13 @@
 
 ## 2. Repository provider and model fidelity
 
-- [ ] 2.1 Make `data-saved-provider`/`data-saved-model`/`data-saved-effort` the sole render input for the picker, so first paint, catalog refresh, and live-update swap all derive the selection from the persisted values and never from the controls being rewritten; verify a `tests/console.test.ts` case renders, applies a catalog whose ordering differs, and asserts the selection is unchanged
-- [ ] 2.2 Remove the first-option substitution: a saved model with no matching option for its provider is added as an explicit current option; verify a test uses a saved model absent from the catalog and asserts it is the selected option and is marked as the current value
-- [ ] 2.3 Add an effort-only save endpoint and route the effort control to it, so changing effort cannot write a provider or model; verify a test posts an effort change and asserts the repository's provider and model rows are untouched
-- [ ] 2.4 Keep provider and model as one atomic save and confirm no code path posts a DOM-scraped provider or model on an unrelated edit; verify a test changes the timeout and the effort in turn and asserts neither writes provider or model
-- [ ] 2.5 Exclude picker controls from the generic input-restore path and suppress repository-region re-render while a picker has focus or a save in flight; verify a test swaps the region mid-interaction and asserts the operator's in-progress selection survives and no save is issued
-- [ ] 2.6 Report a repository whose persisted provider its configured agent cannot use — on the card and at startup — without reassigning the provider or model; verify tests cover the console rendering and the startup report for a `cline` repository holding an `opencode` provider
-- [ ] 2.7 Add the provider to the repository record's documented fields and confirm operator selections survive restart while file configuration seeds only a first registration; verify `tests/runtime-repositories.test.ts` asserts a differing configured provider does not overwrite an existing entry's selection
+- [x] 2.1 Make `data-saved-provider`/`data-saved-model`/`data-saved-effort` the sole render input for the picker, so first paint, catalog refresh, and live-update swap all derive the selection from the persisted values and never from the controls being rewritten; verify a `tests/console.test.ts` case renders, applies a catalog whose ordering differs, and asserts the selection is unchanged
+- [x] 2.2 Remove the first-option substitution: a saved model with no matching option for its provider is added as an explicit current option; verify a test uses a saved model absent from the catalog and asserts it is the selected option and is marked as the current value
+- [x] 2.3 Add an effort-only save endpoint and route the effort control to it, so changing effort cannot write a provider or model; verify a test posts an effort change and asserts the repository's provider and model rows are untouched
+- [x] 2.4 Keep provider and model as one atomic save and confirm no code path posts a DOM-scraped provider or model on an unrelated edit; verify a test changes the timeout and the effort in turn and asserts neither writes provider or model
+- [x] 2.5 Exclude picker controls from the generic input-restore path and suppress repository-region re-render while a picker has focus or a save in flight; verify a test swaps the region mid-interaction and asserts the operator's in-progress selection survives and no save is issued
+- [x] 2.6 Report a repository whose persisted provider its configured agent cannot use — on the card and at startup — without reassigning the provider or model; verify tests cover the console rendering and the startup report for a `cline` repository holding an `opencode` provider
+- [x] 2.7 Add the provider to the repository record's documented fields and confirm operator selections survive restart while file configuration seeds only a first registration; verify `tests/runtime-repositories.test.ts` asserts a differing configured provider does not overwrite an existing entry's selection
 
 ## 3. Local time rendering
 

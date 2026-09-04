@@ -90,6 +90,27 @@ export function setRepositoryModelProvider(
   };
 }
 
+export type SetRepositoryEffortResult =
+  | { ok: true; effort: ReasoningEffort }
+  | { ok: false; reason: "not-found" | "effort-required" | "effort-not-supported" };
+
+/** Set only a repository's reasoning effort, preserving provider and model. */
+export function setRepositoryEffort(
+  db: Database.Database,
+  repoId: number,
+  effort: string,
+  supportedEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
+): SetRepositoryEffortResult {
+  if (!repositoryExists(db, repoId)) return { ok: false, reason: "not-found" };
+  const trimmed = effort.trim();
+  if (!trimmed) return { ok: false, reason: "effort-required" };
+  if (!supportedEfforts.includes(trimmed as ReasoningEffort)) {
+    return { ok: false, reason: "effort-not-supported" };
+  }
+  db.prepare("UPDATE repositories SET effort = ? WHERE id = ?").run(trimmed, repoId);
+  return { ok: true, effort: trimmed as ReasoningEffort };
+}
+
 /**
  * Set a repository's default provider. Providers are opaque ids passed through to the agent CLI.
  * An empty provider is refused only when the repository's agent requires one (see above).

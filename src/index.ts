@@ -16,7 +16,10 @@ import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
 import { JobStore } from "./store/jobs.js";
 import { type AgentExecutor, type ReasoningEffort } from "./types.js";
-import { syncRepositories } from "./runtime/repositories.js";
+import {
+  reportRepositoryProviderMismatches,
+  syncRepositories,
+} from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
 
 const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const;
@@ -112,6 +115,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     }
 
     const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
+    reportRepositoryProviderMismatches(repositories, config.agents, logger);
     const registry = createDefaultCommandRegistry();
     const credentialSources = new Map(
       Object.values(config.agents).map((def) => [def.id, def.credentialSource]),

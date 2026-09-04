@@ -1,7 +1,41 @@
 import type Database from "better-sqlite3";
+import { providerSupportsAgentKind, bundledProviderCatalog, type ProviderCatalogSnapshot } from "../agent/provider-catalog.js";
+import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../config/loader.js";
 import type { RepoConfig } from "../config/loader.js";
 import type { RuntimeRepository } from "../orchestrator/resolution.js";
 import type { ReasoningEffort } from "../types.js";
+
+export interface ProviderMismatchReporter {
+  warn(event: string, fields: Record<string, unknown>): void;
+}
+
+/** Report persisted provider choices known not to fit their configured agent. */
+export function reportRepositoryProviderMismatches(
+  repositories: readonly RuntimeRepository[],
+  agents: Readonly<Record<string, AgentDefinition>>,
+  logger: ProviderMismatchReporter,
+  catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
+): number {
+  let count = 0;
+  for (const repository of repositories) {
+    const definition = agents[repository.agent];
+    if (!definition) continue;
+    const providerUsable = repository.provider
+      ? providerSupportsAgentKind(catalog, repository.provider, definition.kind)
+      : !KINDS_REQUIRING_PROVIDER.has(definition.kind);
+    if (providerUsable) continue;
+    logger.warn("repository provider mismatch", {
+      repository: repository.id,
+      name: `${repository.owner}/${repository.name}`,
+      agent: repository.agent,
+      kind: definition.kind,
+      provider: repository.provider,
+      model: repository.model,
+    });
+    count += 1;
+  }
+  return count;
+}
 
 /** Upsert file configuration into the durable repository registry. */
 export function syncRepositories(

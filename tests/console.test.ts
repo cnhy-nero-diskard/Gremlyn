@@ -166,6 +166,7 @@ test("console defaults to loopback and rejects every route without a token", asy
     { method: "POST" as const, url: `/jobs/${data.jobId}/retry` },
     { method: "POST" as const, url: `/jobs/${data.queuedJobId}/cancel` },
     { method: "POST" as const, url: `/repos/${data.repoId}/toggle` },
+    { method: "POST" as const, url: `/repos/${data.repoId}/effort`, payload: { effort: "high" } },
     { method: "GET" as const, url: "/model-catalog" },
     {
       method: "POST" as const,
@@ -193,6 +194,9 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /no poll recorded/);
   assert.match(response.body, /acme\/widgets/);
   assert.match(response.body, /data-repo-picker/);
+  assert.match(response.body, /data-saved-provider=/);
+  assert.match(response.body, /data-saved-model=/);
+  assert.match(response.body, /data-saved-effort=/);
   assert.match(response.body, /data-repo-effort/);
   assert.match(response.body, /data-repo-timeout/);
   assert.match(response.body, /Blank timeout means no limit/);
@@ -414,6 +418,44 @@ test("the dashboard filters the provider catalog by each repository's agent kind
   assert.deepEqual(kindsOf("cline-pass"), ["cline"]);
   assert.deepEqual(kindsOf("openai-codex"), ["cline"]);
   assert.deepEqual(kindsOf("opencode"), ["opencode"]);
+  await app.close();
+  data.store.close();
+});
+
+test("a persisted provider mismatch stays visible and is not demoted to custom", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.store.db
+    .prepare("UPDATE repositories SET agent = 'cline', provider = 'opencode', model = 'opencode/gpt-5.4' WHERE id = ?")
+    .run(data.repoId);
+  const app = buildConsoleServer(data.options);
+  const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(response.statusCode, 200);
+  const card = (response.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/u) ?? [""])[0];
+  assert.match(card, /data-provider-mismatch/);
+  assert.match(card, /Provider mismatch/);
+  assert.match(card, /Current provider: opencode/);
+  assert.match(card, /<option value="cline">/);
+  assert.doesNotMatch(card, /value="__custom__" selected/);
+  assert.match(card, /data-saved-provider="opencode"/);
+  assert.match(card, /data-saved-model="opencode\/gpt-5\.4"/);
+  await app.close();
+  data.store.close();
+});
+
+test("a saved model absent from the catalog remains the selected current option", async () => {
+  const data = fixture();
+  data.store.db
+    .prepare("UPDATE repositories SET provider = 'cline', model = 'retired/model-9' WHERE id = ?")
+    .run(data.repoId);
+  const app = buildConsoleServer(data.options);
+  const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(response.statusCode, 200);
+  assert.match(
+    response.body,
+    /<option value="retired\/model-9"[^>]*data-model-tags="CURRENT"[^>]* selected>/u,
+  );
+  assert.match(response.body, /data-saved-model="retired\/model-9"/u);
   await app.close();
   data.store.close();
 });
@@ -1056,6 +1098,22 @@ test("model/provider/effort updates are atomic, unrestricted, audited, and notif
   );
   assert.equal(settingsChanges, 1);
 
+  const effortOnly = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/effort`,
+    headers: AUTH,
+    payload: { effort: " medium " },
+  });
+  assert.equal(effortOnly.statusCode, 200);
+  assert.deepEqual(effortOnly.json(), { ok: true, effort: "medium" });
+  assert.deepEqual(
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(data.repoId),
+    { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+  );
+  assert.equal(settingsChanges, 2);
+
   const secondUpdate = await app.inject({
     method: "POST",
     url: `/repos/${data.repoId}/model-provider`,
@@ -1069,7 +1127,7 @@ test("model/provider/effort updates are atomic, unrestricted, audited, and notif
     model: "gpt-5.6-terra",
     effort: "medium",
   });
-  assert.equal(settingsChanges, 2);
+  assert.equal(settingsChanges, 3);
   assert.equal(
     new OperatorActionStore(data.store.db).list()[0]?.action,
     "repository-model-provider",

@@ -112,6 +112,8 @@ export interface QueuedJob {
 
 export interface RuntimeRepository extends RepoConfig {
   id: number;
+  /** Durable operator-selected provider, alongside model and effort. */
+  provider: string;
   /** Undefined means the agent may run until it exits or is cancelled. */
   timeoutSec?: number;
 }

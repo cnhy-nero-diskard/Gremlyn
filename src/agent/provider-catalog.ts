@@ -48,6 +48,20 @@ export interface ProviderCatalogSnapshot {
   providers: ProviderOption[];
 }
 
+/**
+ * Return whether a known provider belongs to an executor kind. Unknown ids are
+ * operator-supplied providers and remain usable because the catalog cannot
+ * make claims about their authentication surface.
+ */
+export function providerSupportsAgentKind(
+  catalog: ProviderCatalogSnapshot,
+  providerId: string,
+  kind: string,
+): boolean {
+  const provider = catalog.providers.find((entry) => entry.id === providerId);
+  return provider === undefined || provider.kinds.includes(kind);
+}
+
 interface FeaturedModel {
   id: string;
   name?: string;
