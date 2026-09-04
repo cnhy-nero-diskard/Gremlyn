@@ -1,8 +1,8 @@
 ## 1. Instance lock and shutdown
 
-- [ ] 1.1 Change the claim file to a parseable record carrying the owner process id, and treat an unparseable or unreadable claim as abandoned; verify a new unit test in `tests/orchestration.test.ts` covers a well-formed claim, a bare-legacy-id claim, and a garbage claim
-- [ ] 1.2 Make `acquire` probe the recorded owner with signal `0`, reclaim a dead or unparseable claim, and still refuse a live owner; verify tests assert reclamation succeeds for a dead pid and `InstanceLockError` is still thrown for the current process's own pid
-- [ ] 1.3 Make `release` idempotent and error-tolerant — report and swallow its own failures, never throw; verify a test calls `release` twice and against an already-deleted claim file without throwing
+- [x] 1.1 Change the claim file to a parseable record carrying the owner process id, and treat an unparseable or unreadable claim as abandoned; verify a new unit test in `tests/orchestration.test.ts` covers a well-formed claim, a bare-legacy-id claim, and a garbage claim
+- [x] 1.2 Make `acquire` probe the recorded owner with signal `0`, reclaim a dead or unparseable claim, and still refuse a live owner; verify tests assert reclamation succeeds for a dead pid and `InstanceLockError` is still thrown for the current process's own pid
+- [x] 1.3 Make `release` idempotent and error-tolerant — report and swallow its own failures, never throw; verify a test calls `release` twice and against an already-deleted claim file without throwing
 - [ ] 1.4 Add a stream registry to the console server that tracks every open live-update stream and exposes ending them all; verify a test opens two streams, ends them via the registry, and asserts both responses completed
 - [ ] 1.5 Reorder shutdown to end registered streams before awaiting `close()`; verify a test opens a live-update stream, requests shutdown, and asserts shutdown resolves rather than hanging
 - [ ] 1.6 Escalate a second stop request to process termination instead of returning on the `stopping` guard, attempting release first; verify a test drives two stop requests and asserts the escalation path ran

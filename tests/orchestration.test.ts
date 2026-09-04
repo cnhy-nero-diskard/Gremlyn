@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeExecutor } from "../src/agent/fake.js";
 import { recordRunningCancellation } from "../src/orchestrator/cancellation.js";
-import { DataDirectoryLock, InstanceLockError } from "../src/orchestrator/instance-lock.js";
+import {
+  DataDirectoryLock,
+  InstanceLockError,
+  parseLockClaim,
+} from "../src/orchestrator/instance-lock.js";
 import { JobQueue, type QueuedWork } from "../src/orchestrator/queue.js";
 import { Store } from "../src/store/db.js";
 import { JobStore } from "../src/store/jobs.js";
@@ -300,6 +304,30 @@ test("second instance using the same data directory refuses to start", () => {
   }
   const afterRelease = DataDirectoryLock.acquire(dataDir);
   afterRelease.release();
+});
+
+test("lock claims use a parseable owner record and reject legacy or garbage claims", () => {
+  assert.deepEqual(parseLockClaim(JSON.stringify({ pid: process.pid })), { pid: process.pid });
+  assert.equal(parseLockClaim(`${process.pid}\n`), undefined);
+  assert.equal(parseLockClaim("garbage"), undefined);
+});
+
+test("dead lock claims are reclaimed while the current process remains protected", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-lock-stale-"));
+  const claimPath = join(dataDir, ".gremlyn.lock");
+  writeFileSync(claimPath, JSON.stringify({ pid: 999_999_999 }) + "\n", "utf8");
+  const reclaimed = DataDirectoryLock.acquire(dataDir);
+  try {
+    assert.deepEqual(JSON.parse(readFileSync(claimPath, "utf8")), { pid: process.pid });
+    assert.throws(
+      () => DataDirectoryLock.acquire(dataDir),
+      (error: unknown) =>
+        error instanceof InstanceLockError && error.message.includes(`pid ${process.pid}`),
+    );
+  } finally {
+    reclaimed.release();
+    reclaimed.release();
+  }
 });
 
 function createJobFixture() {
