@@ -17,25 +17,25 @@
 
 ## 2. Orchestrator maps a cancelled publish to the cancellation path
 
-- [ ] 2.1 Pass the attempt's `signal` into `publishIfEligible` from the publishing
+- [x] 2.1 Pass the attempt's `signal` into `publishIfEligible` from the publishing
   stage in `src/orchestrator/resolution.ts`; verify `npm run build` passes
-- [ ] 2.2 Handle `{ kind: "cancelled" }` by raising the existing `job-cancelled`
+- [x] 2.2 Handle `{ kind: "cancelled" }` by raising the existing `job-cancelled`
   error rather than a `StageFailure`, so `cancelJob` records the outcome; verify no
   new entry is added to `FAILURE_REASONS` and a test asserts the attempt's
   `failure_reason` is null while its outcome is `cancelled`
-- [ ] 2.3 Verify with a test in `tests/resolution-orchestrator.test.ts` that a job
+- [x] 2.3 Verify with a test in `tests/resolution-orchestrator.test.ts` that a job
   cancelled during publishing reaches the `cancelled` status, records
   `pushed = 0`, and posts no publication-failure reply to the pull request
 
 ## 3. The attempt record distinguishes an unpushed commit
 
-- [ ] 3.1 Move the `recordPublication` call so the commit sha is stored as soon as
+- [x] 3.1 Move the `recordPublication` call so the commit sha is stored as soon as
   the commit exists, leaving `pushed` to record whether it left the machine; verify
   a successful attempt still ends with both `commit_sha` set and `pushed = 1`
-- [ ] 3.2 Verify with a test that a cancel between commit and push produces
+- [x] 3.2 Verify with a test that a cancel between commit and push produces
   `commit_sha != null AND pushed = 0`, and that `cancelJob` reports the workspace as
   holding an unpushed commit
-- [ ] 3.3 Verify with a test that a *failed* push now also retains the sha of the
+- [x] 3.3 Verify with a test that a *failed* push now also retains the sha of the
   commit it was pushing, rather than losing it
 
 ## 4. Downstream readers of a recorded commit
@@ -44,7 +44,7 @@
   `src/publish/report.ts`, retry eligibility in `src/orchestrator/resolution.ts`)
   for the assumption that a recorded sha means a pushed commit; verify each either
   consults `pushed` or is documented as not needing to
-- [ ] 4.2 Extend the retry path so an attempt cancelled with an unpushed commit
+- [x] 4.2 Extend the retry path so an attempt cancelled with an unpushed commit
   reuses that commit instead of re-creating one; verify with a test that retrying
   such a job does not produce a duplicate commit
 - [ ] 4.3 Verify the operator console renders a committed-but-unpushed attempt

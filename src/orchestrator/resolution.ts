@@ -71,6 +71,13 @@ function samePath(left: string, right: string): boolean {
  * head are checked again after GitHub context reconstruction, so a force-push
  * or a manually supplied path cannot turn this into a general dirty-workspace
  * bypass.
+ *
+ * This is about *uncommitted* edits, which is why an attempt cancelled between
+ * its commit and its push is not a case here: it leaves a clean workspace whose
+ * head is one commit ahead of origin, and `prepareWorkspace` already recognises
+ * that and fast-forward pushes the existing commit. The retry therefore
+ * finishes the commit that exists instead of creating a second one, without
+ * needing to be admitted as a dirty-workspace resume.
  */
 function canResumeRetainedWorkspace(
   attempt: AttemptRow | undefined,

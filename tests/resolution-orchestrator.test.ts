@@ -6,17 +6,41 @@ import { join, resolve } from "node:path";
 import { FakeExecutor, type FakeOutcome } from "../src/agent/fake.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
-import { Logger } from "../src/log/logger.js";
+import { Logger, type LogFields } from "../src/log/logger.js";
 import { FAILURE_REASONS } from "../src/orchestrator/failures.js";
 import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
+import { resolutionCommitMessage } from "../src/publish/policy.js";
 import { JobStore } from "../src/store/jobs.js";
 import { Store } from "../src/store/db.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
 import { adoptionClaimPath, readAdoptionClaim } from "../src/workspace/worktree.js";
-import { currentBranch, git, statusEntries } from "../src/workspace/gitops.js";
+import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
 import { createTempRepo, remoteSha } from "./helpers/gitrepo.js";
+
+/**
+ * A logger that cancels the running job the instant a named event is logged.
+ *
+ * Publishing has no external seam between its operations — the commit and the
+ * push happen inside one call — so the orchestrator's own progress log is the
+ * only place a test can land a cancel at a specific boundary. `commit created`
+ * is emitted the moment the commit exists and before any push is attempted;
+ * `validation completed` is the last event before the publishing stage begins.
+ * Both are logged synchronously, so the abort is observed at the very next
+ * checkpoint, exactly as an operator's cancel would be.
+ */
+class CancellingLogger extends Logger {
+  /** Log event at which to cancel; unset means never. */
+  cancelAt: string | undefined;
+  /** Wired by the test once the job id is known. */
+  cancel: ((jobId: number) => void) | undefined;
+
+  override info(event: string, fields: LogFields = {}): void {
+    super.info(event, fields);
+    if (event === this.cancelAt && typeof fields.jobId === "number") this.cancel?.(fields.jobId);
+  }
+}
 
 async function setup(
   outcome: FakeOutcome,
@@ -100,6 +124,11 @@ async function setup(
     ...(opts.delayMs === undefined ? {} : { delayMs: opts.delayMs }),
   });
   const operatorActions = new OperatorActionStore(store.db);
+  const logger = new CancellingLogger({
+    level: "error",
+    secrets: ["fixture-secret"],
+    db: store.db,
+  });
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
     dataDir,
@@ -110,7 +139,7 @@ async function setup(
     github,
     registry: createDefaultCommandRegistry(),
     executors: new Map([["fake", executor]]),
-    logger: new Logger({ level: "error", secrets: ["fixture-secret"], db: store.db }),
+    logger,
     secrets: ["fixture-secret"],
     concurrency: 2,
     commitAuthor: { name: "Gremlyn", email: "gremlyn@localhost" },
@@ -133,6 +162,7 @@ async function setup(
     github,
     executor,
     orchestrator,
+    logger,
     event,
     gitRepo,
     initialSha,
@@ -311,6 +341,129 @@ test("failed agent never pushes and records stage, files, commit, and push facts
     data.github.reactionHistory.map((r) => r.content),
     ["eyes", "rocket", "confused"],
   );
+  data.store.close();
+});
+
+type CancelledAttempt = {
+  outcome: string | null;
+  failure_stage: string | null;
+  failure_reason: string | null;
+  has_uncommitted_changes: number;
+  commit_sha: string | null;
+  pushed: number;
+  workspace_path: string | null;
+};
+
+/**
+ * Job 52 (2026-09-04): the cancel arrived at 18:39 while the attempt sat in
+ * publishing and the push went out at 18:42 regardless, because the signal was
+ * only ever consulted before validation. The stop now reaches the one stage
+ * whose consequences leave the machine.
+ */
+test("a cancel during publishing stops before the commit and is not a publication failure", async () => {
+  const data = await setup("files-modified");
+  data.logger.cancelAt = "validation completed";
+  data.logger.cancel = (jobId) => {
+    data.orchestrator.cancel(jobId);
+  };
+  const [queued] = await data.orchestrator.handleEvent(data.repository, data.event);
+  if (!queued) throw new Error("the event queued no job");
+  assert.equal((await queued.completed).kind, "cancelled");
+  assert.equal(await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch), data.initialSha);
+  const job = data.store.db.prepare("SELECT status FROM jobs WHERE id = ?").get(queued.jobId) as {
+    status: string;
+  };
+  assert.equal(job.status, "cancelled");
+  const attempt = data.store.db
+    .prepare("SELECT * FROM attempts WHERE id = ?")
+    .get(queued.attemptId) as CancelledAttempt;
+  assert.equal(attempt.outcome, "cancelled");
+  assert.equal(attempt.commit_sha, null);
+  assert.equal(attempt.pushed, 0);
+  // A cancel is not a judgement about the work: no precondition is named and
+  // nothing is reported to the pull request.
+  assert.equal(attempt.failure_stage, null);
+  assert.equal(attempt.failure_reason, null);
+  assert.deepEqual(data.github.replies, []);
+  // The agent's edits survive uncommitted, as any cancelled attempt's do.
+  assert.equal(attempt.has_uncommitted_changes, 1);
+  data.store.close();
+});
+
+test("a cancel between the commit and the push keeps the commit and never pushes", async () => {
+  const data = await setup("files-modified");
+  data.logger.cancelAt = "commit created";
+  data.logger.cancel = (jobId) => {
+    data.orchestrator.cancel(jobId);
+  };
+  const [queued] = await data.orchestrator.handleEvent(data.repository, data.event);
+  if (!queued) throw new Error("the event queued no job");
+  assert.equal((await queued.completed).kind, "cancelled");
+  assert.equal(await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch), data.initialSha);
+  const attempt = data.store.db
+    .prepare("SELECT * FROM attempts WHERE id = ?")
+    .get(queued.attemptId) as CancelledAttempt;
+  assert.equal(attempt.outcome, "cancelled");
+  assert.equal(attempt.failure_reason, null);
+  assert.deepEqual(data.github.replies, []);
+  // Committing consumed the modifications, so `commit_sha != null AND
+  // pushed = 0` is what says the work is still here and still private.
+  assert.ok(attempt.commit_sha);
+  assert.equal(attempt.pushed, 0);
+  assert.equal(attempt.has_uncommitted_changes, 0);
+  assert.ok(attempt.workspace_path);
+  assert.equal(await headSha(attempt.workspace_path), attempt.commit_sha);
+  data.store.close();
+});
+
+/**
+ * The retry path has not had to reason about a workspace holding a local
+ * commit ahead of origin before, because a cancelled attempt could never
+ * produce one. It needs no new branch of its own: preparation already
+ * recognises a clean workspace ahead of the recorded head and fast-forward
+ * pushes that commit, so the retry finishes the commit that exists instead of
+ * creating a second one. The agent then finds nothing left to change, which is
+ * the honest outcome — the work was already done and is now published.
+ */
+test("retrying an attempt cancelled with an unpushed commit reuses that commit", async () => {
+  const data = await setup("files-modified");
+  data.logger.cancelAt = "commit created";
+  data.logger.cancel = (jobId) => {
+    data.orchestrator.cancel(jobId);
+  };
+  const [queued] = await data.orchestrator.handleEvent(data.repository, data.event);
+  if (!queued) throw new Error("the event queued no job");
+  assert.equal((await queued.completed).kind, "cancelled");
+  const cancelled = data.store.db
+    .prepare("SELECT commit_sha FROM attempts WHERE id = ?")
+    .get(queued.attemptId) as { commit_sha: string | null };
+  assert.ok(cancelled.commit_sha);
+
+  data.logger.cancelAt = undefined;
+  await assert.rejects(() => completeRetry(data, queued.jobId));
+  assert.equal(
+    await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch),
+    cancelled.commit_sha,
+  );
+  const subjects = (
+    await git([
+      "--git-dir",
+      data.gitRepo.remotePath,
+      "log",
+      "--pretty=%s",
+      data.gitRepo.headBranch,
+    ])
+  ).stdout;
+  assert.deepEqual(
+    subjects.split(/\r?\n/u).filter((line) => line.startsWith("Resolve review feedback")),
+    [resolutionCommitMessage(501)],
+    "the retry created a second resolution commit instead of reusing the first",
+  );
+  const retryAttempt = data.store.db
+    .prepare("SELECT failure_reason, commit_sha FROM attempts WHERE job_id = ? ORDER BY id DESC")
+    .get(queued.jobId) as { failure_reason: string | null; commit_sha: string | null };
+  assert.equal(retryAttempt.failure_reason, "no-changes");
+  assert.equal(retryAttempt.commit_sha, null);
   data.store.close();
 });
 
