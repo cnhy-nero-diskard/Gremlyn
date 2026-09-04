@@ -1,6 +1,25 @@
 # Gremlyn
 
-Gremlyn is a local PR-resolution orchestrator. It polls configured GitHub repositories for an authorized `!RESOLVE` reply on an inline review thread, prepares an isolated git checkout, runs Cline, independently validates the result, pushes a normal commit to the existing PR branch, and replies with the outcome. The developer's normal checkout is never modified. Context: I normally use 5.6 SOL HIGH in chat mode to review my PR's since it doesn't incur weekly usage; this is the invariant I try to create gremlyn around. Would I be extending this to the whole implementation pipeline? Maybe, but I treat the ideation (explore and proposal), first run implementation(apply) and the output corrections (PR, feedback and subsequent changes) as 3 separate processes that shouldn't be time locked. 
+Gremlyn is a local PR-resolution orchestrator. It polls configured GitHub repositories for an authorized `!RESOLVE` reply on an inline review thread, prepares an isolated git checkout, runs Cline, independently validates the result, pushes a normal commit to the existing PR branch, and replies with the outcome. The developer's normal checkout is never modified. Context: I normally use 5.6 SOL HIGH in chat mode to review my PR's since it doesn't incur weekly usage; this is the invariant I try to create gremlyn around. Would I be extending this to the whole implementation pipeline? Maybe, but I treat the ideation (explore and proposal), first run implementation(apply) and the output corrections (PR, feedback and subsequent changes) as 3 separate processes that shouldn't be time locked.
+
+Automatic workspace reclamation is opt-in. It only considers deterministic `pr-N` directories beneath configured workspace roots, and retains active, recent, dirty, or indeterminate workspaces. Review the decisions without deleting anything before enabling it:
+
+```powershell
+npm run setup -- reclaim --preview --config .\gremlyn.yaml
+```
+
+Set `workspace_reclamation.enabled: true` and adjust `minimum_age_seconds` only after reviewing the preview. Every reclamation and refusal is recorded in the operator audit.
+
+Artifact retention is separately opt-in. Set `artifact_retention.enabled: true`
+to trim terminal-job output, validation files, and per-attempt state after
+`maximum_age_seconds` or when the combined `maximum_total_bytes` ceiling is
+exceeded. Trimming is oldest-first and never removes artifacts for a live job;
+the job view labels files that are no longer retained.
+
+Foreign branch holders are cloned into the configured workspace root by default.
+Set a repository's `adopt_worktree: true` only when you explicitly want a clean,
+validated operator checkout to be used in place; dirty or claimed checkouts are
+left untouched and cloned instead. Adopted attempts are marked in the console.
 
 ## Requirements
 
@@ -189,7 +208,7 @@ change beyond `agent: opencode`:
   A repository naming an OpenCode agent does not need a `provider` field at
   all. The console's repository settings offer an "OpenCode" entry in the
   Provider picker listing every model Zen serves (the full `opencode models
-  opencode` output for the pinned release); picking "Custom provider" instead
+opencode` output for the pinned release); picking "Custom provider" instead
   (shared with Cline) still works for any other `provider/model` OpenCode
   understands — an installation-specific one you authenticated yourself, say
   — and whatever is typed there is accepted and ignored by the executor
@@ -220,7 +239,7 @@ npm start -- .\gremlyn.yaml
 
 Startup validates the configuration, the GitHub bot identity, every configured agent's CLI version, data-directory exclusivity, and console bind. A successful start logs `orchestrator started` and begins polling.
 
-Open `http://127.0.0.1:4780/auth`, enter `GREMLYN_CONSOLE_TOKEN`, and sign in. The redesigned dashboard shows a health strip with the latest poll, freshness/staleness, queue depth, and active-versus-configured concurrency, followed by repository cards (agent, model, effort, timeout, validation commands, and an enable/disable control) and running, queued, and recent job lanes. Leave timeout blank for no limit, or enter seconds for that repository; the setting is live and persisted in SQLite. Each job has a structured detail page with a timeline, attempt diagnostics, validation output, status-specific actions, pull-request/comment links, and a separately confirmed danger zone for workspace reset. The **Commands** view explains every observed command, including authorization refusals and their reasons; the **Audit** view lists manual actions and their effects.
+Open `http://127.0.0.1:4780/auth`, enter `GREMLYN_CONSOLE_TOKEN`, and sign in. The redesigned dashboard shows a health strip with the latest poll, freshness/staleness, queue depth, and active-versus-configured concurrency, followed by repository cards (agent, model, effort, timeout, validation commands, and an enable/disable control) and running, queued, and recent job lanes. Leave timeout blank for no limit, or enter seconds for that repository; the setting is live and persisted in SQLite. Each job has a structured detail page with a timeline, attempt diagnostics, validation output, status-specific actions, pull-request/comment links, and a separately confirmed danger zone for workspace reset. The **Commands** view explains every observed command, including authorization refusals and their reasons; the **Audit** view lists manual actions and their effects. Console wall-clock values use the host timezone by default; set `console.timezone` to an IANA timezone such as `Asia/Taipei` when the operator is remote. Stored instants remain UTC and are retained on each time element.
 
 Then add `!RESOLVE` as a reply in an inline PR review thread authored by an allowlisted login. The console should show the job progressing through queued, preparing, running, validating, publishing, reporting, and a terminal state without requiring a page reload; live updates replace only the affected dashboard or job regions, preserving expanded sections and typed confirmation text. Use the retry/cancel controls when their current-state rules allow them, and use the repository toggle when ingestion should be paused.
 

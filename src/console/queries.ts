@@ -74,7 +74,11 @@ export interface AttemptDetail {
   report_status: string | null;
   has_uncommitted_changes: number;
   output_ref: string | null;
+  /** Whether the attempt ran in a clean foreign checkout adopted by Gremlyn. */
+  adopted: boolean;
   output: string;
+  /** Whether the referenced captured output file is still present. */
+  outputRetained: boolean;
   /** Live transcript for this attempt, when the agent produced one. */
   activity: AgentActivity | null;
 }
@@ -96,6 +100,8 @@ export interface ValidationRun {
   duration_ms: number | null;
   output_ref: string | null;
   output: string;
+  /** Whether the referenced validation output file is still present. */
+  outputRetained: boolean;
 }
 
 export interface LogRow {
@@ -244,14 +250,14 @@ function readActivity(dataDir: string, attemptId: number): AgentActivity | null 
   }
 }
 
-/** Read a captured output file, treating missing/unreadable files as empty data. */
-function readOutput(path: string | null): string {
-  if (!path) return "";
+/** Read a captured artifact while preserving whether its reference still resolves. */
+function readArtifact(path: string | null): { text: string; retained: boolean } {
+  if (!path) return { text: "", retained: false };
   try {
-    if (!existsSync(path)) return "";
-    return readFileSync(path, "utf8");
+    if (!existsSync(path)) return { text: "", retained: false };
+    return { text: readFileSync(path, "utf8"), retained: true };
   } catch {
-    return "[output unavailable]";
+    return { text: "", retained: false };
   }
 }
 
@@ -341,12 +347,15 @@ export function readJobDetail(
       const raw = row as Record<string, unknown>;
       const outputRef = typeof raw.output_ref === "string" ? raw.output_ref : null;
       const safe = redactRow(raw, redact) as unknown as AttemptDetail;
+      const artifact = readArtifact(outputRef);
       // Activity is written by the running attempt and already redacted at the
       // source; re-reading it here keeps a live attempt visible before its
       // final output file exists.
       return {
         ...safe,
-        output: redact(readOutput(outputRef)),
+        output: redact(artifact.text),
+        outputRetained: artifact.retained,
+        adopted: raw.adopted === 1,
         activity: readActivity(dataDir, safe.id),
       };
     });
@@ -369,7 +378,8 @@ export function readJobDetail(
       const raw = row as Record<string, unknown>;
       const outputRef = typeof raw.output_ref === "string" ? raw.output_ref : null;
       const safe = redactRow(raw, redact) as unknown as ValidationRun;
-      return { ...safe, output: redact(readOutput(outputRef)) };
+      const artifact = readArtifact(outputRef);
+      return { ...safe, output: redact(artifact.text), outputRetained: artifact.retained };
     });
   const logs = readJobLog(db, jobId, redact);
   const logTotal = (

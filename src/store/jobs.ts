@@ -39,6 +39,7 @@ export interface AttemptRow {
   effort: string;
   workspace_path: string | null;
   head_sha_at_prepare: string | null;
+  adopted: number;
   started_at: string | null;
   ended_at: string | null;
   agent_exit_code: number | null;
@@ -180,14 +181,19 @@ export class JobStore {
     this.db.transaction(() => this.transition(jobId, status, attemptId ?? null))();
   }
 
-  recordPreparation(attemptId: number, workspacePath: string, headShaAtPrepare: string): void {
+  recordPreparation(
+    attemptId: number,
+    workspacePath: string,
+    headShaAtPrepare: string,
+    adopted = false,
+  ): void {
     this.db
       .prepare(
         `UPDATE attempts
-         SET workspace_path = ?, head_sha_at_prepare = ?, started_at = ?
+         SET workspace_path = ?, head_sha_at_prepare = ?, adopted = ?, started_at = ?
          WHERE id = ?`,
       )
-      .run(workspacePath, headShaAtPrepare, now(), attemptId);
+      .run(workspacePath, headShaAtPrepare, adopted ? 1 : 0, now(), attemptId);
   }
 
   recordAgentResult(attemptId: number, result: AgentResult): void {

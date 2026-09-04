@@ -3,7 +3,9 @@ import { parseArgs } from "node:util";
 import {
   addRepository,
   defaultConfigPath,
+  reclaimConfiguredWorkspaces,
   setup,
+  unlockDataDirectory,
   verifyConfig,
   type AddRepositoryOptions,
   type FlowIO,
@@ -11,7 +13,7 @@ import {
 } from "./flows.js";
 import { createReadlineInput, nonInteractiveInput } from "./input.js";
 
-const COMMANDS = ["setup", "add-repo", "verify"] as const;
+const COMMANDS = ["setup", "add-repo", "verify", "unlock", "reclaim"] as const;
 type Command = (typeof COMMANDS)[number];
 
 interface CliValues {
@@ -23,6 +25,7 @@ interface CliValues {
   owner?: string;
   name?: string;
   "workspace-root"?: string;
+  "adopt-worktree"?: boolean;
   agent?: string;
   provider?: string;
   model?: string;
@@ -34,6 +37,8 @@ interface CliValues {
   enabled?: boolean;
   disabled?: boolean;
   example?: string;
+  preview?: boolean;
+  apply?: boolean;
 }
 
 const OPTION_DEFINITIONS = {
@@ -45,6 +50,7 @@ const OPTION_DEFINITIONS = {
   owner: { type: "string" },
   name: { type: "string" },
   "workspace-root": { type: "string" },
+  "adopt-worktree": { type: "boolean" },
   agent: { type: "string" },
   provider: { type: "string" },
   model: { type: "string" },
@@ -56,6 +62,8 @@ const OPTION_DEFINITIONS = {
   enabled: { type: "boolean" },
   disabled: { type: "boolean" },
   example: { type: "string" },
+  preview: { type: "boolean" },
+  apply: { type: "boolean" },
 } as const;
 
 export const HELP = `Gremlyn guided setup CLI
@@ -64,21 +72,26 @@ Usage:
   npm run setup -- [flags]
   npm run add-repo -- <path> [flags]
   npm run verify:config -- [flags]
+  npm run setup -- unlock <data-dir> [flags]
+  npm run setup -- reclaim [flags]
 
 Subcommands:
   setup       Bootstrap gremlyn.yaml, report host prerequisites, and optionally register a repository.
   add-repo    Infer, verify, and append one explicit repository entry.
   verify      Verify every configured repository without writing anything.
+  unlock      Release a data-directory claim without starting the orchestrator.
+  reclaim     Preview deterministic workspace reclamation; use --apply after enabling it.
 
 Flags:
   -h, --help                    Show this help.
-  -y, --yes                     Accept all derived proposals and validation candidates.
+  -y, --yes                     Accept derived proposals; confirm a live-owner unlock.
   -c, --config <path>           Configuration file (default: GREMLYN_CONFIG or gremlyn.yaml).
   -r, --repo <path>             Local checkout for setup's first repository registration.
       --probe                   Run the optional seeded agent probe during setup.
       --owner <owner>            Explicit GitHub owner.
       --name <name>              Explicit GitHub repository name.
       --workspace-root <path>    Explicit workspace root outside source repositories.
+      --adopt-worktree            Allow clean foreign checkouts to be adopted.
       --agent <id>               Explicit configured agent id.
       --provider <id>            Explicit agent provider.
       --model <id>               Explicit model.
@@ -90,6 +103,8 @@ Flags:
       --enabled                  Write enabled: true (the default).
       --disabled                 Write enabled: false.
       --example <path>           Setup bootstrap source instead of config.example.yaml.
+      --preview                  Report reclamation decisions without removing anything (default).
+      --apply                    Apply reclamation; requires workspace_reclamation.enabled: true.
 
 Every value that can be prompted has an explicit flag. In a non-interactive shell,
 pass --yes to accept derived values or supply the missing flags explicitly.
@@ -135,6 +150,10 @@ async function runWithCommand(command: Command, args: readonly string[]): Promis
     process.stderr.write("Use either --no-validation or --validation-command, not both.\n");
     return 2;
   }
+  if (values.preview === true && values.apply === true) {
+    process.stderr.write("Use only one of --preview or --apply.\n");
+    return 2;
+  }
 
   const input = interactive() ? createReadlineInput() : nonInteractiveInput();
   const io: FlowIO = { input };
@@ -168,6 +187,33 @@ async function runWithCommand(command: Command, args: readonly string[]): Promis
       };
       return (await addRepository(options)).exitCode;
     }
+    if (command === "unlock") {
+      if (!parsed.positionals[0] || parsed.positionals.length !== 1) {
+        process.stderr.write("unlock requires exactly one positional <data-dir>.\n\n");
+        process.stderr.write(HELP);
+        return 2;
+      }
+      return (
+        await unlockDataDirectory({
+          dataDir: parsed.positionals[0],
+          yes: values.yes,
+          ...io,
+        })
+      ).exitCode;
+    }
+    if (command === "reclaim") {
+      if (parsed.positionals.length > 0) {
+        process.stderr.write("reclaim does not accept positional paths; use --config.\n");
+        return 2;
+      }
+      return (
+        await reclaimConfiguredWorkspaces({
+          configPath,
+          preview: values.apply !== true,
+          ...io,
+        })
+      ).exitCode;
+    }
     if (parsed.positionals.length > 0) {
       process.stderr.write("verify does not accept positional paths; use --config.\n");
       return 2;
@@ -191,6 +237,7 @@ function repositoryOptions(
     ...(values.owner !== undefined ? { owner: values.owner } : {}),
     ...(values.name !== undefined ? { name: values.name } : {}),
     ...(values["workspace-root"] !== undefined ? { workspaceRoot: values["workspace-root"] } : {}),
+    ...(values["adopt-worktree"] === true ? { adoptWorktree: true } : {}),
     ...(values.agent !== undefined ? { agent: values.agent } : {}),
     ...(values.provider !== undefined ? { provider: values.provider } : {}),
     ...(values.model !== undefined ? { model: values.model } : {}),

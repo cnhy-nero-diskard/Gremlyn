@@ -16,10 +16,21 @@ test("config.example.yaml parses successfully with no real credentials", () => {
   });
   assert.equal(config.repositories.length, 2);
   assert.equal(config.repositories[0]!.effort, "xhigh");
+  assert.equal(config.repositories[0]!.adoptWorktree, false);
   const opencodeRepo = config.repositories.find((r) => r.agent === "opencode")!;
   assert.ok(opencodeRepo, "expected an OpenCode repository entry");
   assert.equal(opencodeRepo.provider, "");
   assert.equal(opencodeRepo.effort, "high");
   assert.equal(config.agents.opencode?.kind, "opencode");
   assert.deepEqual(config.agents.opencode?.credentialFiles, ["auth.json"]);
+  assert.equal(config.consoleTimezone, undefined);
+  assert.deepEqual(config.workspaceReclamation, {
+    enabled: false,
+    minimumAgeSec: 604800,
+  });
+  assert.deepEqual(config.artifactRetention, {
+    enabled: false,
+    maximumAgeSec: 2592000,
+    maximumTotalBytes: 1073741824,
+  });
 });

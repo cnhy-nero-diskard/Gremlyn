@@ -53,9 +53,118 @@ test("loads a valid config", () => {
   assert.equal(config.repositories.length, 1);
   const repo = config.repositories[0]!;
   assert.equal(repo.agent, "cline");
+  assert.equal(repo.adoptWorktree, false);
   // No effort configured: defaults to the agent's highest tier.
   assert.equal(repo.effort, "xhigh");
   assert.equal(config.agentTimeoutSec, undefined);
+  assert.equal(config.consoleTimezone, undefined);
+  assert.deepEqual(config.workspaceReclamation, {
+    enabled: false,
+    minimumAgeSec: 604800,
+  });
+  assert.deepEqual(config.artifactRetention, {
+    enabled: false,
+    maximumAgeSec: 2592000,
+    maximumTotalBytes: 1073741824,
+  });
+});
+
+test("loads workspace reclamation settings and rejects invalid values", () => {
+  const configured = loadConfig(
+    writeConfig(
+      `${VALID_CONFIG}\nworkspace_reclamation:\n  enabled: true\n  minimum_age_seconds: 3600\n`,
+    ),
+    VALID_ENV,
+  );
+  assert.deepEqual(configured.workspaceReclamation, { enabled: true, minimumAgeSec: 3600 });
+  for (const value of ["1.5", "-1", '"one hour"']) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nworkspace_reclamation:\n  minimum_age_seconds: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /workspace_reclamation\.minimum_age_seconds must be a non-negative integer/u.test(
+          error.message,
+        ),
+    );
+  }
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(`${VALID_CONFIG}\nworkspace_reclamation:\n  enabled: yes\n`),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError &&
+      /workspace_reclamation\.enabled must be a boolean/u.test(error.message),
+  );
+});
+
+test("loads artifact retention settings and rejects invalid values", () => {
+  const configured = loadConfig(
+    writeConfig(
+      `${VALID_CONFIG}\nartifact_retention:\n  enabled: true\n  maximum_age_seconds: 86400\n  maximum_total_bytes: 4096\n`,
+    ),
+    VALID_ENV,
+  );
+  assert.deepEqual(configured.artifactRetention, {
+    enabled: true,
+    maximumAgeSec: 86400,
+    maximumTotalBytes: 4096,
+  });
+  for (const value of ["1.5", "-1", '"one month"']) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  maximum_age_seconds: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /artifact_retention\.maximum_age_seconds must be a non-negative integer/u.test(
+          error.message,
+        ),
+    );
+  }
+  for (const value of ["1.5", "-1", '"one gigabyte"']) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  maximum_total_bytes: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /artifact_retention\.maximum_total_bytes must be a non-negative safe integer/u.test(
+          error.message,
+        ),
+    );
+  }
+  assert.throws(
+    () =>
+      loadConfig(writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  enabled: yes\n`), VALID_ENV),
+    (error: unknown) =>
+      error instanceof ConfigError &&
+      /artifact_retention\.enabled must be a boolean/u.test(error.message),
+  );
+});
+
+test("loads an optional console timezone and rejects invalid zones", () => {
+  const configured = loadConfig(
+    writeConfig(`${VALID_CONFIG}\nconsole:\n  timezone: Asia/Taipei\n`),
+    VALID_ENV,
+  );
+  assert.equal(configured.consoleTimezone, "Asia/Taipei");
+  assert.throws(
+    () =>
+      loadConfig(writeConfig(`${VALID_CONFIG}\nconsole:\n  timezone: Not/A_Timezone\n`), VALID_ENV),
+    (error: unknown) =>
+      error instanceof ConfigError &&
+      error.problems.some((problem) => problem.includes("console.timezone")),
+  );
 });
 
 test("accepts zero agent timeout as unlimited", () => {
@@ -117,7 +226,9 @@ test("rejects a Cline repository with an empty provider", () => {
     (err: unknown) => {
       assert.ok(err instanceof ConfigError);
       assert.ok(
-        err.problems.some((p) => p.includes('repositories[0].provider is required for agent "cline"')),
+        err.problems.some((p) =>
+          p.includes('repositories[0].provider is required for agent "cline"'),
+        ),
       );
       return true;
     },
@@ -219,5 +330,33 @@ test("workspace_seed_files rejects a non-list value", () => {
     (error: unknown) =>
       error instanceof ConfigError &&
       /workspace_seed_files must be a list of strings/u.test(error.message),
+  );
+});
+
+test("adopt_worktree is opt-in and must be boolean", () => {
+  const enabled = loadConfig(
+    writeConfig(
+      VALID_CONFIG.replace(
+        "    validation_commands: []",
+        "    validation_commands: []\n    adopt_worktree: true",
+      ),
+    ),
+    VALID_ENV,
+  );
+  assert.equal(enabled.repositories[0]?.adoptWorktree, true);
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(
+          VALID_CONFIG.replace(
+            "    validation_commands: []",
+            "    validation_commands: []\n    adopt_worktree: yes",
+          ),
+        ),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError &&
+      /repositories\[0\]\.adopt_worktree must be a boolean/u.test(error.message),
   );
 });

@@ -18,6 +18,14 @@ import { probe as runAgentProbe } from "../agent/probe.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { OctokitGitHubClient } from "../github/octokit.js";
 import { createRedactor } from "../log/redact.js";
+import { reclaimWorkspaces, type WorkspaceReclamationReport } from "../workspace/reclamation.js";
+import { syncRepositories } from "../runtime/repositories.js";
+import { OperatorActionStore } from "../store/actions.js";
+import { Store } from "../store/db.js";
+import {
+  inspectDataDirectoryLock,
+  removeDataDirectoryLockClaim,
+} from "../orchestrator/instance-lock.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 import {
   appendRepository,
@@ -39,6 +47,7 @@ import {
   closeInput,
   createReadlineInput,
   resolveCommandList,
+  resolveConfirmation,
   resolveInput,
   type InputSource,
 } from "./input.js";
@@ -65,6 +74,7 @@ export interface AddRepositoryOptions extends FlowIO {
   owner?: string | undefined;
   name?: string | undefined;
   workspaceRoot?: string | undefined;
+  adoptWorktree?: boolean | undefined;
   agent?: string | undefined;
   provider?: string | undefined;
   model?: string | undefined;
@@ -82,6 +92,26 @@ export interface SetupOptions extends FlowIO {
   probe?: boolean | undefined;
   addRepository?:
     Omit<AddRepositoryOptions, "configPath" | "sourcePath" | keyof FlowIO> | undefined;
+}
+
+export interface UnlockOptions extends FlowIO {
+  dataDir: string;
+  yes?: boolean | undefined;
+}
+
+export interface ReclaimOptions extends FlowIO {
+  configPath: string;
+  preview?: boolean | undefined;
+}
+
+export interface UnlockResult {
+  exitCode: number;
+  dataDir: string;
+  removed: boolean;
+}
+
+export interface ReclaimResult extends FlowResult {
+  report: WorkspaceReclamationReport;
 }
 
 interface RuntimeFlowIO extends Omit<FlowIO, "env" | "out" | "err" | "verificationEnvironment"> {
@@ -142,6 +172,75 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
 
 export function defaultExamplePath(): string {
   return fileURLToPath(new URL("../../config.example.yaml", import.meta.url));
+}
+
+/** Release a data-directory claim without loading configuration or starting Gremlyn. */
+export async function unlockDataDirectory(options: UnlockOptions): Promise<UnlockResult> {
+  const io = makeIO(options);
+  const inspection = inspectDataDirectoryLock(options.dataDir);
+  if (!inspection.exists) {
+    io.out(`No Gremlyn claim found for ${options.dataDir}.`);
+    return { exitCode: 0, dataDir: options.dataDir, removed: false };
+  }
+
+  if (inspection.owner !== undefined && inspection.ownerAlive) {
+    io.out(
+      `Gremlyn data directory ${options.dataDir} is owned by live process ${inspection.owner.pid}.`,
+    );
+    const confirmed = await resolveConfirmation("unlock", {
+      proposed: true,
+      question: "Override the live owner and remove its claim?",
+      ...(options.yes === undefined ? {} : { yes: options.yes }),
+      ...(io.input === undefined ? {} : { input: io.input }),
+    });
+    if (!confirmed) {
+      io.out("Unlock declined; the claim was left untouched.");
+      return { exitCode: 0, dataDir: options.dataDir, removed: false };
+    }
+  } else {
+    io.out(
+      `Releasing ${inspection.owner === undefined ? "an abandoned" : "a dead-owner"} claim for ${options.dataDir}.`,
+    );
+  }
+
+  const removed = removeDataDirectoryLockClaim(options.dataDir);
+  io.out(
+    removed ? `Released Gremlyn claim for ${options.dataDir}.` : "The claim was already absent.",
+  );
+  return { exitCode: 0, dataDir: options.dataDir, removed };
+}
+
+/** Preview or apply the configured workspace reclamation sweep from the CLI. */
+export async function reclaimConfiguredWorkspaces(options: ReclaimOptions): Promise<ReclaimResult> {
+  const configPath = resolve(options.configPath);
+  const io = makeIO(options, configPath);
+  const config = readSetupConfig(configPath, io.env);
+  const preview = options.preview !== false;
+  if (!preview && !config.workspaceReclamation.enabled) {
+    throw new SetupFlowError(
+      "workspace reclamation is disabled; set workspace_reclamation.enabled to true before applying it",
+    );
+  }
+  const store = new Store({ dataDir: config.dataDir });
+  try {
+    const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
+    const report = await reclaimWorkspaces({
+      db: store.db,
+      repositories,
+      minimumAgeMs: config.workspaceReclamation.minimumAgeSec * 1_000,
+      actions: new OperatorActionStore(store.db),
+      preview,
+    });
+    io.out(
+      `${preview ? "Workspace reclamation preview" : "Workspace reclamation"}: ${String(report.reclaimed)} ${preview ? "would be reclaimed" : "reclaimed"}, ${String(report.retained)} retained, ${String(report.candidates)} candidates.`,
+    );
+    for (const decision of report.decisions) {
+      io.out(`${decision.outcome.toUpperCase()} ${decision.path}: ${decision.reason}`);
+    }
+    return { exitCode: 0, configPath, report };
+  } finally {
+    store.close();
+  }
 }
 
 /**
@@ -250,6 +349,7 @@ export async function addRepository(options: AddRepositoryOptions): Promise<Flow
     name,
     sourcePath,
     workspaceRoot,
+    adoptWorktree: options.adoptWorktree ?? false,
     agent,
     provider,
     model,
@@ -691,6 +791,7 @@ function toYamlRepository(entry: RepoConfig): Record<string, unknown> {
     name: entry.name,
     source_path: entry.sourcePath,
     workspace_root: entry.workspaceRoot,
+    adopt_worktree: entry.adoptWorktree ?? false,
     agent: entry.agent,
     provider: entry.provider,
     model: entry.model,
@@ -755,7 +856,9 @@ function isExampleRepositoryRecord(entry: Record<string, unknown>): boolean {
     return sourcePath.includes("your-repo") || sourcePath.includes("your\\\\repo");
   }
   if (entry.name === "your-opencode-repo") {
-    return sourcePath.includes("your-opencode-repo") || sourcePath.includes("your\\\\opencode-repo");
+    return (
+      sourcePath.includes("your-opencode-repo") || sourcePath.includes("your\\\\opencode-repo")
+    );
   }
   return false;
 }

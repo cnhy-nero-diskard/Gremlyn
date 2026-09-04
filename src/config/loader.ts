@@ -41,6 +41,10 @@ const DEFAULT_CREDENTIAL_FILES: Record<string, readonly string[]> = {
   opencode: OPENCODE_CREDENTIAL_FILES,
 };
 
+const DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC = 7 * 24 * 60 * 60;
+const DEFAULT_ARTIFACT_RETENTION_AGE_SEC = 30 * 24 * 60 * 60;
+const DEFAULT_ARTIFACT_RETENTION_BYTES = 1_073_741_824;
+
 /** Kinds whose CLI takes a first-class provider argument distinct from the model id. */
 export const KINDS_REQUIRING_PROVIDER = new Set(["cline"]);
 
@@ -49,6 +53,8 @@ export interface RepoConfig {
   name: string;
   sourcePath: string;
   workspaceRoot: string;
+  /** Permit clean foreign checkouts to be used outside workspaceRoot. */
+  adoptWorktree: boolean;
   agent: string;
   provider: string;
   model: string;
@@ -79,8 +85,19 @@ export interface AppConfig {
   consoleHost: string;
   consolePort: number;
   consoleToken: string;
+  /** Optional IANA timezone for server-rendered console wall-clock values. */
+  consoleTimezone?: string;
   /** Initial per-repository agent timeout; undefined means no limit. */
   agentTimeoutSec?: number;
+  workspaceReclamation: {
+    enabled: boolean;
+    minimumAgeSec: number;
+  };
+  artifactRetention: {
+    enabled: boolean;
+    maximumAgeSec: number;
+    maximumTotalBytes: number;
+  };
   agentRetries: number;
   allowedAuthors: string[];
   agents: Record<string, AgentDefinition>;
@@ -104,10 +121,23 @@ interface RawConfig {
     host?: unknown;
     port?: unknown;
     token_env?: unknown;
+    timezone?: unknown;
   };
   agent_defaults?: {
     timeout_seconds?: unknown;
     retries?: unknown;
+  };
+  workspace_reclamation?: {
+    enabled?: unknown;
+    minimum_age_seconds?: unknown;
+  };
+  artifact_retention?: {
+    enabled?: unknown;
+    maximum_age_seconds?: unknown;
+    maximum_total_bytes?: unknown;
+    /** Backward-compatible short spellings accepted by the loader. */
+    max_age_seconds?: unknown;
+    max_total_bytes?: unknown;
   };
   allowed_authors?: unknown;
   agents?: Record<
@@ -161,6 +191,7 @@ interface RawRepoEntry {
   name?: unknown;
   source_path?: unknown;
   workspace_root?: unknown;
+  adopt_worktree?: unknown;
   agent?: unknown;
   provider?: unknown;
   model?: unknown;
@@ -193,6 +224,7 @@ function parseRepositories(
     const name = asString(r.name);
     const sourcePath = asString(r.source_path);
     const workspaceRoot = asString(r.workspace_root);
+    const adoptWorktree = asBoolean(r.adopt_worktree) ?? false;
     const agent = asString(r.agent);
     const provider = asString(r.provider) ?? "";
     const model = asString(r.model);
@@ -216,6 +248,9 @@ function parseRepositories(
     }
     if (r.workspace_seed_files !== undefined && workspaceSeedFiles === undefined) {
       problems.push(`${label}.workspace_seed_files must be a list of strings`);
+    }
+    if (r.adopt_worktree !== undefined && adoptWorktree === false && r.adopt_worktree !== false) {
+      problems.push(`${label}.adopt_worktree must be a boolean`);
     }
     // Agent must exist; effort must be within the agent's supported tiers.
     let effort: ReasoningEffort | undefined;
@@ -249,6 +284,7 @@ function parseRepositories(
         name,
         sourcePath,
         workspaceRoot,
+        adoptWorktree,
         agent,
         provider,
         model,
@@ -319,6 +355,16 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   if (!consoleToken) {
     problems.push(`console token missing: environment variable ${consoleTokenEnv} is not set`);
   }
+  const consoleTimezone = asString(raw.console?.timezone);
+  if (raw.console?.timezone !== undefined && !consoleTimezone) {
+    problems.push("console.timezone must be a non-empty IANA timezone");
+  } else if (consoleTimezone) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: consoleTimezone }).format();
+    } catch {
+      problems.push(`console.timezone must be a valid IANA timezone (got "${consoleTimezone}")`);
+    }
+  }
 
   // Agent defaults.
   const configuredAgentTimeoutSec = asNumber(raw.agent_defaults?.timeout_seconds);
@@ -339,6 +385,71 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   ) {
     problems.push(
       `agent_defaults.timeout_seconds must be a non-negative integer (got ${String(configuredAgentTimeoutSec)})`,
+    );
+  }
+
+  // Workspace reclamation deletes only deterministic, clean, inactive
+  // workspaces and is deliberately opt-in. The age threshold still validates
+  // while disabled so turning it on later cannot activate malformed settings.
+  const workspaceReclamationEnabled = asBoolean(raw.workspace_reclamation?.enabled) ?? false;
+  if (
+    raw.workspace_reclamation?.enabled !== undefined &&
+    workspaceReclamationEnabled === false &&
+    raw.workspace_reclamation.enabled !== false
+  ) {
+    problems.push("workspace_reclamation.enabled must be a boolean");
+  }
+  const configuredWorkspaceAge = raw.workspace_reclamation?.minimum_age_seconds;
+  const parsedWorkspaceAge = asNumber(configuredWorkspaceAge);
+  const workspaceMinimumAgeSec = parsedWorkspaceAge ?? DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC;
+  if (
+    configuredWorkspaceAge !== undefined &&
+    (parsedWorkspaceAge === undefined ||
+      !Number.isInteger(workspaceMinimumAgeSec) ||
+      workspaceMinimumAgeSec < 0)
+  ) {
+    problems.push(
+      `workspace_reclamation.minimum_age_seconds must be a non-negative integer (got ${String(configuredWorkspaceAge)})`,
+    );
+  }
+
+  // Artifact retention is also opt-in. Age and total-size ceilings are kept
+  // separate so a deployment can bound runaway disk use without deleting
+  // recent terminal diagnostics prematurely.
+  const artifactRetentionEnabled = asBoolean(raw.artifact_retention?.enabled) ?? false;
+  if (
+    raw.artifact_retention?.enabled !== undefined &&
+    artifactRetentionEnabled === false &&
+    raw.artifact_retention.enabled !== false
+  ) {
+    problems.push("artifact_retention.enabled must be a boolean");
+  }
+  const configuredArtifactAge =
+    raw.artifact_retention?.maximum_age_seconds ?? raw.artifact_retention?.max_age_seconds;
+  const parsedArtifactAge = asNumber(configuredArtifactAge);
+  const artifactMaximumAgeSec = parsedArtifactAge ?? DEFAULT_ARTIFACT_RETENTION_AGE_SEC;
+  if (
+    configuredArtifactAge !== undefined &&
+    (parsedArtifactAge === undefined ||
+      !Number.isInteger(artifactMaximumAgeSec) ||
+      artifactMaximumAgeSec < 0)
+  ) {
+    problems.push(
+      `artifact_retention.maximum_age_seconds must be a non-negative integer (got ${String(configuredArtifactAge)})`,
+    );
+  }
+  const configuredArtifactBytes =
+    raw.artifact_retention?.maximum_total_bytes ?? raw.artifact_retention?.max_total_bytes;
+  const parsedArtifactBytes = asNumber(configuredArtifactBytes);
+  const artifactMaximumTotalBytes = parsedArtifactBytes ?? DEFAULT_ARTIFACT_RETENTION_BYTES;
+  if (
+    configuredArtifactBytes !== undefined &&
+    (parsedArtifactBytes === undefined ||
+      !Number.isSafeInteger(artifactMaximumTotalBytes) ||
+      artifactMaximumTotalBytes < 0)
+  ) {
+    problems.push(
+      `artifact_retention.maximum_total_bytes must be a non-negative safe integer (got ${String(configuredArtifactBytes)})`,
     );
   }
 
@@ -401,7 +512,14 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
       }
       const credentialFiles = credentialFilesRaw ?? DEFAULT_CREDENTIAL_FILES[kind] ?? [];
       if (!credentialSource) continue;
-      agents[id] = { id, kind, binary, efforts, credentialSource, credentialFiles: [...credentialFiles] };
+      agents[id] = {
+        id,
+        kind,
+        binary,
+        efforts,
+        credentialSource,
+        credentialFiles: [...credentialFiles],
+      };
     }
   }
 
@@ -424,7 +542,17 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     consoleHost,
     consolePort,
     consoleToken: consoleToken as string,
+    ...(consoleTimezone === undefined ? {} : { consoleTimezone }),
     ...(agentTimeoutSec === undefined ? {} : { agentTimeoutSec }),
+    workspaceReclamation: {
+      enabled: workspaceReclamationEnabled,
+      minimumAgeSec: workspaceMinimumAgeSec,
+    },
+    artifactRetention: {
+      enabled: artifactRetentionEnabled,
+      maximumAgeSec: artifactMaximumAgeSec,
+      maximumTotalBytes: artifactMaximumTotalBytes,
+    },
     agentRetries,
     allowedAuthors,
     agents,

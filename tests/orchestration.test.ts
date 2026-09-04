@@ -1,11 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { FakeExecutor } from "../src/agent/fake.js";
 import { recordRunningCancellation } from "../src/orchestrator/cancellation.js";
-import { DataDirectoryLock, InstanceLockError } from "../src/orchestrator/instance-lock.js";
+import {
+  DataDirectoryLock,
+  InstanceLockError,
+  parseLockClaim,
+} from "../src/orchestrator/instance-lock.js";
+import { createShutdownHandler } from "../src/index.js";
 import { JobQueue, type QueuedWork } from "../src/orchestrator/queue.js";
 import { Store } from "../src/store/db.js";
 import { JobStore } from "../src/store/jobs.js";
@@ -300,6 +307,124 @@ test("second instance using the same data directory refuses to start", () => {
   }
   const afterRelease = DataDirectoryLock.acquire(dataDir);
   afterRelease.release();
+});
+
+test("lock claims use a parseable owner record and reject legacy or garbage claims", () => {
+  assert.deepEqual(parseLockClaim(JSON.stringify({ pid: process.pid })), { pid: process.pid });
+  assert.equal(parseLockClaim(`${process.pid}\n`), undefined);
+  assert.equal(parseLockClaim("garbage"), undefined);
+});
+
+test("dead lock claims are reclaimed while the current process remains protected", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-lock-stale-"));
+  const claimPath = join(dataDir, ".gremlyn.lock");
+  writeFileSync(claimPath, JSON.stringify({ pid: 999_999_999 }) + "\n", "utf8");
+  const reclaimed = DataDirectoryLock.acquire(dataDir);
+  try {
+    assert.deepEqual(JSON.parse(readFileSync(claimPath, "utf8")), { pid: process.pid });
+    assert.throws(
+      () => DataDirectoryLock.acquire(dataDir),
+      (error: unknown) =>
+        error instanceof InstanceLockError && error.message.includes(`pid ${process.pid}`),
+    );
+  } finally {
+    reclaimed.release();
+    reclaimed.release();
+  }
+});
+
+test("a second shutdown request releases ownership before escalating to exit", async () => {
+  const events: string[] = [];
+  const closing = deferred<void>();
+  const stop = createShutdownHandler({
+    clearTimer: () => events.push("clear-timer"),
+    endStreams: () => events.push("end-streams"),
+    closeConsole: () => closing.promise,
+    closeStore: () => events.push("close-store"),
+    release: () => events.push("release"),
+    exit: (code) => events.push(`exit:${code}`),
+  });
+  const first = stop();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await stop();
+  assert.deepEqual(events, ["clear-timer", "end-streams", "release", "exit:1"]);
+  closing.resolve(undefined);
+  await first;
+});
+
+test("startup failure after claiming the data directory releases the claim", () => {
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-startup-failure-"));
+  const dataDir = join(root, "data");
+  const configPath = join(root, "gremlyn.yaml");
+  const runner = join(root, "run-main.mjs");
+  writeFileSync(
+    configPath,
+    [
+      `data_dir: ${JSON.stringify(dataDir)}`,
+      "github:",
+      "  token_env: TEST_GITHUB_TOKEN",
+      "  orchestrator_login: gremlyn-bot",
+      "git:",
+      "  author_name: Test",
+      "  author_email: test@example.com",
+      "console:",
+      "  token_env: TEST_CONSOLE_TOKEN",
+      "allowed_authors: [operator]",
+      "agents:",
+      "  cline:",
+      "    binary: cline",
+      `    credential_source: ${JSON.stringify(join(root, "missing-credentials"))}`,
+      "    efforts: [high]",
+      "repositories: []",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    runner,
+    `import { main } from ${JSON.stringify(pathToFileURL(join(process.cwd(), "src/index.ts")).href)};\n` +
+      "main([process.argv[2]]).catch((error) => { process.stderr.write(String(error) + '\\n'); process.exitCode = 1; });\n",
+    "utf8",
+  );
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", runner, configPath], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        TEST_GITHUB_TOKEN: "github-fixture",
+        TEST_CONSOLE_TOKEN: "console-fixture",
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(existsSync(join(dataDir, ".gremlyn.lock")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an uncaught timer error releases the claim before the child exits", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-crash-"));
+  const runner = join(dataDir, "throw.mjs");
+  writeFileSync(
+    runner,
+    `import { DataDirectoryLock } from ${JSON.stringify(pathToFileURL(join(process.cwd(), "src/orchestrator/instance-lock.ts")).href)};\n` +
+      `import { installLockSafetyHandlers } from ${JSON.stringify(pathToFileURL(join(process.cwd(), "src/index.ts")).href)};\n` +
+      `const lock = DataDirectoryLock.acquire(${JSON.stringify(dataDir)});\n` +
+      "installLockSafetyHandlers(lock);\n" +
+      "setTimeout(() => { throw new Error('timer-crash'); }, 10);\n",
+    "utf8",
+  );
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(existsSync(join(dataDir, ".gremlyn.lock")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 function createJobFixture() {

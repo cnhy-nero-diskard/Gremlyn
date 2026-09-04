@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type RepoConfig } from "../src/config/loader.js";
@@ -28,6 +28,7 @@ import {
   bootstrapConfig,
   checkPrerequisites,
   setup,
+  unlockDataDirectory,
   verifyConfig,
 } from "../src/setup/flows.js";
 import {
@@ -36,11 +37,12 @@ import {
   isPathInside,
   realVerificationEnvironment,
 } from "../src/setup/verify.js";
-import { HELP } from "../src/setup/cli.js";
+import { HELP, runCli } from "../src/setup/cli.js";
 import { FakeExecutor } from "../src/agent/fake.js";
 import { EXECUTOR_FACTORIES } from "../src/agent/registry.js";
 import { createTempRepo } from "./helpers/gitrepo.js";
 import { git } from "../src/workspace/gitops.js";
+import { DataDirectoryLock } from "../src/orchestrator/instance-lock.js";
 
 const ENV = {
   GREMLYN_GITHUB_TOKEN: "github-placeholder",
@@ -185,6 +187,7 @@ test("CLI help names every setup subcommand and supported flag", () => {
     "--owner",
     "--name",
     "--workspace-root",
+    "--adopt-worktree",
     "--agent",
     "--provider",
     "--model",
@@ -196,8 +199,51 @@ test("CLI help names every setup subcommand and supported flag", () => {
     "--enabled",
     "--disabled",
     "--example",
+    "unlock",
+    "reclaim",
+    "--preview",
+    "--apply",
   ]) {
     assert.ok(HELP.includes(text), `help is missing ${text}`);
+  }
+});
+
+test("unlock removes dead claims and requires explicit confirmation for live owners", async () => {
+  const root = tempRoot();
+  const output = outputCollector();
+  try {
+    const deadDir = join(root, "dead");
+    const deadLock = join(deadDir, ".gremlyn.lock");
+    mkdirSync(deadDir, { recursive: true });
+    writeFileSync(deadLock, JSON.stringify({ pid: 999_999_999 }), "utf8");
+    const dead = await unlockDataDirectory({ dataDir: deadDir, out: output.out });
+    assert.equal(dead.removed, true);
+    assert.equal(existsSync(deadLock), false);
+
+    const declinedDir = join(root, "declined");
+    const declinedLock = DataDirectoryLock.acquire(declinedDir);
+    try {
+      const declined = await unlockDataDirectory({
+        dataDir: declinedDir,
+        out: output.out,
+        input: { isTTY: true, ask: async () => "n" },
+      });
+      assert.equal(declined.removed, false);
+      assert.equal(existsSync(join(declinedDir, ".gremlyn.lock")), true);
+    } finally {
+      declinedLock.release();
+    }
+
+    const confirmedDir = join(root, "confirmed");
+    const confirmedLock = DataDirectoryLock.acquire(confirmedDir);
+    try {
+      assert.equal(await runCli(["unlock", confirmedDir, "--yes"]), 0);
+      assert.equal(existsSync(join(confirmedDir, ".gremlyn.lock")), false);
+    } finally {
+      confirmedLock.release();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

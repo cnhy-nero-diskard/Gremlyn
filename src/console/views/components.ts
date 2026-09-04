@@ -45,18 +45,96 @@ export function relativeTimestamp(value: string | null | undefined, now = Date.n
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** `2026-08-28T18:05:44.524Z` → `18:05:44`, the part that varies while watching. */
-export function clockTime(at: string): string {
-  const match = /T(\d{2}:\d{2}:\d{2})/u.exec(at);
-  return match ? (match[1] ?? at) : at;
+export type TimeDisplay = "clock" | "relative" | "elapsed";
+
+function resolvedTimeZone(timeZone?: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", timeZone ? { timeZone } : {}).resolvedOptions()
+      .timeZone;
+  } catch {
+    return timeZone ?? "unknown";
+  }
 }
 
-export function keyValueTable(values: Record<string, unknown>): string {
+function localTime(at: string, timeZone: string | undefined, fractional: boolean): string {
+  const date = new Date(at);
+  if (!Number.isFinite(date.getTime())) return at;
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+      ...(fractional ? { fractionalSecondDigits: 3 as const } : {}),
+      ...(timeZone ? { timeZone } : {}),
+    }).format(date);
+  } catch {
+    return at;
+  }
+}
+
+/** Format an instant in the host zone, or in the configured console zone. */
+export function clockTime(at: string, timeZone?: string): string {
+  return localTime(at, timeZone, false);
+}
+
+/** Format a log instant while preserving milliseconds when the input carries them. */
+export function logClock(at: string, timeZone?: string): string {
+  return localTime(at, timeZone, /\.\d{1,3}Z$/u.test(at));
+}
+
+export interface TimeElementOptions {
+  end?: string | null | undefined;
+  timeZone?: string | undefined;
+}
+
+/** Render a timestamp with its exact instant and the client-refresh format. */
+export function timeElement(
+  value: string | null | undefined,
+  format: TimeDisplay,
+  text: string,
+  options: TimeElementOptions = {},
+): string {
+  if (!value) return escapeHtml(text);
+  const at = escapeHtml(value);
+  const zone = format === "clock" ? resolvedTimeZone(options.timeZone) : undefined;
+  const attrs = [
+    `data-console-time`,
+    `data-time-format="${format}"`,
+    `datetime="${at}"`,
+    `title="${at}"`,
+    ...(zone ? [`data-time-zone="${escapeHtml(zone)}"`] : []),
+    ...(format === "elapsed" && options.end ? [`data-time-end="${escapeHtml(options.end)}"`] : []),
+  ].join(" ");
+  return `<time ${attrs}>${escapeHtml(text)}</time>`;
+}
+
+export function relativeTimeElement(value: string | null | undefined, now = Date.now()): string {
+  return timeElement(value, "relative", relativeTimestamp(value, now));
+}
+
+export function elapsedTimeElement(
+  start: string | null | undefined,
+  end: string | null | undefined,
+  now = Date.now(),
+): string {
+  return timeElement(start, "elapsed", duration(start, end, now), { end });
+}
+
+export function keyValueTable(
+  values: Record<string, unknown>,
+  renderValue?: (key: string, value: unknown) => string | undefined,
+): string {
   return `<dl class="kv">${Object.entries(values)
-    .map(
-      ([key, value]) =>
-        `<div><dt>${escapeHtml(key)}</dt><dd>${value === null || value === undefined || value === "" ? '<span class="muted">—</span>' : escapeHtml(value)}</dd></div>`,
-    )
+    .map(([key, value]) => {
+      const rendered = renderValue?.(key, value);
+      const body =
+        rendered ??
+        (value === null || value === undefined || value === ""
+          ? '<span class="muted">—</span>'
+          : escapeHtml(value));
+      return `<div><dt>${escapeHtml(key)}</dt><dd>${body}</dd></div>`;
+    })
     .join("")}</dl>`;
 }
 
@@ -68,14 +146,14 @@ export function dangerZone(repoId: number, defaultPr: number): string {
 export function timelineStepper(
   entries: StatusTimelineEntry[],
   finishedAt?: string | null,
+  timeZone?: string,
 ): string {
   return `<ol class="timeline">${
     entries
       .map((entry, index) => {
         const next = entries[index + 1];
-        const at = escapeHtml(entry.at);
         // The date repeats on every row; the clock is the part that varies.
-        return `<li>${statusPill(entry.status)}<time datetime="${at}" title="${at}">${escapeHtml(clockTime(entry.at))}</time><span class="muted">${duration(entry.at, next?.at ?? finishedAt)}</span></li>`;
+        return `<li>${statusPill(entry.status)}${timeElement(entry.at, "clock", clockTime(entry.at, timeZone), { timeZone })}<span class="muted">${elapsedTimeElement(entry.at, next?.at ?? finishedAt)}</span></li>`;
       })
       .join("") || '<li class="muted">No status events recorded.</li>'
   }</ol>`;
@@ -92,7 +170,7 @@ export function validationTable(runs: ValidationRun[]): string {
     runs
       .map(
         (run) =>
-          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary><pre>${escapeHtml(run.output)}</pre></details></td></tr>`,
+          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details></td></tr>`,
       )
       .join("") || '<tr><td colspan="4" class="muted">No validation runs recorded.</td></tr>';
   return `<table class="validation-table"><thead><tr><th>Command</th><th>Exit code</th><th>Duration</th><th>Output</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -109,6 +187,21 @@ function displayCommand(command: string): string {
   }
 }
 
+function artifactOutput(
+  label: string,
+  reference: string | null,
+  retained: boolean,
+  output: string,
+): string {
+  if (reference !== null && !retained) {
+    return `<p class="artifact-not-retained muted">${escapeHtml(label)} is no longer retained by the disk policy.</p>`;
+  }
+  if (reference === null) {
+    return `<p class="artifact-not-retained muted">No ${escapeHtml(label.toLowerCase())} was captured.</p>`;
+  }
+  return `<pre>${escapeHtml(output)}</pre>`;
+}
+
 /**
  * One attempt as a card rather than a fourteen-row key/value dump.
  *
@@ -119,36 +212,41 @@ function displayCommand(command: string): string {
  */
 export function attemptCard(
   attempt: AttemptDetail,
-  options: { showActivity?: boolean } = {},
+  options: { showActivity?: boolean; timeZone?: string | undefined } = {},
 ): string {
-  const head = `<div class="attempt-head"><h3>Attempt ${attempt.attempt_number}</h3>${statusPill(attempt.outcome ?? "pending")}<span class="muted attempt-elapsed">${duration(attempt.started_at, attempt.ended_at)}</span></div>`;
+  const head = `<div class="attempt-head"><h3>Attempt ${attempt.attempt_number}</h3>${statusPill(attempt.outcome ?? "pending")}${attempt.adopted ? '<span class="chip adoption-marker">adopted checkout</span>' : ""}<span class="muted attempt-elapsed">${elapsedTimeElement(attempt.started_at, attempt.ended_at)}</span></div>`;
   const spec = `<p class="attempt-spec"><span class="chip">${escapeHtml(attempt.agent)}</span><span class="chip">${escapeHtml(attempt.model)}</span><span class="chip">${escapeHtml(attempt.effort)}</span></p>`;
   const failure = attempt.failure_reason
     ? `<p class="attempt-failure"><strong>${escapeHtml(attempt.failure_stage ?? "failed")}</strong> ${escapeHtml(attempt.failure_reason)}</p>`
     : "";
-  const facts = keyValueTable({
-    Workspace: attempt.workspace_path ?? "not prepared",
-    Commit: attempt.commit_sha ?? "none",
-    Reporting: attempt.report_status ?? "pending",
-    "Exit code": attempt.agent_exit_code,
-    Pushed: attempt.pushed === 1 ? "yes" : "no",
-    Uncommitted: attempt.has_uncommitted_changes === 1 ? "yes" : "no",
-    Started: attempt.started_at,
-    Ended: attempt.ended_at,
-    "Head SHA at prepare": attempt.head_sha_at_prepare,
-  });
+  const facts =
+    keyValueTable({
+      Workspace: attempt.workspace_path ?? "not prepared",
+      Commit: attempt.commit_sha ?? "none",
+      Reporting: attempt.report_status ?? "pending",
+      "Exit code": attempt.agent_exit_code,
+      Pushed: attempt.pushed === 1 ? "yes" : "no",
+      Uncommitted: attempt.has_uncommitted_changes === 1 ? "yes" : "no",
+      "Head SHA at prepare": attempt.head_sha_at_prepare,
+    }) +
+    keyValueTable(
+      {
+        Started: attempt.started_at,
+        Ended: attempt.ended_at,
+      },
+      (key, value) =>
+        (key === "Started" || key === "Ended") && typeof value === "string"
+          ? timeElement(value, "clock", clockTime(value, options.timeZone), {
+              timeZone: options.timeZone,
+            })
+          : undefined,
+    );
   const transcript =
     options.showActivity === false
       ? ""
-      : `<details class="activity-fold"><summary>Agent transcript</summary>${agentActivity(attempt.activity)}</details>`;
-  const output = `<details><summary>Raw agent output</summary><pre>${escapeHtml(attempt.output)}</pre></details>`;
+      : `<details class="activity-fold"><summary>Agent transcript</summary>${agentActivity(attempt.activity, "", options.timeZone)}</details>`;
+  const output = `<details><summary>Raw agent output</summary>${artifactOutput("Captured agent output", attempt.output_ref, attempt.outputRetained, attempt.output)}</details>`;
   return `<article class="attempt">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
-}
-
-/** `2026-08-28T17:53:05.254Z` → `17:53:05.254`, the part that varies while watching. */
-function logClock(at: string): string {
-  const match = /T(\d{2}:\d{2}:\d{2})(\.\d{1,3})?/u.exec(at);
-  return match ? `${match[1]}${match[2] ?? ""}` : at;
 }
 
 /** Render one field value compactly; objects and arrays stay on a single line. */
@@ -225,14 +323,18 @@ function toolParts(text: string): { name: string; input: string } {
  * An unfinished block is marked as still being written, because a transcript
  * that simply stops is indistinguishable from a stalled agent.
  */
-export function agentActivity(activity: AgentActivity | null, controls = ""): string {
+export function agentActivity(
+  activity: AgentActivity | null,
+  controls = "",
+  timeZone?: string,
+): string {
   const bar = (inner: string): string =>
     `<div class="activity-summary"><span class="muted">${inner}</span>${controls}</div>`;
   if (!activity || activity.blocks.length === 0) {
     return `${bar("No agent activity captured yet.")}`;
   }
   const summary = bar(
-    `<span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${escapeHtml(clockTime(activity.updatedAt))}`,
+    `<span class="activity-stat">${String(activity.iterations)}</span> iteration${activity.iterations === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.toolCalls)}</span> tool call${activity.toolCalls === 1 ? "" : "s"} · <span class="activity-stat">${String(activity.blocks.length)}</span> step${activity.blocks.length === 1 ? "" : "s"} · updated ${timeElement(activity.updatedAt, "clock", clockTime(activity.updatedAt, timeZone), { timeZone })}`,
   );
   const lastSeq = activity.blocks[activity.blocks.length - 1]?.seq;
   const blocks = activity.blocks
@@ -246,7 +348,7 @@ export function agentActivity(activity: AgentActivity | null, controls = ""): st
       const latest = block.seq === lastSeq ? " open" : "";
       const head =
         `<span class="activity-kind">${escapeHtml(label)}</span>` +
-        `<time class="activity-time" datetime="${escapeHtml(block.at)}">${escapeHtml(clockTime(block.at))}</time>` +
+        timeElement(block.at, "clock", clockTime(block.at, timeZone), { timeZone }) +
         pending;
       const shell = (inner: string): string =>
         `<li class="activity-block activity-${escapeHtml(block.kind)}${open}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;
@@ -273,12 +375,12 @@ export function agentActivity(activity: AgentActivity | null, controls = ""): st
   return `${summary}<ol class="activity-stream" data-scroll-keep="activity">${blocks}</ol>`;
 }
 
-export function logEntries(logs: LogRow[]): string {
+export function logEntries(logs: LogRow[], timeZone?: string): string {
   return (
     logs
       .map((log) => {
         const level = log.level.toLowerCase();
-        return `<article class="log-line log-${escapeHtml(level.replace(/[^a-z]/gu, ""))}" data-log-entry data-level="${escapeHtml(log.level)}"><time class="log-time" datetime="${escapeHtml(log.at)}" title="${escapeHtml(log.at)}">${escapeHtml(logClock(log.at))}</time><span class="log-level">${escapeHtml(level)}</span><span class="log-body"><span class="log-event">${escapeHtml(log.event)}</span>${logFields(log.fields)}</span></article>`;
+        return `<article class="log-line log-${escapeHtml(level.replace(/[^a-z]/gu, ""))}" data-log-entry data-level="${escapeHtml(log.level)}">${timeElement(log.at, "clock", logClock(log.at, timeZone), { timeZone })}<span class="log-level">${escapeHtml(level)}</span><span class="log-body"><span class="log-event">${escapeHtml(log.event)}</span>${logFields(log.fields)}</span></article>`;
       })
       .join("") || '<p class="muted">No structured log entries.</p>'
   );

@@ -4,7 +4,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store/db.js";
-import { syncRepositories } from "../src/runtime/repositories.js";
+import {
+  reportRepositoryProviderMismatches,
+  syncRepositories,
+} from "../src/runtime/repositories.js";
 import { setRepositoryModelProvider } from "../src/console/mutations.js";
 import type { RepoConfig } from "../src/config/loader.js";
 
@@ -45,13 +48,52 @@ test("syncRepositories keeps an operator's model/provider/effort choice across a
   assert.equal(update.ok, true);
 
   // The process restarts; the config file on disk still says "luna".
-  const [resynced] = syncRepositories(store.db, [config({ sourcePath: "/src/widgets-moved" })]);
+  const [resynced] = syncRepositories(
+    store.db,
+    [
+      config({
+        sourcePath: "/src/widgets-moved",
+        provider: "configured-provider",
+        model: "configured-model",
+      }),
+    ],
+  );
   assert.ok(resynced);
   assert.equal(resynced.provider, "cline");
   assert.equal(resynced.model, "moonshotai/kimi-k3");
   assert.equal(resynced.effort, "medium");
   // Non-operator-editable fields still follow the config file.
   assert.equal(resynced.sourcePath, "/src/widgets-moved");
+});
+
+test("startup mismatch reporting leaves the persisted provider and model untouched", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-runtime-provider-mismatch-"));
+  const store = new Store({ dataDir, file: ":memory:" });
+  const [repository] = syncRepositories(
+    store.db,
+    [config({ agent: "cline", provider: "opencode", model: "opencode/gpt-5.4" })],
+  );
+  assert.ok(repository);
+  const warnings: Array<{ event: string; fields: Record<string, unknown> }> = [];
+  const count = reportRepositoryProviderMismatches(
+    [repository],
+    {
+      cline: {
+        id: "cline",
+        kind: "cline",
+        binary: "cline",
+        efforts: ["high"],
+        credentialSource: "/tmp/cline",
+        credentialFiles: [],
+      },
+    },
+    { warn: (event, fields) => warnings.push({ event, fields }) },
+  );
+  assert.equal(count, 1);
+  assert.equal(warnings[0]?.event, "repository provider mismatch");
+  assert.equal(warnings[0]?.fields.provider, "opencode");
+  assert.equal(repository.provider, "opencode");
+  assert.equal(repository.model, "opencode/gpt-5.4");
 });
 
 test("syncRepositories seeds provider/model/effort from config for a brand-new repository", () => {

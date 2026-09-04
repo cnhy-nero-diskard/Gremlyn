@@ -16,6 +16,23 @@ poll_interval_seconds: 60
 # Maximum number of agent attempts running simultaneously.
 concurrency: 2
 
+# Automatic cleanup is disabled by default. When enabled, only clean,
+# deterministic pr-N workspaces with no active job and older than this age are
+# removed. Preview the decisions before enabling it with:
+# npm run setup -- reclaim --preview
+workspace_reclamation:
+  enabled: false
+  minimum_age_seconds: 604800
+
+# Captured output, validation files, and per-attempt agent state are retained
+# by default. When enabled, terminal-job artifacts older than the age or beyond
+# the total-size ceiling are trimmed oldest-first; live-job artifacts are never
+# removed.
+artifact_retention:
+  enabled: false
+  maximum_age_seconds: 2592000
+  maximum_total_bytes: 1073741824
+
 github:
   # Name of the environment variable holding the GitHub token.
   # The token value itself NEVER appears in this file.
@@ -37,6 +54,8 @@ console:
   port: 4780
   # Name of the environment variable holding the console auth token.
   token_env: GREMLYN_CONSOLE_TOKEN
+  # Optional IANA timezone for wall-clock values; omitted uses the host zone.
+  # timezone: Asia/Taipei
 
 agent_defaults:
   # Initial per-repository timeout in seconds. 0 means no limit; the live
@@ -97,6 +116,9 @@ repositories:
     # Root under which per-PR disposable isolated checkouts are created.
     # Must not be inside the source repository.
     workspace_root: D:/code/gremlyn-workspaces/your-repo
+    # Adoption is opt-in: a clean foreign checkout may be used when the branch
+    # is already held elsewhere. Leave false to preserve workspace isolation.
+    adopt_worktree: false
     agent: cline
     provider: your-provider
     model: your-provider/lune-5.6
@@ -123,6 +145,7 @@ repositories:
     name: your-opencode-repo
     source_path: D:/code/your-opencode-repo
     workspace_root: D:/code/gremlyn-workspaces/your-opencode-repo
+    adopt_worktree: false
     agent: opencode
     # No `provider` field: OpenCode folds the provider into the model id
     # (`provider/model`) instead of taking it as a separate argument, so it

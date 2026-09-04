@@ -12,13 +12,20 @@ import { commandsView, auditView } from "./views/commands.js";
 import {
   repositoryAgent,
   repositoryExists,
+  setRepositoryEffort,
   setRepositoryModel,
   setRepositoryModelProvider,
   setRepositoryProvider,
   setRepositoryTimeout,
   toggleRepository,
 } from "./mutations.js";
-import { openSseStream, SharedChangeTicker } from "./stream.js";
+import {
+  openSseStream,
+  SharedChangeTicker,
+  type StreamEnd,
+  type StreamRegistrar,
+  type StreamChange,
+} from "./stream.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 
 export interface ConsoleActions {
@@ -37,6 +44,8 @@ export interface ConsoleOptions {
   concurrency?: number;
   /** Where attempt output and activity snapshots live; used for live tailing. */
   dataDir?: string;
+  /** Optional IANA timezone used for server-rendered wall-clock values. */
+  timezone?: string | undefined;
   providerCatalog?: ProviderCatalog;
   /**
    * The configured agent definitions, keyed by the agent id repositories
@@ -45,6 +54,10 @@ export interface ConsoleOptions {
    * kind and declared tiers, not from one global setting.
    */
   agents?: Record<string, AgentDefinition>;
+}
+export interface ConsoleServer extends FastifyInstance {
+  endLiveUpdateStreams(): void;
+  readonly liveUpdateStreamCount: number;
 }
 /** Agent-aware defaults for a repository with no matching definition. */
 function agentOptionsFor(
@@ -64,8 +77,21 @@ export function consoleListenOptions(input: { host?: string; port: number }): {
   return { host: input.host ?? "127.0.0.1", port: input.port };
 }
 
-export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
-  const app = Fastify({ logger: false });
+export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
+  const app = Fastify({ logger: false }) as unknown as ConsoleServer;
+  const liveStreams = new Set<StreamEnd>();
+  const registerStream: StreamRegistrar = (end) => {
+    liveStreams.add(end);
+    return () => liveStreams.delete(end);
+  };
+  app.endLiveUpdateStreams = (): void => {
+    for (const end of [...liveStreams]) end();
+  };
+  Object.defineProperty(app, "liveUpdateStreamCount", {
+    configurable: false,
+    enumerable: false,
+    get: () => liveStreams.size,
+  });
   const providerCatalog = options.providerCatalog ?? new ProviderCatalog();
   const queries: ConsoleQueries = createConsoleQueries({
     db: options.db,
@@ -136,18 +162,21 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
             queries.readDashboard(),
             providerCatalog.snapshot(),
             options.agents,
+            options.timezone,
           ),
           { stream: "/stream", wide: true },
         ),
       ),
   );
   app.get<{ Querystring: { snapshot?: string } }>("/stream", async (request, reply) => {
-    const fragments = () => {
+    const fragments = (change: StreamChange) => {
       const regions = dashboardRegions(
         queries.readDashboard(),
         providerCatalog.snapshot(),
         options.agents,
+        options.timezone,
       );
+      if (change.kind === "heartbeat") return { "health-region": regions.health };
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -160,18 +189,21 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       response: reply.raw,
       ticker,
       event: "dashboard-update",
-      initial: fragments(),
+      initial: fragments({ sequence: 0, kind: "change" }),
       render: fragments,
       snapshot: request.query.snapshot === "1",
+      register: registerStream,
     });
   });
   app.get<{ Querystring: { snapshot?: string } }>("/dashboard/stream", async (request, reply) => {
-    const fragments = () => {
+    const fragments = (change: StreamChange) => {
       const regions = dashboardRegions(
         queries.readDashboard(),
         providerCatalog.snapshot(),
         options.agents,
+        options.timezone,
       );
+      if (change.kind === "heartbeat") return { "health-region": regions.health };
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -184,9 +216,10 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       response: reply.raw,
       ticker,
       event: "dashboard-update",
-      initial: fragments(),
+      initial: fragments({ sequence: 0, kind: "change" }),
       render: fragments,
       snapshot: request.query.snapshot === "1",
+      register: registerStream,
     });
   });
   app.get<{ Params: { id: string } }>("/jobs/:id", async (request, reply) => {
@@ -198,7 +231,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       .send(
         layout(
           `Job ${id} · ${model.job.owner}/${model.job.name} PR #${String(model.job.pr_number)}`,
-          jobView(model),
+          jobView(model, options.timezone),
           { stream: `/jobs/${id}/stream`, wide: true },
         ),
       );
@@ -209,9 +242,10 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       const id = positiveInteger(request.params.id);
       const model = queries.readJobDetail(id);
       if (!model) return reply.code(404).send({ error: "job-not-found" });
-      const fragments = () => {
+      const fragments = (change: StreamChange) => {
+        if (change.kind === "heartbeat") return {};
         const current = queries.readJobDetail(id);
-        return current ? jobRegions(current) : {};
+        return current ? jobRegions(current, options.timezone) : {};
       };
       reply.hijack();
       openSseStream({
@@ -219,9 +253,10 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
         response: reply.raw,
         ticker,
         event: "job-update",
-        initial: jobRegions(model),
+        initial: jobRegions(model, options.timezone),
         render: fragments,
         snapshot: request.query.snapshot === "1",
+        register: registerStream,
       });
     },
   );
@@ -231,13 +266,62 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
   app.get("/commands", async (_request, reply) =>
     reply
       .type("text/html")
-      .send(layout("Command ingestion", commandsView(queries.readProcessedCommands()))),
+      .send(
+        layout(
+          "Command ingestion",
+          `<div id="commands-region">${commandsView(queries.readProcessedCommands(), options.timezone)}</div>`,
+          { stream: "/commands/stream" },
+        ),
+      ),
+  );
+  app.get<{ Querystring: { snapshot?: string } }>(
+    "/commands/stream",
+    async (request, reply) => {
+      const render = (change: StreamChange) =>
+        change.kind === "heartbeat"
+          ? {}
+          : { "commands-region": commandsView(queries.readProcessedCommands(), options.timezone) };
+      reply.hijack();
+      openSseStream({
+        request: request.raw,
+        response: reply.raw,
+        ticker,
+        event: "commands-update",
+        initial: render({ sequence: 0, kind: "change" }),
+        render,
+        snapshot: request.query.snapshot === "1",
+        register: registerStream,
+      });
+    },
   );
   app.get("/audit", async (_request, reply) =>
     reply
       .type("text/html")
-      .send(layout("Operator audit", auditView(queries.readOperatorActions()))),
+      .send(
+        layout(
+          "Operator audit",
+          `<div id="audit-region">${auditView(queries.readOperatorActions(), options.timezone)}</div>`,
+          { stream: "/audit/stream" },
+        ),
+      ),
   );
+  app.get<{ Querystring: { snapshot?: string } }>("/audit/stream", async (request, reply) => {
+    const render = (change: StreamChange) =>
+      change.kind === "heartbeat"
+        ? {}
+        : { "audit-region": auditView(queries.readOperatorActions(), options.timezone) };
+    reply.hijack();
+    openSseStream({
+      request: request.raw,
+      response: reply.raw,
+      ticker,
+      event: "audit-update",
+      initial: render({ sequence: 0, kind: "change" }),
+      render,
+      snapshot: request.query.snapshot === "1",
+      register: registerStream,
+    });
+  });
   app.post<{ Params: { id: string } }>("/jobs/:id/retry", async (request, reply) => {
     const id = positiveInteger(request.params.id);
     if (!options.actions?.retry) return reply.code(501).send({ error: "retry-unavailable" });
@@ -357,6 +441,26 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       effort: result.effort,
     });
   });
+  app.post<{ Params: { id: string }; Body: { effort?: string } }>(
+    "/repos/:id/effort",
+    async (request, reply) => {
+      const id = positiveInteger(request.params.id);
+      const effort = request.body?.effort;
+      if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
+      const { efforts } = agentOptionsFor(options.agents, repositoryAgent(options.db, id));
+      const result = setRepositoryEffort(options.db, id, effort, efforts);
+      if (!result.ok) {
+        return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
+      }
+      options.operatorActions.record({
+        action: "repository-effort",
+        target: `repository:${id}`,
+        effect: result.effort,
+      });
+      await options.actions?.repositorySettingsChanged?.(id);
+      return reply.send({ ok: true, effort: result.effort });
+    },
+  );
   app.post<{ Params: { id: string }; Body: { timeoutSeconds?: unknown } }>(
     "/repos/:id/timeout",
     async (request, reply) => {
@@ -396,7 +500,12 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       }
     },
   );
-  app.addHook("onClose", async () => ticker.stop());
+  app.addHook("preClose", async () => {
+    app.endLiveUpdateStreams();
+  });
+  app.addHook("onClose", async () => {
+    ticker.stop();
+  });
   return app;
 }
 function cookie(token: string): string {

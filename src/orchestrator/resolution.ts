@@ -18,6 +18,7 @@ import type { GitHubClient } from "../github/client.js";
 import type { CommandRegistry } from "../ingest/commands.js";
 import type { Logger } from "../log/logger.js";
 import { createRedactor } from "../log/redact.js";
+import type { OperatorActionStore } from "../store/actions.js";
 import { publishIfEligible } from "../publish/policy.js";
 import { reportAttemptOutcome } from "../publish/report.js";
 import { JobStore, type AttemptRow } from "../store/jobs.js";
@@ -32,7 +33,11 @@ import type {
 import { inspectWorkspace } from "../validate/inspection.js";
 import { runValidationCommands } from "../validate/runner.js";
 import { statusEntries } from "../workspace/gitops.js";
-import { prepareWorkspace, workspacePathFor } from "../workspace/worktree.js";
+import {
+  prepareWorkspace,
+  workspacePathFor,
+  type AdoptionClaimHandle,
+} from "../workspace/worktree.js";
 import {
   agentFailureReason,
   isAgentAuthenticationFailure,
@@ -75,8 +80,7 @@ function canResumeRetainedWorkspace(
   return (
     attempt.outcome === "failed" &&
     attempt.failure_stage === "running" &&
-    (attempt.failure_reason === "agent-timeout" ||
-      attempt.failure_reason === "agent-nonzero-exit")
+    (attempt.failure_reason === "agent-timeout" || attempt.failure_reason === "agent-nonzero-exit")
   );
 }
 
@@ -112,6 +116,8 @@ export interface QueuedJob {
 
 export interface RuntimeRepository extends RepoConfig {
   id: number;
+  /** Durable operator-selected provider, alongside model and effort. */
+  provider: string;
   /** Undefined means the agent may run until it exits or is cancelled. */
   timeoutSec?: number;
 }
@@ -134,6 +140,7 @@ export interface ResolutionOrchestratorOptions {
   secrets: readonly string[];
   concurrency: number;
   commitAuthor: { name: string; email: string };
+  operatorActions?: Pick<OperatorActionStore, "record">;
 }
 
 export class ResolutionOrchestrator {
@@ -152,10 +159,7 @@ export class ResolutionOrchestrator {
     this.repositories.set(repository.id, repository);
   }
 
-  async handleEvent(
-    repository: RuntimeRepository,
-    event: NormalizedEvent,
-  ): Promise<QueuedJob[]> {
+  async handleEvent(repository: RuntimeRepository, event: NormalizedEvent): Promise<QueuedJob[]> {
     this.options.logger.info("event observed", { repository: repository.id, pr: event.prNumber });
     const commands = this.options.registry.detect(event.body);
     const queued: QueuedJob[] = [];
@@ -364,6 +368,7 @@ export class ResolutionOrchestrator {
     let stage: FailureStage = "preparing";
     let workspacePath: string | undefined;
     let attemptDataDir: string | undefined;
+    let adoptionClaim: AdoptionClaimHandle | undefined;
     try {
       this.jobs.setStatus(jobId, stage, attemptId);
       await this.reactToStatus(repository, commentId, stage);
@@ -391,10 +396,21 @@ export class ResolutionOrchestrator {
             workspacePathFor(repository.workspaceRoot, prNumber),
           ) &&
           input.retainedWorkspace.headSha === context.headSha,
+        adoptExistingCheckout: repository.adoptWorktree,
+        attemptId,
+        ...(this.options.operatorActions === undefined
+          ? {}
+          : { actions: this.options.operatorActions }),
       });
       workspacePath = workspace.path;
-      this.jobs.recordPreparation(attemptId, workspace.path, workspace.headSha);
-      this.options.logger.info("workspace prepared", { jobId, attemptId, path: workspace.path });
+      adoptionClaim = workspace.adoptionClaim;
+      this.jobs.recordPreparation(attemptId, workspace.path, workspace.headSha, workspace.adopted);
+      this.options.logger.info("workspace prepared", {
+        jobId,
+        attemptId,
+        path: workspace.path,
+        adopted: workspace.adopted,
+      });
 
       stage = "running";
       this.jobs.setStatus(jobId, stage, attemptId);
@@ -673,6 +689,26 @@ export class ResolutionOrchestrator {
       });
       this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       throw failure;
+    } finally {
+      this.releaseAdoptionClaim(adoptionClaim, jobId, attemptId);
+    }
+  }
+
+  private releaseAdoptionClaim(
+    claim: AdoptionClaimHandle | undefined,
+    jobId: number,
+    attemptId: number,
+  ): void {
+    if (!claim) return;
+    try {
+      claim.release();
+    } catch (error) {
+      this.options.logger.warn("adoption claim release failed", {
+        jobId,
+        attemptId,
+        path: claim.path,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

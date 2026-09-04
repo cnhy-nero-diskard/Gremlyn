@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
+import { runInNewContext } from "node:vm";
 import {
   buildConsoleServer,
   consoleListenOptions,
@@ -14,16 +15,24 @@ import { Store } from "../src/store/db.js";
 import { JOB_LOG_TAIL, readHealth, readJobDetail } from "../src/console/queries.js";
 import { SharedChangeTicker } from "../src/console/stream.js";
 import { jobRegions } from "../src/console/views/job.js";
-import { assetHash, clientScriptPath, stylesheetPath } from "../src/console/assets.js";
+import {
+  assetHash,
+  clientScript,
+  clientScriptPath,
+  stylesheetPath,
+} from "../src/console/assets.js";
 import {
   dangerZone,
   duration,
   escapeHtml,
   agentActivity,
+  clockTime,
   keyValueTable,
+  logClock,
   logEntries,
   relativeTimestamp,
   statusPill,
+  timeElement,
 } from "../src/console/views/components.js";
 
 const TOKEN = "console-token";
@@ -166,6 +175,7 @@ test("console defaults to loopback and rejects every route without a token", asy
     { method: "POST" as const, url: `/jobs/${data.jobId}/retry` },
     { method: "POST" as const, url: `/jobs/${data.queuedJobId}/cancel` },
     { method: "POST" as const, url: `/repos/${data.repoId}/toggle` },
+    { method: "POST" as const, url: `/repos/${data.repoId}/effort`, payload: { effort: "high" } },
     { method: "GET" as const, url: "/model-catalog" },
     {
       method: "POST" as const,
@@ -193,6 +203,9 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /no poll recorded/);
   assert.match(response.body, /acme\/widgets/);
   assert.match(response.body, /data-repo-picker/);
+  assert.match(response.body, /data-saved-provider=/);
+  assert.match(response.body, /data-saved-model=/);
+  assert.match(response.body, /data-saved-effort=/);
   assert.match(response.body, /data-repo-effort/);
   assert.match(response.body, /data-repo-timeout/);
   assert.match(response.body, /Blank timeout means no limit/);
@@ -207,6 +220,9 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /Running/);
   assert.match(response.body, /Queued/);
   assert.match(response.body, /Recent successes and failures/);
+  assert.ok(
+    response.body.indexOf('class="health-summary"') > response.body.indexOf('id="health-region"'),
+  );
   assert.match(response.headers["set-cookie"] as string, /HttpOnly/);
   await app.close();
   data.store.close();
@@ -355,10 +371,7 @@ test("the dashboard drives effort tiers and provider semantics from each reposit
   // a Cline card must not present a tier its agent does not support.
   assert.equal((body.match(/<option value="max"/gu) ?? []).length, 1);
   // Only the provider-optional card renders the empty-provider option and flag.
-  assert.equal(
-    (body.match(/None — provider is folded into the model id/gu) ?? []).length,
-    1,
-  );
+  assert.equal((body.match(/None — provider is folded into the model id/gu) ?? []).length, 1);
   assert.equal((body.match(/data-provider-optional/gu) ?? []).length, 1);
   await app.close();
   data.store.close();
@@ -410,14 +423,55 @@ test("the dashboard filters the provider catalog by each repository's agent kind
   // script applies the identical filter when it fetches /model-catalog.
   const catalog = await app.inject({ method: "GET", url: "/model-catalog", headers: AUTH });
   assert.equal(catalog.statusCode, 200);
-  const providers = (
-    catalog.json() as { providers: Array<{ id: string; kinds: string[] }> }
-  ).providers;
+  const providers = (catalog.json() as { providers: Array<{ id: string; kinds: string[] }> })
+    .providers;
   const kindsOf = (id: string) => providers.find((provider) => provider.id === id)?.kinds;
   assert.deepEqual(kindsOf("cline"), ["cline"]);
   assert.deepEqual(kindsOf("cline-pass"), ["cline"]);
   assert.deepEqual(kindsOf("openai-codex"), ["cline"]);
   assert.deepEqual(kindsOf("opencode"), ["opencode"]);
+  await app.close();
+  data.store.close();
+});
+
+test("a persisted provider mismatch stays visible and is not demoted to custom", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.store.db
+    .prepare(
+      "UPDATE repositories SET agent = 'cline', provider = 'opencode', model = 'opencode/gpt-5.4' WHERE id = ?",
+    )
+    .run(data.repoId);
+  const app = buildConsoleServer(data.options);
+  const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(response.statusCode, 200);
+  const card = (response.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/u) ?? [
+    "",
+  ])[0];
+  assert.match(card, /data-provider-mismatch/);
+  assert.match(card, /Provider mismatch/);
+  assert.match(card, /Current provider: opencode/);
+  assert.match(card, /<option value="cline">/);
+  assert.doesNotMatch(card, /value="__custom__" selected/);
+  assert.match(card, /data-saved-provider="opencode"/);
+  assert.match(card, /data-saved-model="opencode\/gpt-5\.4"/);
+  await app.close();
+  data.store.close();
+});
+
+test("a saved model absent from the catalog remains the selected current option", async () => {
+  const data = fixture();
+  data.store.db
+    .prepare("UPDATE repositories SET provider = 'cline', model = 'retired/model-9' WHERE id = ?")
+    .run(data.repoId);
+  const app = buildConsoleServer(data.options);
+  const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(response.statusCode, 200);
+  assert.match(
+    response.body,
+    /<option value="retired\/model-9"[^>]*data-model-tags="CURRENT"[^>]* selected>/u,
+  );
+  assert.match(response.body, /data-saved-model="retired\/model-9"/u);
   await app.close();
   data.store.close();
 });
@@ -452,6 +506,48 @@ test("job detail separates attempts and shows context, failure, output, validati
   assert.equal(response.body.includes(SECRET), false);
   assert.match(response.body, /&lt;script&gt;\[redacted\]&lt;\/script&gt;/);
   await app.close();
+  data.store.close();
+});
+
+test("job detail labels a trimmed captured artifact without losing its reference", async () => {
+  const data = fixture();
+  unlinkSync(data.outputPath);
+  const model = readJobDetail(data.store.db, data.jobId, [SECRET]);
+  assert.ok(model);
+  assert.equal(model.attempts[0]?.output_ref, data.outputPath);
+  assert.equal(model.attempts[0]?.outputRetained, false);
+
+  const app = buildConsoleServer(data.options);
+  const response = await app.inject({
+    method: "GET",
+    url: `/jobs/${data.jobId}`,
+    headers: AUTH,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /Captured agent output is no longer retained by the disk policy\./u);
+  assert.match(response.body, /Raw agent output/u);
+  await app.close();
+  data.store.close();
+});
+
+test("job detail marks an adopted attempt and leaves an ordinary attempt unmarked", () => {
+  const data = fixture();
+  const adoptedPath = join(
+    mkdtempSync(join(tmpdir(), "gremlyn-adopted-console-")),
+    "operator-checkout",
+  );
+  data.store.db
+    .prepare(
+      "UPDATE attempts SET workspace_path = ?, adopted = 1 WHERE id = (SELECT MAX(id) FROM attempts)",
+    )
+    .run(adoptedPath);
+  const model = readJobDetail(data.store.db, data.jobId, [SECRET]);
+  assert.ok(model);
+  assert.equal(model.attempts[0]?.adopted, false);
+  assert.equal(model.attempts[1]?.adopted, true);
+  const html = jobRegions(model)["job-detail-region"];
+  assert.equal((html.match(/adopted checkout/gu) ?? []).length, 1);
+  assert.ok(html.includes(adoptedPath));
   data.store.close();
 });
 
@@ -628,6 +724,80 @@ test("commands and audit views expose outcomes and redacted action details", asy
   data.store.close();
 });
 
+test("command and audit streams deliver newly recorded rows", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const readChange = async (
+    path: string,
+    mutate: () => void,
+  ): Promise<{ kind: string; fragments: Record<string, string> }> => {
+    return await new Promise((resolve, reject) => {
+      const req = httpRequest({
+        host: "127.0.0.1",
+        port: address.port,
+        path,
+        headers: AUTH,
+      });
+      let buffer = "";
+      let initialSeen = false;
+      const timeout = setTimeout(() => {
+        req.destroy();
+        reject(new Error(`stream did not deliver a change: ${path}`));
+      }, 3_000);
+      req.on("response", (response) => {
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          buffer += chunk;
+          const events = buffer.split("\n\n").filter((event) => event.startsWith("event: "));
+          if (!initialSeen && events.length >= 1) {
+            initialSeen = true;
+            mutate();
+          }
+          if (events.length < 2) return;
+          clearTimeout(timeout);
+          const line = events[1]!.split("\n").find((entry) => entry.startsWith("data: "));
+          assert.ok(line);
+          req.destroy();
+          resolve(
+            JSON.parse(line.slice("data: ".length)) as {
+              kind: string;
+              fragments: Record<string, string>;
+            },
+          );
+        });
+        response.on("error", reject);
+      });
+      req.on("error", (error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+      });
+      req.end();
+    });
+  };
+  const command = await readChange("/commands/stream", () => {
+    data.store.db
+      .prepare(
+        "INSERT INTO processed_commands (repo_id, pr_number, comment_id, command, author_login, observed_at, outcome) VALUES (?, 99, 999, 'RESOLVE', 'operator', ?, 'rejected')",
+      )
+      .run(data.repoId, "2026-08-27T00:00:01.000Z");
+  });
+  assert.equal(command.kind, "change");
+  assert.match(command.fragments["commands-region"] ?? "", /<td>999<\/td>/);
+  const audit = await readChange("/audit/stream", () => {
+    data.options.operatorActions.record({
+      action: "stream-test",
+      target: "repository:1",
+      effect: "recorded",
+    });
+  });
+  assert.equal(audit.kind, "change");
+  assert.match(audit.fragments["audit-region"] ?? "", /stream-test/);
+  await app.close();
+  data.store.close();
+});
+
 test("ticker lifecycle is shared and held-open SSE emits a second event on one connection", async () => {
   const data = fixture();
   const ticker = new SharedChangeTicker(data.store.db, 20);
@@ -681,6 +851,221 @@ test("ticker lifecycle is shared and held-open SSE emits a second event on one c
   data.store.close();
 });
 
+test("ticker emits tagged heartbeats without database activity and changes when data moves", async () => {
+  const data = fixture();
+  const ticker = new SharedChangeTicker(data.store.db, 10);
+  const changes: Array<{ kind: string; sequence: number }> = [];
+  const unsubscribe = ticker.subscribe((change) => changes.push(change));
+  const waitForChange = async (count: number): Promise<void> => {
+    const deadline = Date.now() + 1_000;
+    while (changes.filter((change) => change.kind === "change").length < count) {
+      if (Date.now() >= deadline) throw new Error(`expected ${String(count)} ticker changes`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.ok(changes.some((change) => change.kind === "heartbeat"));
+  data.store.db
+    .prepare("UPDATE repositories SET provider = 'changed' WHERE id = ?")
+    .run(data.repoId);
+  await waitForChange(1);
+  data.store.db
+    .prepare("UPDATE repositories SET model = 'changed-model' WHERE id = ?")
+    .run(data.repoId);
+  await waitForChange(2);
+  data.store.db.prepare("UPDATE repositories SET effort = 'low' WHERE id = ?").run(data.repoId);
+  await waitForChange(3);
+  data.store.db
+    .prepare("UPDATE repositories SET timeout_seconds = 123 WHERE id = ?")
+    .run(data.repoId);
+  await waitForChange(4);
+  const attemptId = Number(
+    (
+      data.store.db
+        .prepare("SELECT id FROM attempts WHERE job_id = ? ORDER BY id LIMIT 1")
+        .get(data.jobId) as { id: number }
+    ).id,
+  );
+  data.store.db
+    .prepare(
+      "INSERT INTO validation_runs (attempt_id, seq, command, exit_code, duration_ms, output_ref) VALUES (?, 2, '[]', 0, 1, NULL)",
+    )
+    .run(attemptId);
+  await waitForChange(5);
+  assert.ok(
+    changes.every((change, index) => index === 0 || change.sequence > changes[index - 1]!.sequence),
+  );
+  unsubscribe();
+  data.store.close();
+});
+
+test("dashboard heartbeats re-render health and surface polling staleness", async () => {
+  const data = fixture();
+  data.options.pollIntervalSec = 0.05;
+  data.store.db
+    .prepare("INSERT INTO ingestion_state (repo_id, last_polled_at) VALUES (?, ?)")
+    .run(data.repoId, new Date(Date.now() - 10).toISOString());
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  await new Promise<void>((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port: address.port,
+      path: "/stream",
+      headers: AUTH,
+    });
+    let buffer = "";
+    const timeout = setTimeout(() => {
+      req.destroy();
+      reject(new Error("dashboard heartbeat did not expose staleness"));
+    }, 3_000);
+    req.on("response", (response) => {
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => {
+        buffer += chunk;
+        const events = buffer.split("\n\n").filter((event) => event.startsWith("event: "));
+        if (events.length < 2) return;
+        const line = events[1]!.split("\n").find((entry) => entry.startsWith("data: "));
+        assert.ok(line);
+        const payload = JSON.parse(line.slice("data: ".length)) as {
+          kind: string;
+          fragments: Record<string, string>;
+        };
+        if (payload.kind !== "heartbeat") return;
+        clearTimeout(timeout);
+        assert.match(payload.fragments["health-region"] ?? "", /status-stale/);
+        assert.match(payload.fragments["health-region"] ?? "", /stale/);
+        assert.equal(payload.fragments.repositories, undefined);
+        req.destroy();
+        resolve();
+      });
+      response.on("error", reject);
+    });
+    req.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+    });
+    req.end();
+  });
+  await app.close();
+  data.store.close();
+});
+
+test("client time refresh uses carried instants without a database update", () => {
+  const nodes = [
+    {
+      dataset: { timeFormat: "relative" },
+      getAttribute: (name: string) => (name === "datetime" ? "2026-09-04T00:00:00.000Z" : null),
+      textContent: "",
+    },
+    {
+      dataset: { timeFormat: "elapsed", timeEnd: undefined },
+      getAttribute: (name: string) => (name === "datetime" ? "2026-09-04T00:00:00.000Z" : null),
+      textContent: "",
+    },
+  ];
+  let refresh: (() => void) | undefined;
+  class TestDate extends Date {
+    static override now(): number {
+      return now;
+    }
+    static override parse(value: string): number {
+      return Date.parse(value);
+    }
+  }
+  let now = Date.parse("2026-09-04T00:00:01.000Z");
+  const start = clientScript.indexOf("  const relativeText");
+  const end = clientScript.indexOf("  // The log region", start);
+  assert.ok(start >= 0 && end > start);
+  runInNewContext(clientScript.slice(start, end), {
+    Date: TestDate,
+    Math,
+    Number,
+    document: { querySelectorAll: () => nodes },
+    setInterval: (callback: () => void, delay: number) => {
+      assert.equal(delay, 1000);
+      refresh = callback;
+      return 1;
+    },
+  });
+  assert.equal(nodes[1]!.textContent, "1.0s");
+  now += 1_000;
+  refresh?.();
+  assert.equal(nodes[1]!.textContent, "2.0s");
+  assert.equal(nodes[0]!.textContent, "2s ago");
+});
+
+test("console shutdown drains every registered live-update stream", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+
+  const open = (): Promise<import("node:http").IncomingMessage> =>
+    new Promise((resolve, reject) => {
+      const req = httpRequest({
+        host: "127.0.0.1",
+        port: address.port,
+        path: `/jobs/${data.jobId}/stream`,
+        headers: AUTH,
+      });
+      req.once("response", (response) => {
+        response.setEncoding("utf8");
+        response.once("error", reject);
+        response.once("data", () => resolve(response));
+      });
+      req.once("error", reject);
+      req.end();
+    });
+  const [first, second] = await Promise.all([open(), open()]);
+  assert.equal(app.liveUpdateStreamCount, 2);
+  const ended = Promise.all(
+    [first, second].map(
+      (response) => new Promise<void>((resolve) => response.once("end", () => resolve())),
+    ),
+  );
+  app.endLiveUpdateStreams();
+  await ended;
+  assert.equal(app.liveUpdateStreamCount, 0);
+  await app.close();
+  data.store.close();
+});
+
+test("closing the console server resolves while a live-update stream is open", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port: address.port,
+      path: `/jobs/${data.jobId}/stream`,
+      headers: AUTH,
+    });
+    req.once("response", (incoming) => {
+      incoming.setEncoding("utf8");
+      incoming.once("error", reject);
+      incoming.once("data", () => resolve(incoming));
+    });
+    req.once("error", reject);
+    req.end();
+  });
+  const responseEnded = new Promise<void>((resolve) => response.once("end", () => resolve()));
+  await Promise.race([
+    app.close(),
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("console close timed out")), 3_000),
+    ),
+  ]);
+  await responseEnded;
+  assert.equal(response.complete, true);
+  data.store.close();
+});
+
 test("job actions are state-gated and successful jobs expose neither routine action", async () => {
   const data = fixture();
   const succeeded = Number(
@@ -718,6 +1103,19 @@ test("pure view helpers escape values and render absent values safely", () => {
   assert.match(keyValueTable({ "<unsafe>": null, value: "<script>" }), /&lt;script&gt;/);
   assert.match(dangerZone(1, 12), /data-reset-submit/);
   assert.match(dangerZone(1, 12), /disabled/);
+});
+
+test("wall-clock helpers use the requested local timezone and retain the UTC instant", () => {
+  const instant = "2026-08-28T18:05:44.524Z";
+  assert.equal(clockTime(instant, "Asia/Taipei"), "02:05:44");
+  assert.equal(logClock(instant, "Asia/Taipei"), "02:05:44.524");
+  const html = timeElement(instant, "clock", clockTime(instant, "Asia/Taipei"), {
+    timeZone: "Asia/Taipei",
+  });
+  assert.match(html, /data-time-format="clock"/u);
+  assert.match(html, /data-time-zone="Asia\/Taipei"/u);
+  assert.match(html, /datetime="2026-08-28T18:05:44.524Z"/u);
+  assert.match(html, />02:05:44</u);
 });
 
 test("terminal status treatments use distinct classes and non-colour cues", () => {
@@ -769,17 +1167,20 @@ test("the job log tails a bounded number of newest entries in chronological orde
 
 test("log fields render as chips rather than a raw JSON blob", () => {
   const long = "x".repeat(200);
-  const html = logEntries([
-    {
-      id: 1,
-      at: "2026-08-28T17:53:05.254Z",
-      level: "error",
-      event: "job failed",
-      job_id: 1,
-      attempt_id: 2,
-      fields: JSON.stringify({ reason: "agent-auth-failed", detail: long }),
-    },
-  ]);
+  const html = logEntries(
+    [
+      {
+        id: 1,
+        at: "2026-08-28T17:53:05.254Z",
+        level: "error",
+        event: "job failed",
+        job_id: 1,
+        attempt_id: 2,
+        fields: JSON.stringify({ reason: "agent-auth-failed", detail: long }),
+      },
+    ],
+    "UTC",
+  );
   // Compact clock, not the full ISO stamp, with the exact value kept for hover.
   assert.match(html, /&gt;17:53:05\.254&lt;|>17:53:05\.254</u);
   assert.match(html, /title="2026-08-28T17:53:05\.254Z"/u);
@@ -990,6 +1391,22 @@ test("model/provider/effort updates are atomic, unrestricted, audited, and notif
   );
   assert.equal(settingsChanges, 1);
 
+  const effortOnly = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/effort`,
+    headers: AUTH,
+    payload: { effort: " medium " },
+  });
+  assert.equal(effortOnly.statusCode, 200);
+  assert.deepEqual(effortOnly.json(), { ok: true, effort: "medium" });
+  assert.deepEqual(
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(data.repoId),
+    { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+  );
+  assert.equal(settingsChanges, 2);
+
   const secondUpdate = await app.inject({
     method: "POST",
     url: `/repos/${data.repoId}/model-provider`,
@@ -1003,7 +1420,7 @@ test("model/provider/effort updates are atomic, unrestricted, audited, and notif
     model: "gpt-5.6-terra",
     effort: "medium",
   });
-  assert.equal(settingsChanges, 2);
+  assert.equal(settingsChanges, 3);
   assert.equal(
     new OperatorActionStore(data.store.db).list()[0]?.action,
     "repository-model-provider",
