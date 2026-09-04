@@ -148,12 +148,22 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
           .get(entry.id) as { enabled: number } | undefined;
         return row?.enabled === 1;
       })) {
-        const events = await eventSource.poll({
-          id: repository.id,
-          owner: repository.owner,
-          repo: repository.name,
-        });
-        await Promise.all(events.map((event) => orchestrator.handleEvent(repository, event)));
+        // handleEvent returns once each command is queued, so this tick stays
+        // short no matter how long the queued jobs run. One repository's
+        // transport failure must not skip the repositories after it.
+        try {
+          const events = await eventSource.poll({
+            id: repository.id,
+            owner: repository.owner,
+            repo: repository.name,
+          });
+          await Promise.all(events.map((event) => orchestrator.handleEvent(repository, event)));
+        } catch (error) {
+          logger.error("poll failed", {
+            repository: repository.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     } catch (error) {
       logger.error("poll failed", {

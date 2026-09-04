@@ -99,6 +99,17 @@ function retainedWorkspaceAttempt(
   return undefined;
 }
 
+/**
+ * A job accepted into the queue. `completed` settles when the attempt itself
+ * finishes; ingestion deliberately does not await it. The orchestrator already
+ * observes its rejection, so awaiting it is optional.
+ */
+export interface QueuedJob {
+  jobId: number;
+  attemptId: number;
+  completed: Promise<QueueResult<{ commitSha?: string }>>;
+}
+
 export interface RuntimeRepository extends RepoConfig {
   id: number;
   /** Undefined means the agent may run until it exits or is cancelled. */
@@ -144,10 +155,10 @@ export class ResolutionOrchestrator {
   async handleEvent(
     repository: RuntimeRepository,
     event: NormalizedEvent,
-  ): Promise<QueueResult<{ commitSha?: string }>[]> {
+  ): Promise<QueuedJob[]> {
     this.options.logger.info("event observed", { repository: repository.id, pr: event.prNumber });
     const commands = this.options.registry.detect(event.body);
-    const results: QueueResult<{ commitSha?: string }>[] = [];
+    const queued: QueuedJob[] = [];
     for (const command of commands) {
       this.options.logger.info("command parsed", { command: command.name, pr: event.prNumber });
       const authorization = await authorizeCommand({
@@ -194,8 +205,8 @@ export class ResolutionOrchestrator {
         jobId: claimed.jobId,
         attemptId: attempt.attemptId,
       });
-      results.push(
-        await this.enqueueAttempt(
+      queued.push(
+        this.enqueueAttempt(
           claimed.jobId,
           attempt.attemptId,
           repository,
@@ -206,7 +217,7 @@ export class ResolutionOrchestrator {
         ),
       );
     }
-    return results;
+    return queued;
   }
 
   cancel(jobId: number): boolean {
@@ -238,7 +249,7 @@ export class ResolutionOrchestrator {
     }
   }
 
-  async retry(jobId: number): Promise<QueueResult<{ commitSha?: string }>> {
+  async retry(jobId: number): Promise<QueuedJob> {
     const job = this.jobs.getJob(jobId);
     const repository = this.repositories.get(job.repo_id);
     if (!repository) throw new Error(`repository ${job.repo_id} is not registered at runtime`);
@@ -280,8 +291,8 @@ export class ResolutionOrchestrator {
     model: string,
     command: ParsedCommand,
     retainedWorkspace?: { workspacePath: string; headSha: string },
-  ): Promise<QueueResult<{ commitSha?: string }>> {
-    return this.queue.enqueue({
+  ): QueuedJob {
+    const completed = this.queue.enqueue({
       jobId,
       repoId: repository.id,
       prNumber,
@@ -322,6 +333,20 @@ export class ResolutionOrchestrator {
         removeAttemptDataDir(attemptDataDir);
       },
     });
+    // Ingestion must never await a run. The poll loop is single-flight, so
+    // awaiting here stalled every repository for the lifetime of one job and
+    // put `concurrency` out of reach: the loop could not enqueue a second job
+    // while parked on the first. Observe the rejection now, because callers
+    // are free to drop `completed` and an unhandled rejection would end the
+    // process.
+    completed.catch((error: unknown) => {
+      this.options.logger.error("job failed", {
+        jobId,
+        attemptId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return { jobId, attemptId, completed };
   }
 
   private async runAttempt(input: {
