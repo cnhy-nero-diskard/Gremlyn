@@ -5,6 +5,7 @@ import {
   bundledProviderCatalog,
   type ProviderCatalogSnapshot,
   type ProviderModelOption,
+  type ProviderOption,
 } from "../../agent/provider-catalog.js";
 import { duration, escapeHtml, relativeTimestamp, statusPill } from "./components.js";
 
@@ -12,20 +13,37 @@ import { duration, escapeHtml, relativeTimestamp, statusPill } from "./component
 type AgentDefinitions = Record<string, AgentDefinition>;
 
 /**
- * Per-repository agent options for the pickers: the effort tiers its agent
- * declares and whether its kind accepts an empty provider (a CLI that folds
- * the provider into the model id). Unknown agents fall back to the global
- * defaults so a repository row never renders an unpickable state.
+ * Per-repository agent options for the pickers: the executor kind its agent
+ * runs as, the effort tiers that agent declares, and whether its kind accepts
+ * an empty provider (a CLI that folds the provider into the model id).
+ * Unknown agents fall back to the global defaults so a repository row never
+ * renders an unpickable state.
  */
 function agentOptionsFor(
   repo: RepositorySummary,
   agents: AgentDefinitions,
-): { efforts: readonly ReasoningEffort[]; providerOptional: boolean } {
+): { efforts: readonly ReasoningEffort[]; providerOptional: boolean; kind: string | undefined } {
   const definition = repo.agent === undefined ? undefined : agents[repo.agent];
   return {
     efforts: definition?.efforts ?? REASONING_EFFORTS,
     providerOptional: definition !== undefined && !KINDS_REQUIRING_PROVIDER.has(definition.kind),
+    kind: definition?.kind,
   };
+}
+
+/**
+ * The catalog entries a repository's agent kind may use. Providers are
+ * first-party to one executor (Cline billing/Codex vs OpenCode's Zen
+ * gateway), so a card only offers entries its own agent could authenticate
+ * against. Unknown agents fall back to the full catalog, matching the other
+ * agent defaults above.
+ */
+function providersForKind(
+  catalog: ProviderCatalogSnapshot,
+  kind: string | undefined,
+): ProviderOption[] {
+  if (kind === undefined) return catalog.providers;
+  return catalog.providers.filter((provider) => provider.kinds.includes(kind));
 }
 
 function validationLabel(repository: RepositorySummary): string {
@@ -125,8 +143,9 @@ function modelProviderControl(
   agents: AgentDefinitions,
 ): string {
   const providerId = repo.provider ?? "";
-  const { efforts, providerOptional } = agentOptionsFor(repo, agents);
-  const knownProvider = catalog.providers.find((provider) => provider.id === providerId);
+  const { efforts, providerOptional, kind } = agentOptionsFor(repo, agents);
+  const providers = providersForKind(catalog, kind);
+  const knownProvider = providers.find((provider) => provider.id === providerId);
   // An empty provider is a real state for provider-optional agents, not an
   // unnamed custom one — render it as its own selectable option so saving the
   // card round-trips the empty value instead of coercing it to a custom id.
@@ -137,7 +156,7 @@ function modelProviderControl(
     : "";
   const providerOptions = [emptyOption]
     .concat(
-      catalog.providers.map(
+      providers.map(
         (provider) =>
           `<option value="${escapeHtml(provider.id)}"${provider.id === providerId ? " selected" : ""}>${escapeHtml(providerOptionLabel(provider))}</option>`,
       ),
@@ -147,7 +166,7 @@ function modelProviderControl(
     )
     .join("");
   const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(knownProvider || emptyProvider ? "" : providerId)}" placeholder="provider id"${knownProvider || emptyProvider ? " hidden" : ""}>`;
-  const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${catalog.providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
+  const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
   const modelInput = `<input name="repo-model-input-${repo.id}" data-repo-model-input data-repo-field="model" value="${escapeHtml(repo.model ?? "")}" placeholder="model id"${knownProvider ? " hidden" : ""}>`;
   const effort = `<select name="repo-effort-${repo.id}" data-repo-effort data-repo-field="effort">${effortOptions(repo, efforts)}</select>`;
   const timeout = `<input name="repo-timeout-${repo.id}" data-repo-timeout type="number" min="1" step="1" inputmode="numeric" value="${repo.timeout_seconds === null || repo.timeout_seconds === undefined ? "" : String(repo.timeout_seconds)}" placeholder="No limit" aria-label="Agent timeout in seconds">`;
@@ -171,7 +190,7 @@ function modelProviderControl(
     : emptyProvider
       ? "No separate provider; enter the model id in provider/model form."
       : "Custom provider; enter the exact provider and model ids.";
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"${providerOptional ? " data-provider-optional" : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
+  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"${kind ? ` data-agent-kind="${escapeHtml(kind)}"` : ""}${providerOptional ? " data-provider-optional" : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
 }
 
 export function repositoryCards(

@@ -384,6 +384,14 @@ export const clientScript = `
   };
   let modelCatalog = null;
   const customProvider = '__custom__';
+  // Each catalog entry names the executor kinds it serves (the same mapping
+  // the server-rendered pickers filter by), so a card only ever offers the
+  // providers its repository's own agent can authenticate against.
+  const providersFor = (root) => {
+    const kind = root.dataset.agentKind || '';
+    if (!kind) return modelCatalog || [];
+    return (modelCatalog || []).filter((provider) => Array.isArray(provider.kinds) && provider.kinds.indexOf(kind) !== -1);
+  };
   const providerFor = (root) => {
     const select = root.querySelector('[data-repo-provider-select]');
     const input = root.querySelector('[data-repo-provider-input]');
@@ -437,7 +445,7 @@ export const clientScript = `
     if (!providerSelect || !modelSelect || !modelInput) return;
     const providerId = providerFor(root);
     const staticProvider = [...modelSelect.options].some((option) => option.dataset.providerId === providerId);
-    const provider = modelCatalog?.find((entry) => entry.id === providerId) ||
+    const provider = providersFor(root).find((entry) => entry.id === providerId) ||
       (staticProvider ? { id: providerId, description: '' } : null);
     // An empty provider is a real selection for provider-optional agents, not
     // an unnamed custom one — keep the free-text provider input hidden then.
@@ -466,7 +474,7 @@ export const clientScript = `
     updateModelDescription(root);
   };
   const renderLivePicker = (root, preferredModel) => {
-    const providers = modelCatalog || [];
+    const providers = providersFor(root);
     const providerSelect = root.querySelector('[data-repo-provider-select]');
     const providerInput = root.querySelector('[data-repo-provider-input]');
     const modelSelect = root.querySelector('[data-repo-model-select]');

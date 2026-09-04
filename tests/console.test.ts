@@ -364,6 +364,64 @@ test("the dashboard drives effort tiers and provider semantics from each reposit
   data.store.close();
 });
 
+test("the dashboard filters the provider catalog by each repository's agent kind", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.store.db
+    .prepare(
+      `INSERT INTO repositories
+         (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    )
+    .run(
+      "acme",
+      "opencode-widgets",
+      "source-2",
+      "workspaces-2",
+      "opencode",
+      "opencode/claude-sonnet-5",
+      "",
+      "max",
+    );
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(dashboard.statusCode, 200);
+  const cards = dashboard.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/gu) ?? [];
+  assert.equal(cards.length, 2);
+  const clineCard = cards.find((card) => card.includes('data-agent-kind="cline"'));
+  const opencodeCard = cards.find((card) => card.includes('data-agent-kind="opencode"'));
+  assert.ok(clineCard);
+  assert.ok(opencodeCard);
+  // A Cline card offers the Cline-owned entries and never the OpenCode Zen
+  // gateway, whose credentials its executor does not hold.
+  assert.match(clineCard, /<option value="cline">/);
+  assert.match(clineCard, /<option value="cline-pass">/);
+  assert.match(clineCard, /<option value="openai-codex">/);
+  assert.doesNotMatch(clineCard, /<option value="opencode">/);
+  // An OpenCode card offers only the Zen gateway; the Cline-only entries are
+  // not selectable for a provider-optional executor. "Custom provider" stays
+  // for intentionally opaque values.
+  assert.match(opencodeCard, /<option value="opencode">/);
+  assert.doesNotMatch(opencodeCard, /<option value="cline">/);
+  assert.doesNotMatch(opencodeCard, /<option value="cline-pass">/);
+  assert.doesNotMatch(opencodeCard, /<option value="openai-codex">/);
+  assert.match(opencodeCard, /Custom provider/);
+  // The live-refresh payload carries the same kind mapping, so the client
+  // script applies the identical filter when it fetches /model-catalog.
+  const catalog = await app.inject({ method: "GET", url: "/model-catalog", headers: AUTH });
+  assert.equal(catalog.statusCode, 200);
+  const providers = (
+    catalog.json() as { providers: Array<{ id: string; kinds: string[] }> }
+  ).providers;
+  const kindsOf = (id: string) => providers.find((provider) => provider.id === id)?.kinds;
+  assert.deepEqual(kindsOf("cline"), ["cline"]);
+  assert.deepEqual(kindsOf("cline-pass"), ["cline"]);
+  assert.deepEqual(kindsOf("openai-codex"), ["cline"]);
+  assert.deepEqual(kindsOf("opencode"), ["opencode"]);
+  await app.close();
+  data.store.close();
+});
+
 test("job detail separates attempts and shows context, failure, output, validation, commit, and reporting", async () => {
   const data = fixture();
   const app = buildConsoleServer(data.options);

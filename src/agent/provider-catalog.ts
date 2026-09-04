@@ -13,6 +13,12 @@
  * common case; picking "Custom provider" and typing any `provider/model`
  * OpenCode itself understands (per `opencode models opencode`) still works,
  * per config.example.yaml.
+ *
+ * Every entry names the executor kinds (`AgentDefinition.kind`) it belongs
+ * to: the Cline billing, ClinePass, and Codex entries serve Cline
+ * repositories, while the OpenCode gateway serves OpenCode ones. The console
+ * filters the picker by a repository's agent kind, so a card never offers a
+ * provider its own executor could not authenticate against.
  */
 
 export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models";
@@ -27,6 +33,8 @@ export interface ProviderModelOption {
 
 export interface ProviderOption {
   id: string;
+  /** Executor kinds (`AgentDefinition.kind`) whose repositories this entry serves. */
+  kinds: readonly string[];
   name: string;
   description: string;
   auth: string;
@@ -346,6 +354,7 @@ function modelName(id: string): string {
 
 function provider(
   id: string,
+  kinds: readonly string[],
   name: string,
   description: string,
   auth: string,
@@ -362,7 +371,7 @@ function provider(
           tags: ["DEFAULT"],
         },
       ];
-  return { id, name, description, auth, defaultModelId, models: allModels };
+  return { id, kinds, name, description, auth, defaultModelId, models: allModels };
 }
 
 function makeCatalog(
@@ -379,6 +388,7 @@ function makeCatalog(
     providers: [
       provider(
         "cline",
+        ["cline"],
         "Cline",
         "Cline usage-billing with featured and free models.",
         "Sign in with Cline",
@@ -390,6 +400,7 @@ function makeCatalog(
       ),
       provider(
         "cline-pass",
+        ["cline"],
         "ClinePass",
         "ClinePass subscription models with higher usage limits.",
         "Sign in with ClinePass",
@@ -398,6 +409,7 @@ function makeCatalog(
       ),
       provider(
         "openai-codex",
+        ["cline"],
         "OpenAI Codex",
         "ChatGPT subscription access through Cline's OpenAI Codex provider.",
         "Sign in with ChatGPT Subscription",
@@ -406,6 +418,7 @@ function makeCatalog(
       ),
       provider(
         "opencode",
+        ["opencode"],
         "OpenCode",
         "OpenCode's built-in Zen gateway models, folded into the model id.",
         "opencode auth login",

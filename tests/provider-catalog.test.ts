@@ -43,6 +43,12 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
       .filter((model) => model.id.endsWith("-free"))
       .every((model) => model.tier === "free"),
   );
+  // Each entry names the executor kinds it serves, so the console can filter
+  // the picker by a repository's agent kind.
+  assert.deepEqual(cline.kinds, ["cline"]);
+  assert.deepEqual(pass.kinds, ["cline"]);
+  assert.deepEqual(codex.kinds, ["cline"]);
+  assert.deepEqual(opencode.kinds, ["opencode"]);
 });
 
 test("model names humanize dashed version suffixes and known initialisms", () => {
