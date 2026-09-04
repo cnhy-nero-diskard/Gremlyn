@@ -18,6 +18,13 @@ export const DOCUMENT_STRINGIFY_OPTIONS = {
 
 export type SetupDocument = Document;
 
+/**
+ * Line ending observed when a document was loaded. The YAML emitter always
+ * writes LF, so without this a CRLF file — what a Windows checkout or editor
+ * produces — comes back reflowed in its entirety on the first append.
+ */
+const documentNewline = new WeakMap<SetupDocument, string>();
+
 /** Read an operator-authored YAML document without converting it to an object. */
 export function loadDocument(path: string): SetupDocument {
   const source = readFileSync(path, "utf8");
@@ -25,6 +32,7 @@ export function loadDocument(path: string): SetupDocument {
     keepSourceTokens: true,
     ...DOCUMENT_STRINGIFY_OPTIONS,
   });
+  if (source.includes("\r\n")) documentNewline.set(document, "\r\n");
   if (document.errors.length > 0) {
     throw new Error(
       `cannot parse configuration document ${path}: ${document.errors
@@ -80,9 +88,13 @@ export function removeRepositories(
   return removed;
 }
 
-/** Emit the document while retaining comments, ordering, and scalar styles. */
+/**
+ * Emit the document while retaining comments, ordering, scalar styles, and the
+ * line ending it was loaded with.
+ */
 export function emitDocument(document: SetupDocument): string {
-  return document.toString(DOCUMENT_STRINGIFY_OPTIONS);
+  const text = document.toString(DOCUMENT_STRINGIFY_OPTIONS);
+  return documentNewline.get(document) === "\r\n" ? text.replace(/\r?\n/gu, "\r\n") : text;
 }
 
 /** Short aliases matching the document API vocabulary used by the setup flow. */

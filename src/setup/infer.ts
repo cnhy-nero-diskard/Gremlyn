@@ -95,10 +95,10 @@ export function proposeWorkspaceRoot(
     const conflict = otherSourcePaths
       .map((other) => resolveComparable(other, source.platform))
       .find((other) => isContained(candidate, other));
-    if (!conflict && !seen.has(candidate.path) && !isContained(candidate, source)) {
+    if (!conflict && !seen.has(candidate.comparable) && !isContained(candidate, source)) {
       return { value: candidate.path, provenance: "sibling of source path" };
     }
-    seen.add(candidate.path);
+    seen.add(candidate.comparable);
     parent = conflict ? conflict.dirname : dirnamePortable(parent, source.platform);
     if (parent === "." || parent === "") break;
   }
@@ -196,18 +196,22 @@ export async function inferRepository(
 }
 
 interface ComparablePath {
+  /** Resolved path with its original case intact; safe to propose to an operator. */
   path: string;
+  /** Case-folded on Windows. Only ever compared, never shown or written to config. */
+  comparable: string;
   dirname: string;
   platform: "posix" | "win32";
 }
 
 function resolveComparable(value: string, preferred?: "posix" | "win32"): ComparablePath {
   const platform = preferred ?? (looksWindows(value) ? "win32" : "posix");
-  const path = platform === "win32" ? win32.resolve(value) : resolve(value);
-  const normalized = normalizeComparable(path, platform);
+  const resolved = platform === "win32" ? win32.resolve(value) : resolve(value);
+  const path = platform === "win32" ? win32.normalize(resolved) : normalize(resolved);
   return {
-    path: normalized,
-    dirname: platform === "win32" ? win32.dirname(normalized) : dirname(normalized),
+    path,
+    comparable: comparableKey(path, platform),
+    dirname: platform === "win32" ? win32.dirname(path) : dirname(path),
     platform,
   };
 }
@@ -225,15 +229,18 @@ function dirnamePortable(value: string, platform: "posix" | "win32"): string {
   return platform === "win32" ? win32.dirname(value) : dirname(value);
 }
 
-function normalizeComparable(value: string, platform: "posix" | "win32"): string {
-  const normalized = platform === "win32" ? win32.normalize(value) : normalize(value);
-  return platform === "win32" ? normalized.toLowerCase() : normalized;
+/**
+ * Windows paths compare case-insensitively. Folding is confined to this key so
+ * a proposed value keeps the case the operator actually has on disk.
+ */
+function comparableKey(value: string, platform: "posix" | "win32"): string {
+  return platform === "win32" ? value.toLowerCase() : value;
 }
 
 function isContained(child: ComparablePath, parent: ComparablePath): boolean {
   if (child.platform !== parent.platform) return false;
-  const childPath = normalizeComparable(child.path, child.platform);
-  const parentPath = normalizeComparable(parent.path, parent.platform).replace(/[\\/]$/u, "");
+  const childPath = child.comparable;
+  const parentPath = parent.comparable.replace(/[\\/]$/u, "");
   return (
     childPath === parentPath ||
     childPath.startsWith(`${parentPath}${child.platform === "win32" ? "\\" : "/"}`)

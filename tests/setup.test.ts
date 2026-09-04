@@ -198,6 +198,31 @@ test("config.example.yaml is byte-stable through a no-op document round trip", (
   assert.equal(emitDocument(document), source);
 });
 
+// The example file's line endings depend on the checkout, so byte stability for
+// a CRLF operator file — the common Windows case — is asserted independently.
+test("a document keeps the line endings it was loaded with through load, append, and emit", () => {
+  const root = tempRoot();
+  try {
+    const lf = join(root, "lf.yaml");
+    const lfSource = validConfig();
+    writeFileSync(lf, lfSource, "utf8");
+    assert.equal(emitDocument(loadDocument(lf)), lfSource);
+
+    const crlf = join(root, "crlf.yaml");
+    const crlfSource = lfSource.replace(/\n/gu, "\r\n");
+    writeFileSync(crlf, crlfSource, "utf8");
+    assert.equal(emitDocument(loadDocument(crlf)), crlfSource);
+
+    const document = loadDocument(crlf);
+    appendRepository(document, { owner: "octo", name: "repo" });
+    const emitted = emitDocument(document);
+    assert.match(emitted, /owner: octo/u);
+    assert.ok(!/(?<!\r)\n/u.test(emitted), "an appended CRLF document must keep every CRLF");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("validated config write returns loader problems and leaves the original byte-for-byte unchanged", () => {
   const root = tempRoot();
   try {
@@ -248,6 +273,22 @@ test("workspace proposal is a safe sibling outside the source and other sources"
   assert.ok(!isPathInside(proposal.value, "/tmp/project/repo-workspaces"));
   assert.match(proposal.provenance, /sibling/u);
   assert.equal(isPathInside("C:\\Code\\Gremlyn-workspaces", "c:\\code\\Gremlyn"), false);
+});
+
+test("workspace proposal compares Windows paths case-insensitively but proposes the real case", () => {
+  const proposal = proposeWorkspaceRoot(
+    "C:\\Users\\Dev\\AppData\\Local\\Temp\\Gremlyn-Repo\\Source",
+  );
+  assert.ok(proposal);
+  assert.equal(
+    proposal.value,
+    "C:\\Users\\Dev\\AppData\\Local\\Temp\\Gremlyn-Repo\\Source-workspaces",
+  );
+
+  // A conflict differing only in case must still be detected and walked past.
+  const avoided = proposeWorkspaceRoot("C:\\Code\\Repo", ["c:\\code\\Repo-workspaces"]);
+  assert.ok(avoided);
+  assert.notEqual(avoided.value.toLowerCase(), "c:\\code\\repo-workspaces");
 });
 
 test("validation candidates come only from recognized package scripts", () => {
