@@ -188,10 +188,14 @@ change beyond `agent: opencode`:
   the model id as `opencode/<model>` (`opencode models opencode` lists them).
   A repository naming an OpenCode agent does not need a `provider` field at
   all. The console's repository settings offer an "OpenCode" entry in the
-  Provider picker with a curated `opencode/<model>` shortlist; picking
-  "Custom provider" instead (shared with Cline) still works for any other
-  `provider/model` OpenCode itself understands, and whatever is typed there
-  is accepted and ignored by the executor either way.
+  Provider picker listing every model Zen serves (the full `opencode models
+  opencode` output for the pinned release); picking "Custom provider" instead
+  (shared with Cline) still works for any other `provider/model` OpenCode
+  understands — an installation-specific one you authenticated yourself, say
+  — and whatever is typed there is accepted and ignored by the executor
+  either way. Bumping the pinned OpenCode version means re-pasting that
+  command's output into `OPENCODE_MODEL_IDS` in
+  `src/agent/provider-catalog.ts`.
 - **Retries**: OpenCode's CLI has no retry flag, so `agent_defaults.retries`
   is enforced by Gremlyn itself, re-running the whole invocation up to that
   many times on failure — see the comment in `config.example.yaml`. This

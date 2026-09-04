@@ -447,8 +447,12 @@ export const clientScript = `
       const visible = option.dataset.providerId === provider.id;
       option.hidden = !visible;
     });
+    // HTMLOptGroupElement has no .options (only HTMLSelectElement does), so
+    // reading it here threw and aborted the rest of syncPicker: the model
+    // value, hint, and description below kept the previous provider's text
+    // while the option list had already been re-filtered.
     modelSelect.querySelectorAll('optgroup').forEach((group) => {
-      group.hidden = ![...group.options].some((option) => !option.hidden);
+      group.hidden = ![...group.querySelectorAll('option')].some((option) => !option.hidden);
     });
     const current = preferredModel || modelSelect.value;
     const usable = [...modelSelect.options].find((option) => option.dataset.providerId === provider.id);

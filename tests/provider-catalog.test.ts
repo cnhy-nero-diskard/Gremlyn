@@ -33,6 +33,31 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.equal(opencode.defaultModelId, "opencode/claude-sonnet-5");
   assert.ok(opencode.models.every((model) => model.id.startsWith("opencode/")));
   assert.ok(opencode.models.some((model) => model.id === "opencode/claude-sonnet-5"));
+  // The whole `opencode models opencode` surface, not a shortlist: a repo can
+  // be pointed at any Zen model without falling back to "Custom provider".
+  assert.equal(opencode.models.length, 64);
+  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 64);
+  // Zen's `-free` suffix is the one badge derived from the id.
+  assert.ok(
+    opencode.models
+      .filter((model) => model.id.endsWith("-free"))
+      .every((model) => model.tier === "free"),
+  );
+});
+
+test("model names humanize dashed version suffixes and known initialisms", () => {
+  const opencode = bundledProviderCatalog().providers.find(
+    (provider) => provider.id === "opencode",
+  );
+  assert.ok(opencode);
+  const nameOf = (id: string) => opencode.models.find((model) => model.id === id)?.name;
+  // Anthropic ids dash their decimals; without the fix these read "Haiku 4 5".
+  assert.equal(nameOf("opencode/claude-haiku-4-5"), "Claude Haiku 4.5");
+  assert.equal(nameOf("opencode/claude-opus-4-8"), "Claude Opus 4.8");
+  assert.equal(nameOf("opencode/glm-5.2"), "GLM 5.2");
+  assert.equal(nameOf("opencode/gpt-5.6-sol"), "GPT 5.6 Sol");
+  // A hyphen between a digit and a letter is still a word break.
+  assert.equal(nameOf("opencode/gpt-5-codex"), "GPT 5 Codex");
 });
 
 test("provider catalog refreshes from the Cline featured-model feed", async () => {
