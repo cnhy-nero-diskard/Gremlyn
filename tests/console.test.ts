@@ -22,6 +22,7 @@ import {
   stylesheetPath,
 } from "../src/console/assets.js";
 import {
+  attemptCard,
   dangerZone,
   duration,
   escapeHtml,
@@ -1262,6 +1263,48 @@ test("scrollable panels and keyed details survive a live region swap", () => {
   // Reasoning is collapsed behind a <details>; narration is not.
   assert.match(html, /<details[^>]*>.*Thinking/su);
   assert.match(html, /activity-open/u, "an unfinished block says it is still writing");
+});
+
+test("an attempt card never presents an unpushed commit as published work", () => {
+  const base = {
+    id: 4,
+    job_id: 1,
+    attempt_number: 1,
+    agent: "cline",
+    model: "m",
+    provider: "p",
+    effort: "xhigh",
+    workspace_path: "workspace-1",
+    head_sha_at_prepare: "head-1",
+    started_at: null,
+    ended_at: null,
+    agent_exit_code: 0,
+    agent_session_id: null,
+    outcome: "cancelled",
+    failure_stage: null,
+    failure_reason: null,
+    commit_sha: "abc123",
+    pushed: 0,
+    report_status: null,
+    has_uncommitted_changes: 0,
+    output_ref: null,
+    adopted: false,
+    output: "",
+    outputRetained: false,
+    activity: null,
+  };
+  const unpushed = attemptCard(base, { showActivity: false });
+  assert.match(unpushed, /abc123 \(unpushed\)/u);
+  assert.match(unpushed, /<dt>Pushed<\/dt><dd>no<\/dd>/u);
+  // A pushed commit is still shown bare, with no qualifier to explain away.
+  const pushed = attemptCard({ ...base, pushed: 1, outcome: "succeeded" }, { showActivity: false });
+  assert.match(pushed, /<dd>abc123<\/dd>/u);
+  assert.equal(pushed.includes("unpushed"), false);
+  // Nothing recorded reads as "none" rather than an empty cell.
+  assert.match(
+    attemptCard({ ...base, commit_sha: null }, { showActivity: false }),
+    /<dt>Commit<\/dt><dd>none<\/dd>/u,
+  );
 });
 
 test("the agent transcript leads the job page and each step states its kind", () => {

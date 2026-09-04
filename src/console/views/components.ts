@@ -203,6 +203,19 @@ function artifactOutput(
 }
 
 /**
+ * A recorded sha no longer means a pushed commit. It is written the moment the
+ * commit exists, so an attempt cancelled between its commit and its push — or
+ * one whose push failed — leaves a sha behind with `pushed = 0`. Say so on the
+ * commit itself: an operator scanning "Commit: abc123" reads it as work that
+ * reached the pull request, and the Pushed row three lines down is not where
+ * that correction belongs.
+ */
+function commitFact(attempt: Pick<AttemptDetail, "commit_sha" | "pushed">): string {
+  if (attempt.commit_sha === null) return "none";
+  return attempt.pushed === 1 ? attempt.commit_sha : `${attempt.commit_sha} (unpushed)`;
+}
+
+/**
  * One attempt as a card rather than a fourteen-row key/value dump.
  *
  * The outcome, how long it took and why it failed are what an operator reads;
@@ -222,7 +235,7 @@ export function attemptCard(
   const facts =
     keyValueTable({
       Workspace: attempt.workspace_path ?? "not prepared",
-      Commit: attempt.commit_sha ?? "none",
+      Commit: commitFact(attempt),
       Reporting: attempt.report_status ?? "pending",
       "Exit code": attempt.agent_exit_code,
       Pushed: attempt.pushed === 1 ? "yes" : "no",

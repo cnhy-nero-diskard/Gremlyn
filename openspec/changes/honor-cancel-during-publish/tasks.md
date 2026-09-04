@@ -40,21 +40,21 @@
 
 ## 4. Downstream readers of a recorded commit
 
-- [ ] 4.1 Audit every reader of `attempts.commit_sha` (operator console views,
+- [x] 4.1 Audit every reader of `attempts.commit_sha` (operator console views,
   `src/publish/report.ts`, retry eligibility in `src/orchestrator/resolution.ts`)
   for the assumption that a recorded sha means a pushed commit; verify each either
   consults `pushed` or is documented as not needing to
 - [x] 4.2 Extend the retry path so an attempt cancelled with an unpushed commit
   reuses that commit instead of re-creating one; verify with a test that retrying
   such a job does not produce a duplicate commit
-- [ ] 4.3 Verify the operator console renders a committed-but-unpushed attempt
+- [x] 4.3 Verify the operator console renders a committed-but-unpushed attempt
   without implying the work was published
 
 ## 5. Verification
 
-- [ ] 5.1 Run `npm run build`, `npm test`, and `npm run lint` and verify all pass
-- [ ] 5.2 Verify against the spec deltas that every scenario in
+- [x] 5.1 Run `npm run build`, `npm test`, and `npm run lint` and verify all pass
+- [x] 5.2 Verify against the spec deltas that every scenario in
   `specs/job-orchestration/spec.md` and `specs/resolution-publication/spec.md` has a
   corresponding test
-- [ ] 5.3 Run `openspec validate honor-cancel-during-publish --strict` and verify it
+- [x] 5.3 Run `openspec validate honor-cancel-during-publish --strict` and verify it
   reports no problems

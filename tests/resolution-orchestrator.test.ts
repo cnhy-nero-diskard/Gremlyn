@@ -387,6 +387,15 @@ test("a cancel during publishing stops before the commit and is not a publicatio
   assert.deepEqual(data.github.replies, []);
   // The agent's edits survive uncommitted, as any cancelled attempt's do.
   assert.equal(attempt.has_uncommitted_changes, 1);
+  // Taken effect at the boundary, not deferred until publishing finished of
+  // its own accord: the timeline stops inside the stage it was cancelled in.
+  const timeline = data.store.db
+    .prepare("SELECT status FROM status_events WHERE job_id = ? ORDER BY id")
+    .all(queued.jobId) as { status: string }[];
+  assert.deepEqual(
+    timeline.map((row) => row.status),
+    ["queued", "preparing", "running", "validating", "publishing", "cancelled"],
+  );
   data.store.close();
 });
 
