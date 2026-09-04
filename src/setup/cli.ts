@@ -4,6 +4,7 @@ import {
   addRepository,
   defaultConfigPath,
   setup,
+  unlockDataDirectory,
   verifyConfig,
   type AddRepositoryOptions,
   type FlowIO,
@@ -11,7 +12,7 @@ import {
 } from "./flows.js";
 import { createReadlineInput, nonInteractiveInput } from "./input.js";
 
-const COMMANDS = ["setup", "add-repo", "verify"] as const;
+const COMMANDS = ["setup", "add-repo", "verify", "unlock"] as const;
 type Command = (typeof COMMANDS)[number];
 
 interface CliValues {
@@ -64,15 +65,17 @@ Usage:
   npm run setup -- [flags]
   npm run add-repo -- <path> [flags]
   npm run verify:config -- [flags]
+  npm run setup -- unlock <data-dir> [flags]
 
 Subcommands:
   setup       Bootstrap gremlyn.yaml, report host prerequisites, and optionally register a repository.
   add-repo    Infer, verify, and append one explicit repository entry.
   verify      Verify every configured repository without writing anything.
+  unlock      Release a data-directory claim without starting the orchestrator.
 
 Flags:
   -h, --help                    Show this help.
-  -y, --yes                     Accept all derived proposals and validation candidates.
+  -y, --yes                     Accept derived proposals; confirm a live-owner unlock.
   -c, --config <path>           Configuration file (default: GREMLYN_CONFIG or gremlyn.yaml).
   -r, --repo <path>             Local checkout for setup's first repository registration.
       --probe                   Run the optional seeded agent probe during setup.
@@ -167,6 +170,20 @@ async function runWithCommand(command: Command, args: readonly string[]): Promis
         ...io,
       };
       return (await addRepository(options)).exitCode;
+    }
+    if (command === "unlock") {
+      if (!parsed.positionals[0] || parsed.positionals.length !== 1) {
+        process.stderr.write("unlock requires exactly one positional <data-dir>.\n\n");
+        process.stderr.write(HELP);
+        return 2;
+      }
+      return (
+        await unlockDataDirectory({
+          dataDir: parsed.positionals[0],
+          yes: values.yes,
+          ...io,
+        })
+      ).exitCode;
     }
     if (parsed.positionals.length > 0) {
       process.stderr.write("verify does not accept positional paths; use --config.\n");

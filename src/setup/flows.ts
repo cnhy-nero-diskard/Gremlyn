@@ -18,6 +18,10 @@ import { probe as runAgentProbe } from "../agent/probe.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { OctokitGitHubClient } from "../github/octokit.js";
 import { createRedactor } from "../log/redact.js";
+import {
+  inspectDataDirectoryLock,
+  removeDataDirectoryLockClaim,
+} from "../orchestrator/instance-lock.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 import {
   appendRepository,
@@ -39,6 +43,7 @@ import {
   closeInput,
   createReadlineInput,
   resolveCommandList,
+  resolveConfirmation,
   resolveInput,
   type InputSource,
 } from "./input.js";
@@ -82,6 +87,17 @@ export interface SetupOptions extends FlowIO {
   probe?: boolean | undefined;
   addRepository?:
     Omit<AddRepositoryOptions, "configPath" | "sourcePath" | keyof FlowIO> | undefined;
+}
+
+export interface UnlockOptions extends FlowIO {
+  dataDir: string;
+  yes?: boolean | undefined;
+}
+
+export interface UnlockResult {
+  exitCode: number;
+  dataDir: string;
+  removed: boolean;
 }
 
 interface RuntimeFlowIO extends Omit<FlowIO, "env" | "out" | "err" | "verificationEnvironment"> {
@@ -142,6 +158,42 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
 
 export function defaultExamplePath(): string {
   return fileURLToPath(new URL("../../config.example.yaml", import.meta.url));
+}
+
+/** Release a data-directory claim without loading configuration or starting Gremlyn. */
+export async function unlockDataDirectory(options: UnlockOptions): Promise<UnlockResult> {
+  const io = makeIO(options);
+  const inspection = inspectDataDirectoryLock(options.dataDir);
+  if (!inspection.exists) {
+    io.out(`No Gremlyn claim found for ${options.dataDir}.`);
+    return { exitCode: 0, dataDir: options.dataDir, removed: false };
+  }
+
+  if (inspection.owner !== undefined && inspection.ownerAlive) {
+    io.out(
+      `Gremlyn data directory ${options.dataDir} is owned by live process ${inspection.owner.pid}.`,
+    );
+    const confirmed = await resolveConfirmation("unlock", {
+      proposed: true,
+      question: "Override the live owner and remove its claim?",
+      ...(options.yes === undefined ? {} : { yes: options.yes }),
+      ...(io.input === undefined ? {} : { input: io.input }),
+    });
+    if (!confirmed) {
+      io.out("Unlock declined; the claim was left untouched.");
+      return { exitCode: 0, dataDir: options.dataDir, removed: false };
+    }
+  } else {
+    io.out(
+      `Releasing ${inspection.owner === undefined ? "an abandoned" : "a dead-owner"} claim for ${options.dataDir}.`,
+    );
+  }
+
+  const removed = removeDataDirectoryLockClaim(options.dataDir);
+  io.out(
+    removed ? `Released Gremlyn claim for ${options.dataDir}.` : "The claim was already absent.",
+  );
+  return { exitCode: 0, dataDir: options.dataDir, removed };
 }
 
 /**
@@ -755,7 +807,9 @@ function isExampleRepositoryRecord(entry: Record<string, unknown>): boolean {
     return sourcePath.includes("your-repo") || sourcePath.includes("your\\\\repo");
   }
   if (entry.name === "your-opencode-repo") {
-    return sourcePath.includes("your-opencode-repo") || sourcePath.includes("your\\\\opencode-repo");
+    return (
+      sourcePath.includes("your-opencode-repo") || sourcePath.includes("your\\\\opencode-repo")
+    );
   }
   return false;
 }

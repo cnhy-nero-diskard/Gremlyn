@@ -8,7 +8,7 @@
 - [x] 1.6 Escalate a second stop request to process termination instead of returning on the `stopping` guard, attempting release first; verify a test drives two stop requests and asserts the escalation path ran
 - [x] 1.7 Wrap everything after `acquire` in `main` with `try/finally` so a startup failure releases the claim; verify a test forces a post-claim startup failure (unusable agent binary or mismatched authenticated login) and asserts the claim file is gone afterwards
 - [x] 1.8 Register a synchronous best-effort release on `exit`, `uncaughtException` and `unhandledRejection`, and widen the signal set to include `SIGHUP` and `SIGBREAK`; verify a test spawns a child that throws from a timer and asserts no claim file remains
-- [ ] 1.9 Add `unlock` to the setup CLI: release a claim without starting the orchestrator, requiring explicit confirmation when the recorded owner is live; verify `tests/setup.test.ts` covers the dead-owner, live-owner-declined, and live-owner-confirmed cases
+- [x] 1.9 Add `unlock` to the setup CLI: release a claim without starting the orchestrator, requiring explicit confirmation when the recorded owner is live; verify `tests/setup.test.ts` covers the dead-owner, live-owner-declined, and live-owner-confirmed cases
 
 ## 2. Repository provider and model fidelity
 

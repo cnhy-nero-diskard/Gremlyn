@@ -12,6 +12,13 @@ export interface InstanceLockClaim {
   pid: number;
 }
 
+export interface DataDirectoryLockInspection {
+  path: string;
+  exists: boolean;
+  owner?: InstanceLockClaim;
+  ownerAlive: boolean;
+}
+
 /** Parse the current claim format, rejecting legacy and malformed contents. */
 export function parseLockClaim(contents: string): InstanceLockClaim | undefined {
   try {
@@ -32,6 +39,38 @@ export function parseLockClaim(contents: string): InstanceLockClaim | undefined 
   }
 }
 
+export function dataDirectoryLockPath(dataDir: string): string {
+  return join(dataDir, ".gremlyn.lock");
+}
+
+/** Inspect a claim without opening the data directory or database. */
+export function inspectDataDirectoryLock(dataDir: string): DataDirectoryLockInspection {
+  const path = dataDirectoryLockPath(dataDir);
+  try {
+    const owner = parseLockClaim(readFileSync(path, "utf8"));
+    return {
+      path,
+      exists: true,
+      ...(owner === undefined ? {} : { owner }),
+      ownerAlive: owner !== undefined && isLockOwnerAlive(owner.pid),
+    };
+  } catch (error) {
+    if (isMissingError(error)) return { path, exists: false, ownerAlive: false };
+    return { path, exists: true, ownerAlive: false };
+  }
+}
+
+/** Remove a claim without starting an orchestrator. */
+export function removeDataDirectoryLockClaim(dataDir: string): boolean {
+  try {
+    unlinkSync(dataDirectoryLockPath(dataDir));
+    return true;
+  } catch (error) {
+    if (isMissingError(error)) return false;
+    throw error;
+  }
+}
+
 /** Exclusive process marker for the configured data directory. */
 export class DataDirectoryLock {
   private released = false;
@@ -43,7 +82,7 @@ export class DataDirectoryLock {
 
   static acquire(dataDir: string): DataDirectoryLock {
     mkdirSync(dataDir, { recursive: true });
-    const path = join(dataDir, ".gremlyn.lock");
+    const path = dataDirectoryLockPath(dataDir);
     for (;;) {
       let descriptor: number;
       try {
@@ -56,7 +95,7 @@ export class DataDirectoryLock {
         }
 
         const owner = readLockOwner(path);
-        if (owner !== undefined && isProcessAlive(owner.pid)) {
+        if (owner !== undefined && isLockOwnerAlive(owner.pid)) {
           throw new InstanceLockError(
             `another Gremlyn instance is already using data directory ${dataDir} (pid ${owner.pid})`,
           );
@@ -112,7 +151,7 @@ function readLockOwner(path: string): InstanceLockClaim | undefined {
   }
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isLockOwnerAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
