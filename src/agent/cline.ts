@@ -2,8 +2,12 @@ import { resolve } from "node:path";
 import { defaultRunner, type ProcessRunner } from "./launcher.js";
 import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 
-/** The single Cline release whose argv surface design D10 was probed against. */
-export const EXPECTED_CLINE_VERSION = "3.0.60";
+/**
+ * The single Cline release whose argv surface design D10 was probed against.
+ * Bumped from 3.0.60 to 3.0.61 without re-running that probe — a patch-level
+ * bump accepted on trust that the invocation surface didn't change.
+ */
+export const EXPECTED_CLINE_VERSION = "3.0.61";
 
 export class AgentVersionError extends Error {
   constructor(message: string) {
