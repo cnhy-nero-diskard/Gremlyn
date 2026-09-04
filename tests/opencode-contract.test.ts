@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { ClineExecutor, extractSessionId } from "../src/agent/cline.js";
 import type { ProcessRunner } from "../src/agent/launcher.js";
 import { OPENCODE_CREDENTIAL_FILES, attemptCredentialPath } from "../src/agent/credentials.js";
@@ -159,6 +159,24 @@ test("OpenCode contributes isolated, absolute XDG data/state directories and no 
   }
   const serialized = JSON.stringify(env);
   assert.doesNotMatch(serialized, /sk-|token|secret|api[_-]?key/iu);
+});
+
+/**
+ * The orchestrator builds an attempt data dir from its configured `data_dir`,
+ * which is customarily relative (`.gremlyn`), and creates and seeds it from
+ * its own process cwd. The agent, however, runs with the *workspace* as cwd:
+ * a relative XDG_DATA_HOME would resolve there instead, putting OpenCode's
+ * session database inside the repository under review — where the publish
+ * step commits it — and leaving the seeded auth.json unread. The executor
+ * must therefore absolutise whatever it is handed.
+ */
+test("a relative attempt data dir still yields absolute OpenCode state directories", () => {
+  const relative = join(".gremlyn", "attempts", "77");
+  const env = new OpenCodeExecutor().additionalEnvironment(relative);
+  assert.ok(isAbsolute(env.XDG_DATA_HOME!), `expected ${env.XDG_DATA_HOME} to be absolute`);
+  assert.ok(isAbsolute(env.XDG_STATE_HOME!), `expected ${env.XDG_STATE_HOME} to be absolute`);
+  assert.equal(env.XDG_DATA_HOME, join(resolve(relative), "xdg-data"));
+  assert.equal(env.XDG_STATE_HOME, join(resolve(relative), "xdg-state"));
 });
 
 test("two attempts get independent OpenCode state directories", () => {

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { AgentVersionError, extractSessionId, extractVersion } from "./cline.js";
 import { defaultRunner, type ProcessRunner } from "./launcher.js";
 import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
@@ -40,9 +40,17 @@ export class OpenCodeExecutor implements AgentExecutor {
    * of concurrency defect the credential-isolation change already fixed once.
    */
   additionalEnvironment(dataDir: string): Record<string, string> {
+    // Absolute, for the same reason Cline's --data-dir is: Gremlyn creates and
+    // seeds the attempt directory from its own process cwd, while the agent
+    // runs with the workspace as cwd. A relative XDG_DATA_HOME would resolve
+    // against the workspace instead, so OpenCode would write its session
+    // database inside the repository it is editing — committed wholesale by
+    // the publish step — and would look for the seeded auth.json somewhere it
+    // was never written.
+    const attempt = resolve(dataDir);
     return {
-      XDG_DATA_HOME: join(dataDir, "xdg-data"),
-      XDG_STATE_HOME: join(dataDir, "xdg-state"),
+      XDG_DATA_HOME: join(attempt, "xdg-data"),
+      XDG_STATE_HOME: join(attempt, "xdg-state"),
     };
   }
 
