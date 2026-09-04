@@ -42,6 +42,8 @@ const DEFAULT_CREDENTIAL_FILES: Record<string, readonly string[]> = {
 };
 
 const DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC = 7 * 24 * 60 * 60;
+const DEFAULT_ARTIFACT_RETENTION_AGE_SEC = 30 * 24 * 60 * 60;
+const DEFAULT_ARTIFACT_RETENTION_BYTES = 1_073_741_824;
 
 /** Kinds whose CLI takes a first-class provider argument distinct from the model id. */
 export const KINDS_REQUIRING_PROVIDER = new Set(["cline"]);
@@ -89,6 +91,11 @@ export interface AppConfig {
     enabled: boolean;
     minimumAgeSec: number;
   };
+  artifactRetention: {
+    enabled: boolean;
+    maximumAgeSec: number;
+    maximumTotalBytes: number;
+  };
   agentRetries: number;
   allowedAuthors: string[];
   agents: Record<string, AgentDefinition>;
@@ -121,6 +128,14 @@ interface RawConfig {
   workspace_reclamation?: {
     enabled?: unknown;
     minimum_age_seconds?: unknown;
+  };
+  artifact_retention?: {
+    enabled?: unknown;
+    maximum_age_seconds?: unknown;
+    maximum_total_bytes?: unknown;
+    /** Backward-compatible short spellings accepted by the loader. */
+    max_age_seconds?: unknown;
+    max_total_bytes?: unknown;
   };
   allowed_authors?: unknown;
   agents?: Record<
@@ -391,6 +406,46 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     );
   }
 
+  // Artifact retention is also opt-in. Age and total-size ceilings are kept
+  // separate so a deployment can bound runaway disk use without deleting
+  // recent terminal diagnostics prematurely.
+  const artifactRetentionEnabled = asBoolean(raw.artifact_retention?.enabled) ?? false;
+  if (
+    raw.artifact_retention?.enabled !== undefined &&
+    artifactRetentionEnabled === false &&
+    raw.artifact_retention.enabled !== false
+  ) {
+    problems.push("artifact_retention.enabled must be a boolean");
+  }
+  const configuredArtifactAge =
+    raw.artifact_retention?.maximum_age_seconds ?? raw.artifact_retention?.max_age_seconds;
+  const parsedArtifactAge = asNumber(configuredArtifactAge);
+  const artifactMaximumAgeSec = parsedArtifactAge ?? DEFAULT_ARTIFACT_RETENTION_AGE_SEC;
+  if (
+    configuredArtifactAge !== undefined &&
+    (parsedArtifactAge === undefined ||
+      !Number.isInteger(artifactMaximumAgeSec) ||
+      artifactMaximumAgeSec < 0)
+  ) {
+    problems.push(
+      `artifact_retention.maximum_age_seconds must be a non-negative integer (got ${String(configuredArtifactAge)})`,
+    );
+  }
+  const configuredArtifactBytes =
+    raw.artifact_retention?.maximum_total_bytes ?? raw.artifact_retention?.max_total_bytes;
+  const parsedArtifactBytes = asNumber(configuredArtifactBytes);
+  const artifactMaximumTotalBytes = parsedArtifactBytes ?? DEFAULT_ARTIFACT_RETENTION_BYTES;
+  if (
+    configuredArtifactBytes !== undefined &&
+    (parsedArtifactBytes === undefined ||
+      !Number.isSafeInteger(artifactMaximumTotalBytes) ||
+      artifactMaximumTotalBytes < 0)
+  ) {
+    problems.push(
+      `artifact_retention.maximum_total_bytes must be a non-negative safe integer (got ${String(configuredArtifactBytes)})`,
+    );
+  }
+
   // Author allowlist. The orchestrator identity must never self-authorize.
   const allowedAuthors = asStringList(raw.allowed_authors) ?? [];
   if (allowedAuthors.length === 0) problems.push("allowed_authors must not be empty");
@@ -478,6 +533,11 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     workspaceReclamation: {
       enabled: workspaceReclamationEnabled,
       minimumAgeSec: workspaceMinimumAgeSec,
+    },
+    artifactRetention: {
+      enabled: artifactRetentionEnabled,
+      maximumAgeSec: artifactMaximumAgeSec,
+      maximumTotalBytes: artifactMaximumTotalBytes,
     },
     agentRetries,
     allowedAuthors,

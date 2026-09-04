@@ -27,4 +27,9 @@ test("config.example.yaml parses successfully with no real credentials", () => {
     enabled: false,
     minimumAgeSec: 604800,
   });
+  assert.deepEqual(config.artifactRetention, {
+    enabled: false,
+    maximumAgeSec: 2592000,
+    maximumTotalBytes: 1073741824,
+  });
 });

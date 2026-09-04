@@ -61,6 +61,11 @@ test("loads a valid config", () => {
     enabled: false,
     minimumAgeSec: 604800,
   });
+  assert.deepEqual(config.artifactRetention, {
+    enabled: false,
+    maximumAgeSec: 2592000,
+    maximumTotalBytes: 1073741824,
+  });
 });
 
 test("loads workspace reclamation settings and rejects invalid values", () => {
@@ -93,6 +98,57 @@ test("loads workspace reclamation settings and rejects invalid values", () => {
       ),
     (error: unknown) =>
       error instanceof ConfigError && /workspace_reclamation\.enabled must be a boolean/u.test(error.message),
+  );
+});
+
+test("loads artifact retention settings and rejects invalid values", () => {
+  const configured = loadConfig(
+    writeConfig(
+      `${VALID_CONFIG}\nartifact_retention:\n  enabled: true\n  maximum_age_seconds: 86400\n  maximum_total_bytes: 4096\n`,
+    ),
+    VALID_ENV,
+  );
+  assert.deepEqual(configured.artifactRetention, {
+    enabled: true,
+    maximumAgeSec: 86400,
+    maximumTotalBytes: 4096,
+  });
+  for (const value of ["1.5", "-1", '"one month"']) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  maximum_age_seconds: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /artifact_retention\.maximum_age_seconds must be a non-negative integer/u.test(
+          error.message,
+        ),
+    );
+  }
+  for (const value of ["1.5", "-1", '"one gigabyte"']) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  maximum_total_bytes: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /artifact_retention\.maximum_total_bytes must be a non-negative safe integer/u.test(
+          error.message,
+        ),
+    );
+  }
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  enabled: yes\n`),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError && /artifact_retention\.enabled must be a boolean/u.test(error.message),
   );
 });
 

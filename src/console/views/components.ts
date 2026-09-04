@@ -175,7 +175,7 @@ export function validationTable(runs: ValidationRun[]): string {
     runs
       .map(
         (run) =>
-          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary><pre>${escapeHtml(run.output)}</pre></details></td></tr>`,
+          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details></td></tr>`,
       )
       .join("") || '<tr><td colspan="4" class="muted">No validation runs recorded.</td></tr>';
   return `<table class="validation-table"><thead><tr><th>Command</th><th>Exit code</th><th>Duration</th><th>Output</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -190,6 +190,21 @@ function displayCommand(command: string): string {
   } catch {
     return command;
   }
+}
+
+function artifactOutput(
+  label: string,
+  reference: string | null,
+  retained: boolean,
+  output: string,
+): string {
+  if (reference !== null && !retained) {
+    return `<p class="artifact-not-retained muted">${escapeHtml(label)} is no longer retained by the disk policy.</p>`;
+  }
+  if (reference === null) {
+    return `<p class="artifact-not-retained muted">No ${escapeHtml(label.toLowerCase())} was captured.</p>`;
+  }
+  return `<pre>${escapeHtml(output)}</pre>`;
 }
 
 /**
@@ -234,7 +249,7 @@ export function attemptCard(
     options.showActivity === false
       ? ""
       : `<details class="activity-fold"><summary>Agent transcript</summary>${agentActivity(attempt.activity, "", options.timeZone)}</details>`;
-  const output = `<details><summary>Raw agent output</summary><pre>${escapeHtml(attempt.output)}</pre></details>`;
+  const output = `<details><summary>Raw agent output</summary>${artifactOutput("Captured agent output", attempt.output_ref, attempt.outputRetained, attempt.output)}</details>`;
   return `<article class="attempt">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
 }
 

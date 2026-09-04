@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
@@ -496,6 +496,27 @@ test("job detail separates attempts and shows context, failure, output, validati
   }
   assert.equal(response.body.includes(SECRET), false);
   assert.match(response.body, /&lt;script&gt;\[redacted\]&lt;\/script&gt;/);
+  await app.close();
+  data.store.close();
+});
+
+test("job detail labels a trimmed captured artifact without losing its reference", async () => {
+  const data = fixture();
+  unlinkSync(data.outputPath);
+  const model = readJobDetail(data.store.db, data.jobId, [SECRET]);
+  assert.ok(model);
+  assert.equal(model.attempts[0]?.output_ref, data.outputPath);
+  assert.equal(model.attempts[0]?.outputRetained, false);
+
+  const app = buildConsoleServer(data.options);
+  const response = await app.inject({
+    method: "GET",
+    url: `/jobs/${data.jobId}`,
+    headers: AUTH,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /Captured agent output is no longer retained by the disk policy\./u);
+  assert.match(response.body, /Raw agent output/u);
   await app.close();
   data.store.close();
 });

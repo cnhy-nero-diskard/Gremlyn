@@ -22,6 +22,7 @@ import {
 } from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
 import { reclaimWorkspaces } from "./workspace/reclamation.js";
+import { retainArtifacts } from "./artifact-retention.js";
 
 const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const;
 
@@ -137,7 +138,25 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         retained: report.retained,
       });
     };
+    const sweepArtifacts = async (phase: "startup" | "poll"): Promise<void> => {
+      const report = await retainArtifacts({
+        dataDir: config.dataDir,
+        db: store.db,
+        maximumAgeMs: config.artifactRetention.maximumAgeSec * 1_000,
+        maximumTotalBytes: config.artifactRetention.maximumTotalBytes,
+        actions: operatorActions,
+      });
+      logger.info("artifact retention sweep", {
+        phase,
+        candidates: report.candidates,
+        totalBytes: report.totalBytes,
+        removed: report.removed,
+        removedBytes: report.removedBytes,
+        remainingBytes: report.remainingBytes,
+      });
+    };
     if (config.workspaceReclamation.enabled) await sweepWorkspaces("startup");
+    if (config.artifactRetention.enabled) await sweepArtifacts("startup");
     const registry = createDefaultCommandRegistry();
     const credentialSources = new Map(
       Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
@@ -260,6 +279,15 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
           await sweepWorkspaces("poll");
         } catch (error) {
           logger.warn("workspace reclamation sweep failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (config.artifactRetention.enabled) {
+        try {
+          await sweepArtifacts("poll");
+        } catch (error) {
+          logger.warn("artifact retention sweep failed", {
             error: error instanceof Error ? error.message : String(error),
           });
         }

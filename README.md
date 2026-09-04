@@ -10,6 +10,12 @@ npm run setup -- reclaim --preview --config .\gremlyn.yaml
 
 Set `workspace_reclamation.enabled: true` and adjust `minimum_age_seconds` only after reviewing the preview. Every reclamation and refusal is recorded in the operator audit.
 
+Artifact retention is separately opt-in. Set `artifact_retention.enabled: true`
+to trim terminal-job output, validation files, and per-attempt state after
+`maximum_age_seconds` or when the combined `maximum_total_bytes` ceiling is
+exceeded. Trimming is oldest-first and never removes artifacts for a live job;
+the job view labels files that are no longer retained.
+
 ## Requirements
 
 - Windows 10/11 with PowerShell (WSL is not required)

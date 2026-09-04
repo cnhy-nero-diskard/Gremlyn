@@ -51,9 +51,9 @@
 
 ## 6. Artifact retention
 
-- [ ] 6.1 Add age-and-total-size retention for captured output, validation artifacts and per-attempt state, restricted to terminal jobs; verify tests assert artifacts of non-terminal jobs are retained and that the ceiling trims oldest-first
-- [ ] 6.2 Report trimmed artifacts in the job view as no longer retained rather than presenting an empty panel, leaving `output_ref` in place; verify a test opens a job whose output file was trimmed and asserts the recorded detail still renders with an explicit not-retained notice
-- [ ] 6.3 Add the retention settings to the config loader with documentation in `config.example.yaml` and `README.md`; verify the config tests cover them
+- [x] 6.1 Add age-and-total-size retention for captured output, validation artifacts and per-attempt state, restricted to terminal jobs; verify tests assert artifacts of non-terminal jobs are retained and that the ceiling trims oldest-first
+- [x] 6.2 Report trimmed artifacts in the job view as no longer retained rather than presenting an empty panel, leaving `output_ref` in place; verify a test opens a job whose output file was trimmed and asserts the recorded detail still renders with an explicit not-retained notice
+- [x] 6.3 Add the retention settings to the config loader with documentation in `config.example.yaml` and `README.md`; verify the config tests cover them
 
 ## 7. A branch already checked out elsewhere
 
