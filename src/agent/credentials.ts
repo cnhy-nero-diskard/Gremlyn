@@ -45,6 +45,34 @@ export const CREDENTIAL_SEED_FILES = ["secrets.json", "settings/providers.json"]
 export type CredentialSeedFile = (typeof CREDENTIAL_SEED_FILES)[number];
 
 /**
+ * OpenCode's credential seed set (design D-opencode). `opencode debug paths`
+ * keeps the operator's authenticated credential in a single file under its
+ * data root, unlike Cline's two-file split — probe-verified against opencode
+ * 1.18.27: a paid model fails unseeded (`UnknownError`) and succeeds seeded.
+ */
+export const OPENCODE_CREDENTIAL_FILES = ["auth.json"] as const;
+
+/**
+ * Where a seeded credential file must live *inside the attempt data dir*,
+ * relative to it, keyed by executor kind. Source-relative and attempt-relative
+ * layouts differ for OpenCode: `OpenCodeExecutor.additionalEnvironment` points
+ * `XDG_DATA_HOME` at `<attempt>/xdg-data`, and OpenCode 1.18.27 reads auth at
+ * `<XDG_DATA_HOME>/opencode/auth.json` — so seeding `auth.json` at the attempt
+ * root would leave the agent unauthenticated and write-back looking in the
+ * wrong root. The operator's credential source keeps the file at its own root.
+ * Kinds without an entry seed (and persist) at the attempt root directly.
+ */
+const CREDENTIAL_ATTEMPT_ROOTS: Record<string, string> = {
+  opencode: "xdg-data/opencode",
+};
+
+/** Attempt-relative path for a seeded credential file of the given kind. */
+export function attemptCredentialPath(kind: string | undefined, file: string): string {
+  const root = kind === undefined ? undefined : CREDENTIAL_ATTEMPT_ROOTS[kind];
+  return root === undefined ? file : join(root, file);
+}
+
+/**
  * Seed the declared credential files from a configured source directory into a
  * fresh attempt data directory, with owner-only permissions (0o600).
  *
@@ -54,12 +82,13 @@ export function seedAgentCredentials(
   sourceDir: string,
   destDir: string,
   files: readonly string[] = CREDENTIAL_SEED_FILES,
+  kind?: string,
 ): string[] {
   mkdirSync(destDir, { recursive: true });
   const seeded: string[] = [];
   for (const file of files) {
     const src = join(sourceDir, file);
-    const dest = join(destDir, file);
+    const dest = join(destDir, attemptCredentialPath(kind, file));
     if (!existsSync(src)) {
       throw new Error(`credential source file not found: ${src}`);
     }
@@ -152,10 +181,13 @@ export function persistRotatedCredentials(
   sourceDir: string,
   attemptDataDir: string,
   files: readonly string[] = CREDENTIAL_SEED_FILES,
+  kind?: string,
 ): string[] {
   const rotated: string[] = [];
   for (const file of files) {
-    const src = join(attemptDataDir, file);
+    // The agent mutates its copy at the attempt-relative layout; the source
+    // keeps the same file at its own (kind-independent) root.
+    const src = join(attemptDataDir, attemptCredentialPath(kind, file));
     const dest = join(sourceDir, file);
     if (!existsSync(src)) continue;
     let updated: Buffer;

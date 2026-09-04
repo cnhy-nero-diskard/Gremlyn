@@ -6,6 +6,19 @@
  * bundled feed keeps the picker useful offline. OpenAI Codex is deliberately
  * kept as a separate provider: Cline uses bare Codex model ids there, while
  * Cline usage-billing models use provider-qualified ids.
+ *
+ * The OpenCode entry is a curated, static list of `opencode/<model>` ids from
+ * its built-in Zen gateway — the one namespace every installation can reach
+ * without extra provider auth. It exists purely to save typing for the
+ * common case; picking "Custom provider" and typing any `provider/model`
+ * OpenCode itself understands (per `opencode models opencode`) still works,
+ * per config.example.yaml.
+ *
+ * Every entry names the executor kinds (`AgentDefinition.kind`) it belongs
+ * to: the Cline billing, ClinePass, and Codex entries serve Cline
+ * repositories, while the OpenCode gateway serves OpenCode ones. The console
+ * filters the picker by a repository's agent kind, so a card never offers a
+ * provider its own executor could not authenticate against.
  */
 
 export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models";
@@ -20,6 +33,8 @@ export interface ProviderModelOption {
 
 export interface ProviderOption {
   id: string;
+  /** Executor kinds (`AgentDefinition.kind`) whose repositories this entry serves. */
+  kinds: readonly string[];
   name: string;
   description: string;
   auth: string;
@@ -169,6 +184,100 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
   ],
 };
 
+/**
+ * The `opencode/<model>` ids OpenCode's built-in Zen gateway serves, verbatim
+ * from `opencode models opencode` on the pinned 1.18.27 (see
+ * EXPECTED_OPENCODE_VERSION). OpenCode also accepts other configured
+ * providers folded into the same `-m` argument (e.g.
+ * `anthropic/claude-opus-5`), but those depend on each installation's own
+ * `opencode auth login` state, so only the always-available `opencode/`
+ * namespace is enumerated here; the "Custom provider" path
+ * (config.example.yaml) remains the way to target anything else.
+ *
+ * Kept as bare ids rather than hand-written entries: names come from the same
+ * `modelName` humanization the live Cline feed gets, so a version bump is a
+ * paste of the command's output rather than 60-odd descriptions to invent.
+ */
+const OPENCODE_MODEL_IDS: readonly string[] = [
+  "opencode/big-pickle",
+  "opencode/claude-fable-5",
+  "opencode/claude-fable-5-1",
+  "opencode/claude-haiku-4-5",
+  "opencode/claude-opus-4-5",
+  "opencode/claude-opus-4-6",
+  "opencode/claude-opus-4-7",
+  "opencode/claude-opus-4-8",
+  "opencode/claude-opus-5",
+  "opencode/claude-sonnet-4",
+  "opencode/claude-sonnet-4-5",
+  "opencode/claude-sonnet-4-6",
+  "opencode/claude-sonnet-5",
+  "opencode/deepseek-v4-flash",
+  "opencode/deepseek-v4-pro",
+  "opencode/gemini-3-flash",
+  "opencode/gemini-3.1-pro",
+  "opencode/gemini-3.5-flash",
+  "opencode/gemini-3.5-flash-lite",
+  "opencode/gemini-3.6-flash",
+  "opencode/gemini-3.7-flash",
+  "opencode/gemini-3.8-flash",
+  "opencode/glm-5",
+  "opencode/glm-5.1",
+  "opencode/glm-5.2",
+  "opencode/gpt-5",
+  "opencode/gpt-5-codex",
+  "opencode/gpt-5-nano",
+  "opencode/gpt-5.1",
+  "opencode/gpt-5.1-codex",
+  "opencode/gpt-5.1-codex-max",
+  "opencode/gpt-5.1-codex-mini",
+  "opencode/gpt-5.2",
+  "opencode/gpt-5.2-codex",
+  "opencode/gpt-5.3-codex",
+  "opencode/gpt-5.3-codex-spark",
+  "opencode/gpt-5.4",
+  "opencode/gpt-5.4-mini",
+  "opencode/gpt-5.4-nano",
+  "opencode/gpt-5.4-pro",
+  "opencode/gpt-5.5",
+  "opencode/gpt-5.5-pro",
+  "opencode/gpt-5.6-luna",
+  "opencode/gpt-5.6-sol",
+  "opencode/gpt-5.6-terra",
+  "opencode/grok-4.5",
+  "opencode/grok-4.6",
+  "opencode/grok-build-0.1",
+  "opencode/kimi-k2.5",
+  "opencode/kimi-k2.6",
+  "opencode/kimi-k2.7-code",
+  "opencode/kimi-k3",
+  "opencode/ling-3.0-flash-fin-free",
+  "opencode/mimo-v2.5-free",
+  "opencode/minimax-m2.5",
+  "opencode/minimax-m2.7",
+  "opencode/minimax-m3",
+  "opencode/muse-spark-1.2",
+  "opencode/muse-spark-1.2-contributor-free",
+  "opencode/muse-spark-1.3-contributor-free",
+  "opencode/nemotron-3-ultra-free",
+  "opencode/nemotron-3.5-lightning-free",
+  "opencode/qwen3.5-plus",
+  "opencode/qwen3.6-plus",
+];
+
+/**
+ * Zen exposes no per-model descriptions over the CLI, so the badge is the one
+ * thing worth deriving: the `-free` suffix is Zen's own no-cost marker and is
+ * what an operator actually scans this list for.
+ */
+function opencodeModels(): ProviderModelOption[] {
+  return OPENCODE_MODEL_IDS.map((id) => ({
+    id,
+    name: modelName(id),
+    ...(id.endsWith("-free") ? { tier: "free" as const } : {}),
+  }));
+}
+
 const CODEX_MODELS: ProviderModelOption[] = [
   {
     id: "gpt-5.6-sol",
@@ -232,14 +341,20 @@ function mergeFeaturedModels(
 function modelName(id: string): string {
   const slug = id.split("/").at(-1) ?? id;
   return slug
+    // OpenCode carries Anthropic's dashed version suffixes (claude-haiku-4-5),
+    // where the separator is a decimal point rather than a word break; Cline's
+    // ids already dot theirs, so this only rescues the former from "Haiku 4 5".
+    .replace(/(?<=\d)-(?=\d)/gu, ".")
     .replace(/[-_]+/gu, " ")
     .replace(/\b\w/gu, (letter) => letter.toUpperCase())
     .replace(/\bGpt\b/gu, "GPT")
-    .replace(/\bAi\b/gu, "AI");
+    .replace(/\bAi\b/gu, "AI")
+    .replace(/\bGlm\b/gu, "GLM");
 }
 
 function provider(
   id: string,
+  kinds: readonly string[],
   name: string,
   description: string,
   auth: string,
@@ -256,7 +371,7 @@ function provider(
           tags: ["DEFAULT"],
         },
       ];
-  return { id, name, description, auth, defaultModelId, models: allModels };
+  return { id, kinds, name, description, auth, defaultModelId, models: allModels };
 }
 
 function makeCatalog(
@@ -273,6 +388,7 @@ function makeCatalog(
     providers: [
       provider(
         "cline",
+        ["cline"],
         "Cline",
         "Cline usage-billing with featured and free models.",
         "Sign in with Cline",
@@ -284,6 +400,7 @@ function makeCatalog(
       ),
       provider(
         "cline-pass",
+        ["cline"],
         "ClinePass",
         "ClinePass subscription models with higher usage limits.",
         "Sign in with ClinePass",
@@ -292,11 +409,21 @@ function makeCatalog(
       ),
       provider(
         "openai-codex",
+        ["cline"],
         "OpenAI Codex",
         "ChatGPT subscription access through Cline's OpenAI Codex provider.",
         "Sign in with ChatGPT Subscription",
         "gpt-5.6-sol",
         CODEX_MODELS.map((model) => ({ ...model })),
+      ),
+      provider(
+        "opencode",
+        ["opencode"],
+        "OpenCode",
+        "OpenCode's built-in Zen gateway models, folded into the model id.",
+        "opencode auth login",
+        "opencode/claude-sonnet-5",
+        opencodeModels(),
       ),
     ],
   };

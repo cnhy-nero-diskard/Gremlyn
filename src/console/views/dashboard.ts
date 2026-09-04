@@ -1,11 +1,50 @@
 import type { DashboardModel, JobSummary, RepositorySummary } from "../queries.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../types.js";
+import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../../config/loader.js";
 import {
   bundledProviderCatalog,
   type ProviderCatalogSnapshot,
   type ProviderModelOption,
+  type ProviderOption,
 } from "../../agent/provider-catalog.js";
 import { duration, escapeHtml, relativeTimestamp, statusPill } from "./components.js";
+
+/** Configured agent definitions, keyed by the agent id a repository references. */
+type AgentDefinitions = Record<string, AgentDefinition>;
+
+/**
+ * Per-repository agent options for the pickers: the executor kind its agent
+ * runs as, the effort tiers that agent declares, and whether its kind accepts
+ * an empty provider (a CLI that folds the provider into the model id).
+ * Unknown agents fall back to the global defaults so a repository row never
+ * renders an unpickable state.
+ */
+function agentOptionsFor(
+  repo: RepositorySummary,
+  agents: AgentDefinitions,
+): { efforts: readonly ReasoningEffort[]; providerOptional: boolean; kind: string | undefined } {
+  const definition = repo.agent === undefined ? undefined : agents[repo.agent];
+  return {
+    efforts: definition?.efforts ?? REASONING_EFFORTS,
+    providerOptional: definition !== undefined && !KINDS_REQUIRING_PROVIDER.has(definition.kind),
+    kind: definition?.kind,
+  };
+}
+
+/**
+ * The catalog entries a repository's agent kind may use. Providers are
+ * first-party to one executor (Cline billing/Codex vs OpenCode's Zen
+ * gateway), so a card only offers entries its own agent could authenticate
+ * against. Unknown agents fall back to the full catalog, matching the other
+ * agent defaults above.
+ */
+function providersForKind(
+  catalog: ProviderCatalogSnapshot,
+  kind: string | undefined,
+): ProviderOption[] {
+  if (kind === undefined) return catalog.providers;
+  return catalog.providers.filter((provider) => provider.kinds.includes(kind));
+}
 
 function validationLabel(repository: RepositorySummary): string {
   const commands = repository.validationCommands ?? [];
@@ -101,24 +140,35 @@ function modelOptions(
 function modelProviderControl(
   repo: RepositorySummary,
   catalog: ProviderCatalogSnapshot,
-  configuredEfforts: readonly ReasoningEffort[],
+  agents: AgentDefinitions,
 ): string {
   const providerId = repo.provider ?? "";
-  const knownProvider = catalog.providers.find((provider) => provider.id === providerId);
-  const providerValue = knownProvider ? providerId : CUSTOM_PROVIDER;
-  const providerOptions = catalog.providers
-    .map(
-      (provider) =>
-        `<option value="${escapeHtml(provider.id)}"${provider.id === providerId ? " selected" : ""}>${escapeHtml(providerOptionLabel(provider))}</option>`,
+  const { efforts, providerOptional, kind } = agentOptionsFor(repo, agents);
+  const providers = providersForKind(catalog, kind);
+  const knownProvider = providers.find((provider) => provider.id === providerId);
+  // An empty provider is a real state for provider-optional agents, not an
+  // unnamed custom one — render it as its own selectable option so saving the
+  // card round-trips the empty value instead of coercing it to a custom id.
+  const emptyProvider = providerOptional && providerId === "";
+  const providerValue = knownProvider || emptyProvider ? providerId : CUSTOM_PROVIDER;
+  const emptyOption = providerOptional
+    ? `<option value=""${emptyProvider ? " selected" : ""}>None — provider is folded into the model id</option>`
+    : "";
+  const providerOptions = [emptyOption]
+    .concat(
+      providers.map(
+        (provider) =>
+          `<option value="${escapeHtml(provider.id)}"${provider.id === providerId ? " selected" : ""}>${escapeHtml(providerOptionLabel(provider))}</option>`,
+      ),
     )
     .concat(
       `<option value="${CUSTOM_PROVIDER}"${providerValue === CUSTOM_PROVIDER ? " selected" : ""}>Custom provider</option>`,
     )
     .join("");
-  const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(knownProvider ? "" : providerId)}" placeholder="provider id"${knownProvider ? " hidden" : ""}>`;
-  const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${catalog.providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
+  const customProvider = `<input name="repo-provider-input-${repo.id}" data-repo-provider-input value="${escapeHtml(knownProvider || emptyProvider ? "" : providerId)}" placeholder="provider id"${knownProvider || emptyProvider ? " hidden" : ""}>`;
+  const modelSelect = `<select name="repo-model-select-${repo.id}" data-repo-model-select data-repo-field="model"${knownProvider ? "" : " hidden"}>${providers.map((provider) => `<optgroup label="${escapeHtml(providerOptionLabel(provider))}">${modelOptions(repo, provider.id, catalog)}</optgroup>`).join("")}</select>`;
   const modelInput = `<input name="repo-model-input-${repo.id}" data-repo-model-input data-repo-field="model" value="${escapeHtml(repo.model ?? "")}" placeholder="model id"${knownProvider ? " hidden" : ""}>`;
-  const effort = `<select name="repo-effort-${repo.id}" data-repo-effort data-repo-field="effort">${effortOptions(repo, configuredEfforts)}</select>`;
+  const effort = `<select name="repo-effort-${repo.id}" data-repo-effort data-repo-field="effort">${effortOptions(repo, efforts)}</select>`;
   const timeout = `<input name="repo-timeout-${repo.id}" data-repo-timeout type="number" min="1" step="1" inputmode="numeric" value="${repo.timeout_seconds === null || repo.timeout_seconds === undefined ? "" : String(repo.timeout_seconds)}" placeholder="No limit" aria-label="Agent timeout in seconds">`;
   const selectedModel = knownProvider?.models.find((model) => model.id === repo.model);
   const currentModel =
@@ -137,17 +187,19 @@ function modelProviderControl(
     : `<strong data-repo-model-name>Choose a model</strong><span class="model-picker-badges" data-repo-model-badges></span><code class="model-picker-id" data-repo-model-id hidden></code>`;
   const hint = knownProvider
     ? `${knownProvider.description} All catalog models are selectable.`
-    : "Custom provider; enter the exact provider and model ids.";
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
+    : emptyProvider
+      ? "No separate provider; enter the model id in provider/model form."
+      : "Custom provider; enter the exact provider and model ids.";
+  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}"${kind ? ` data-agent-kind="${escapeHtml(kind)}"` : ""}${providerOptional ? " data-provider-optional" : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label><label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
 }
 
 export function repositoryCards(
   repositories: RepositorySummary[],
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
-  configuredEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
+  agents: AgentDefinitions = {},
 ): string {
   if (repositories.length === 0) return '<p class="muted">No repositories configured.</p>';
-  return `<div class="grid">${repositories.map((repo) => repositoryCard(repo, catalog, configuredEfforts)).join("")}</div>`;
+  return `<div class="grid">${repositories.map((repo) => repositoryCard(repo, catalog, agents)).join("")}</div>`;
 }
 
 /**
@@ -159,13 +211,13 @@ export function repositoryCards(
 function repositoryCard(
   repo: RepositorySummary,
   catalog: ProviderCatalogSnapshot,
-  configuredEfforts: readonly ReasoningEffort[],
+  agents: AgentDefinitions,
 ): string {
   const on = repo.enabled === 1;
   const head = `<header class="repo-head"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><span class="state state-${on ? "on" : "off"}" data-enabled>${on ? "enabled" : "disabled"}</span><button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${on ? "Disable" : "Enable"}</button></header>`;
   const chips = `<p class="repo-chips"><span class="chip">agent <code>${escapeHtml(repo.agent ?? "unknown")}</code></span><span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
   const validation = `<div class="repo-validation"><h4>Validation commands</h4>${validationLabel(repo)}</div>`;
-  return `<article class="card repo-card">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, configuredEfforts)}</div>${validation}</article>`;
+  return `<article class="card repo-card">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${validation}</article>`;
 }
 
 /**
@@ -197,7 +249,7 @@ export function jobLane(title: string, jobs: JobSummary[], regionId?: string): s
 export function dashboardRegions(
   model: DashboardModel,
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
-  configuredEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
+  agents: AgentDefinitions = {},
 ): {
   health: string;
   repositories: string;
@@ -212,7 +264,7 @@ export function dashboardRegions(
   const catalogNote = `<p class="catalog-note">Provider catalog: ${escapeHtml(catalogStatus)} Cline models use provider-qualified ids; OpenAI Codex models use bare Codex ids.</p>`;
   return {
     health: `<section class="stat-strip" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimestamp(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.pollAgeSec === null ? "—" : `${String(health.pollAgeSec)}s`}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${String(health.pollIntervalSec)}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${String(health.queueDepth)}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${String(health.inFlight)} / ${String(health.concurrency)}</strong><small>jobs executing</small></div></section>`,
-    repositories: `<h2>Repositories <span class="muted panel-note">${String(model.repositories.length)}</span></h2>${catalogNote}${repositoryCards(model.repositories, catalog, configuredEfforts)}`,
+    repositories: `<h2>Repositories <span class="muted panel-note">${String(model.repositories.length)}</span></h2>${catalogNote}${repositoryCards(model.repositories, catalog, agents)}`,
     jobs: `<div class="lanes">${jobLane("Running", model.running)}${jobLane("Queued", model.queued)}${jobLane("Recent successes and failures", model.recent)}</div>`,
   };
 }
@@ -226,9 +278,9 @@ export function dashboardRegions(
 export function dashboardView(
   model: DashboardModel,
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
-  configuredEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
+  agents: AgentDefinitions = {},
 ): string {
-  const regions = dashboardRegions(model, catalog, configuredEfforts);
+  const regions = dashboardRegions(model, catalog, agents);
   const tracked = model.running.length + model.queued.length;
   const summary = `${String(model.repositories.length)} ${model.repositories.length === 1 ? "repository" : "repositories"} · ${String(tracked)} active ${tracked === 1 ? "job" : "jobs"}`;
   const head = `<header class="page-head"><div class="page-title"><h1>Dashboard</h1>${statusPill(model.health.status)}<span class="muted page-summary">${escapeHtml(summary)}</span></div><div id="health-region">${regions.health}</div><p class="sr-status" data-live-status role="status">Live updates are connected when supported.</p></header>`;

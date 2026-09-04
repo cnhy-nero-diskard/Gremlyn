@@ -1,9 +1,9 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ClineExecutor, EXPECTED_CLINE_VERSION } from "./agent/cline.js";
 import { removeAttemptDataDir, verifyCredentialSource } from "./agent/credentials.js";
 import { buildAgentEnvironment } from "./agent/environment.js";
+import { EXECUTOR_FACTORIES } from "./agent/registry.js";
 import { buildConsoleServer, consoleListenOptions } from "./console/server.js";
 import { loadConfig } from "./config/loader.js";
 import { OctokitGitHubClient } from "./github/octokit.js";
@@ -15,7 +15,7 @@ import { ResolutionOrchestrator } from "./orchestrator/resolution.js";
 import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
 import { JobStore } from "./store/jobs.js";
-import { REASONING_EFFORTS, type AgentExecutor, type ReasoningEffort } from "./types.js";
+import { type AgentExecutor, type ReasoningEffort } from "./types.js";
 import { syncRepositories } from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
 
@@ -27,7 +27,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const interrupted = new JobStore(store.db).interruptIncompleteJobs();
   cleanupStaleAttemptDirs(config.dataDir, store.db, interrupted);
   for (const definition of Object.values(config.agents)) {
-    verifyCredentialSource(definition.id, definition.credentialSource);
+    verifyCredentialSource(definition.id, definition.credentialSource, definition.credentialFiles);
   }
   const logger = new Logger({
     level: config.logLevel,
@@ -44,11 +44,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 
   const executors = new Map<string, AgentExecutor>();
   for (const definition of Object.values(config.agents)) {
-    if (definition.id !== "cline") {
-      throw new Error(`no production executor is registered for agent ${definition.id}`);
+    const factory = EXECUTOR_FACTORIES[definition.kind];
+    if (!factory) {
+      throw new Error(
+        `no production executor is registered for agent "${definition.id}" (kind "${definition.kind}")`,
+      );
     }
-    const executor = new ClineExecutor(definition.binary);
-    await executor.checkVersion(EXPECTED_CLINE_VERSION, buildAgentEnvironment());
+    const executor = factory(definition.binary);
+    await executor.checkVersion(buildAgentEnvironment());
     executors.set(definition.id, executor);
   }
 
@@ -56,6 +59,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const registry = createDefaultCommandRegistry();
   const credentialSources = new Map(
     Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
+  );
+  const credentialFiles = new Map(
+    Object.values(config.agents).map((def) => [def.id, def.credentialFiles]),
   );
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
@@ -67,6 +73,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     registry,
     executors,
     credentialSources,
+    credentialFiles,
     logger,
     secrets: [config.githubToken, config.consoleToken],
     concurrency: config.concurrency,
@@ -83,7 +90,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     dataDir: config.dataDir,
     pollIntervalSec: config.pollIntervalSec,
     concurrency: config.concurrency,
-    effortOptions: config.agents.cline?.efforts ?? REASONING_EFFORTS,
+    // Effort tiers and provider semantics are resolved per repository from its
+    // configured agent's kind and declared tiers.
+    agents: config.agents,
     actions: {
       retry: (jobId) => orchestrator.retry(jobId),
       cancel: (jobId) => orchestrator.cancel(jobId),
@@ -141,12 +150,22 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
           .get(entry.id) as { enabled: number } | undefined;
         return row?.enabled === 1;
       })) {
-        const events = await eventSource.poll({
-          id: repository.id,
-          owner: repository.owner,
-          repo: repository.name,
-        });
-        await Promise.all(events.map((event) => orchestrator.handleEvent(repository, event)));
+        // handleEvent returns once each command is queued, so this tick stays
+        // short no matter how long the queued jobs run. One repository's
+        // transport failure must not skip the repositories after it.
+        try {
+          const events = await eventSource.poll({
+            id: repository.id,
+            owner: repository.owner,
+            repo: repository.name,
+          });
+          await Promise.all(events.map((event) => orchestrator.handleEvent(repository, event)));
+        } catch (error) {
+          logger.error("poll failed", {
+            repository: repository.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     } catch (error) {
       logger.error("poll failed", {

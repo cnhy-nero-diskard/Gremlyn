@@ -6,13 +6,14 @@ import { mkdirSync } from "node:fs";
 import { parseDocument } from "yaml";
 import {
   ConfigError,
+  KINDS_REQUIRING_PROVIDER,
   loadConfig,
   type AgentDefinition,
   type AppConfig,
   type RepoConfig,
 } from "../config/loader.js";
-import { ClineExecutor, EXPECTED_CLINE_VERSION } from "../agent/cline.js";
 import { verifyCredentialSource } from "../agent/credentials.js";
+import { EXECUTOR_EXPECTED_VERSIONS, EXECUTOR_FACTORIES } from "../agent/registry.js";
 import { probe as runAgentProbe } from "../agent/probe.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { OctokitGitHubClient } from "../github/octokit.js";
@@ -206,14 +207,21 @@ export async function addRepository(options: AddRepositoryOptions): Promise<Flow
     yes: options.yes,
     input: io.input,
   });
-  const provider = await resolveInput<string>("provider", {
-    explicit: options.provider,
-    proposed: nonEmpty(settings?.provider),
-    describe: (value) =>
-      `provider proposed as ${value} (${inference.settings?.provenance ?? "existing entry"})`,
-    yes: options.yes,
-    input: io.input,
-  });
+  // The provider is a Cline-specific argument: kinds that fold the provider
+  // into the model id (OpenCode) register provider-less, so a non-interactive
+  // `--yes` registration must not stall on a value the executor ignores.
+  const providerRequired = KINDS_REQUIRING_PROVIDER.has(config.agents[agent]?.kind ?? agent);
+  const provider =
+    options.provider ??
+    (providerRequired
+      ? await resolveInput<string>("provider", {
+          proposed: nonEmpty(settings?.provider),
+          describe: (value) =>
+            `provider proposed as ${value} (${inference.settings?.provenance ?? "existing entry"})`,
+          yes: options.yes,
+          input: io.input,
+        })
+      : "");
   const model = await resolveInput<string>("model", {
     explicit: options.model,
     proposed: nonEmpty(settings?.model),
@@ -531,12 +539,12 @@ export async function checkPrerequisites(
       id: "agent-version",
       met: false,
       observed: "no configured agents",
-      remedy: "Configure the supported Cline agent and install the expected version.",
+      remedy: "Configure an agent and install its pinned release.",
     });
   } else {
     for (const definition of Object.values(agents)) {
       try {
-        verifyCredentials(definition.id, definition.credentialSource);
+        verifyCredentials(definition.id, definition.credentialSource, definition.credentialFiles);
         prerequisites.push({
           id: `agent-credentials:${definition.id}`,
           met: true,
@@ -551,28 +559,36 @@ export async function checkPrerequisites(
           remedy: `Authenticate ${definition.id} and ensure its credential_source contains the expected files.`,
         });
       }
+      const factory = EXECUTOR_FACTORIES[definition.kind];
+      if (!factory) {
+        prerequisites.push({
+          id: `agent-version:${definition.id}`,
+          met: false,
+          observed: `no executor is registered for kind "${definition.kind}"`,
+          remedy: `Set agents.${definition.id}.kind to a registered executor: ${Object.keys(EXECUTOR_FACTORIES).join(", ")}.`,
+        });
+        continue;
+      }
+      const expectedVersion = EXECUTOR_EXPECTED_VERSIONS[definition.kind] ?? "the pinned release";
       try {
         const checkVersion =
           io.checkAgentVersion ??
           (async (agent: AgentDefinition) => {
-            await new ClineExecutor(agent.binary).checkVersion(
-              EXPECTED_CLINE_VERSION,
-              buildAgentEnvironment(env),
-            );
+            await factory(agent.binary).checkVersion(buildAgentEnvironment(env));
           });
         await checkVersion(definition);
         prerequisites.push({
           id: `agent-version:${definition.id}`,
           met: true,
-          observed: `${definition.binary} is ${EXPECTED_CLINE_VERSION}`,
-          remedy: `Install Cline ${EXPECTED_CLINE_VERSION} and keep it on PATH.`,
+          observed: `${definition.binary} is ${expectedVersion}`,
+          remedy: `Keep ${definition.kind} ${expectedVersion} on PATH.`,
         });
       } catch (error) {
         prerequisites.push({
           id: `agent-version:${definition.id}`,
           met: false,
           observed: describeError(error),
-          remedy: `Install Cline ${EXPECTED_CLINE_VERSION}, then rerun setup.`,
+          remedy: `Install ${definition.kind} ${expectedVersion}, then rerun setup.`,
         });
       }
     }
@@ -732,11 +748,16 @@ function isExampleRepository(entry: RepoConfig): boolean {
 
 function isExampleRepositoryRecord(entry: Record<string, unknown>): boolean {
   const sourcePath = typeof entry.source_path === "string" ? entry.source_path : "";
-  return (
-    entry.owner === "your-github-login" &&
-    entry.name === "your-repo" &&
-    (sourcePath.includes("your-repo") || sourcePath.includes("your\\\\repo"))
-  );
+  if (entry.owner !== "your-github-login") return false;
+  // config.example.yaml ships two placeholder repositories (Cline, OpenCode);
+  // both must be recognized as scaffolding rather than a real registration.
+  if (entry.name === "your-repo") {
+    return sourcePath.includes("your-repo") || sourcePath.includes("your\\\\repo");
+  }
+  if (entry.name === "your-opencode-repo") {
+    return sourcePath.includes("your-opencode-repo") || sourcePath.includes("your\\\\opencode-repo");
+  }
+  return false;
 }
 
 type RequiredPick<T, K extends keyof T> = T & { [P in K]-?: NonNullable<T[P]> };

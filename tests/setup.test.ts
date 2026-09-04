@@ -37,6 +37,8 @@ import {
   realVerificationEnvironment,
 } from "../src/setup/verify.js";
 import { HELP } from "../src/setup/cli.js";
+import { FakeExecutor } from "../src/agent/fake.js";
+import { EXECUTOR_FACTORIES } from "../src/agent/registry.js";
 import { createTempRepo } from "./helpers/gitrepo.js";
 import { git } from "../src/workspace/gitops.js";
 
@@ -88,6 +90,49 @@ function writeConfig(root: string, contents = validConfig()): string {
   const path = join(root, "gremlyn.yaml");
   writeFileSync(path, contents, "utf8");
   return path;
+}
+
+/** A valid config whose only agent is an OpenCode one (max-tier ceiling, no provider). */
+function validConfigWithOpencodeAgent(): string {
+  return `data_dir: .gremlyn-test
+log_level: info
+poll_interval_seconds: 5
+concurrency: 1
+github:
+  token_env: GREMLYN_GITHUB_TOKEN
+  orchestrator_login: gremlyn-bot
+git:
+  author_name: Test Author
+  author_email: test@example.com
+console:
+  host: 127.0.0.1
+  port: 4780
+  token_env: GREMLYN_CONSOLE_TOKEN
+agent_defaults:
+  timeout_seconds: 30
+  retries: 1
+allowed_authors: [human]
+agents:
+  opencode:
+    kind: opencode
+    binary: opencode
+    efforts: [none, low, medium, high, xhigh, max]
+    credential_source: /tmp/gremlyn-test-opencode-data
+repositories: []
+`;
+}
+
+/** A valid config with one Cline and one OpenCode agent for prerequisite reporting. */
+function validConfigWithBothAgents(): string {
+  return validConfigWithOpencodeAgent().replace(
+    "agents:\n",
+    `agents:
+  cline:
+    binary: cline
+    efforts: [none, low, medium, high, xhigh]
+    credential_source: /tmp/gremlyn-test-cline-data
+`,
+  );
 }
 
 function repositoryEntry(overrides: Partial<RepoConfig> = {}): RepoConfig {
@@ -198,6 +243,31 @@ test("config.example.yaml is byte-stable through a no-op document round trip", (
   assert.equal(emitDocument(document), source);
 });
 
+// The example file's line endings depend on the checkout, so byte stability for
+// a CRLF operator file — the common Windows case — is asserted independently.
+test("a document keeps the line endings it was loaded with through load, append, and emit", () => {
+  const root = tempRoot();
+  try {
+    const lf = join(root, "lf.yaml");
+    const lfSource = validConfig();
+    writeFileSync(lf, lfSource, "utf8");
+    assert.equal(emitDocument(loadDocument(lf)), lfSource);
+
+    const crlf = join(root, "crlf.yaml");
+    const crlfSource = lfSource.replace(/\n/gu, "\r\n");
+    writeFileSync(crlf, crlfSource, "utf8");
+    assert.equal(emitDocument(loadDocument(crlf)), crlfSource);
+
+    const document = loadDocument(crlf);
+    appendRepository(document, { owner: "octo", name: "repo" });
+    const emitted = emitDocument(document);
+    assert.match(emitted, /owner: octo/u);
+    assert.ok(!/(?<!\r)\n/u.test(emitted), "an appended CRLF document must keep every CRLF");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("validated config write returns loader problems and leaves the original byte-for-byte unchanged", () => {
   const root = tempRoot();
   try {
@@ -248,6 +318,22 @@ test("workspace proposal is a safe sibling outside the source and other sources"
   assert.ok(!isPathInside(proposal.value, "/tmp/project/repo-workspaces"));
   assert.match(proposal.provenance, /sibling/u);
   assert.equal(isPathInside("C:\\Code\\Gremlyn-workspaces", "c:\\code\\Gremlyn"), false);
+});
+
+test("workspace proposal compares Windows paths case-insensitively but proposes the real case", () => {
+  const proposal = proposeWorkspaceRoot(
+    "C:\\Users\\Dev\\AppData\\Local\\Temp\\Gremlyn-Repo\\Source",
+  );
+  assert.ok(proposal);
+  assert.equal(
+    proposal.value,
+    "C:\\Users\\Dev\\AppData\\Local\\Temp\\Gremlyn-Repo\\Source-workspaces",
+  );
+
+  // A conflict differing only in case must still be detected and walked past.
+  const avoided = proposeWorkspaceRoot("C:\\Code\\Repo", ["c:\\code\\Repo-workspaces"]);
+  assert.ok(avoided);
+  assert.notEqual(avoided.value.toLowerCase(), "c:\\code\\repo-workspaces");
 });
 
 test("validation candidates come only from recognized package scripts", () => {
@@ -487,6 +573,111 @@ test("add-repo writes a fully explicit, loadable entry after verification", asyn
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("an OpenCode agent registers provider-less under --yes and inherits its own effort ceiling", async () => {
+  const root = tempRoot();
+  const repo = await createTempRepo();
+  try {
+    await git(["remote", "set-url", "origin", "git@github.com:owner/opencoded.git"], {
+      cwd: repo.sourcePath,
+    });
+    const configPath = writeConfig(root, validConfigWithOpencodeAgent());
+    const result = await addRepository({
+      configPath,
+      sourcePath: repo.sourcePath,
+      yes: true,
+      model: "opencode/claude-sonnet-5",
+      allowedModels: ["opencode/claude-sonnet-5"],
+      validationCommands: [],
+      env: ENV,
+      out: () => undefined,
+      input: nonInteractiveInput(),
+      verificationEnvironment: realVerificationEnvironment,
+    });
+    assert.equal(result.exitCode, 0);
+    const config = loadConfig(configPath, ENV);
+    const entry = config.repositories[0]!;
+    // No provider proposal exists for OpenCode and none is required: the
+    // executor folds the provider into the model id.
+    assert.equal(entry.agent, "opencode");
+    assert.equal(entry.provider, "");
+    assert.equal(entry.model, "opencode/claude-sonnet-5");
+    // The effort proposal is the OpenCode agent's ceiling, not Cline's.
+    assert.equal(entry.effort, "max");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("setup prerequisites validate declared credential files and dispatch version checks by kind", async () => {
+  const root = tempRoot();
+  const configPath = writeConfig(root, validConfigWithBothAgents());
+  const credentialFilesById = new Map<string, readonly string[] | undefined>();
+  const versionChecked: string[] = [];
+  // Swap every real factory for a recording fake so the dispatch through the
+  // registry is observable without spawning either CLI.
+  const originalFactories = new Map(
+    ["cline", "opencode"].map((kind) => [kind, EXECUTOR_FACTORIES[kind]]),
+  );
+  for (const kind of ["cline", "opencode"]) {
+    EXECUTOR_FACTORIES[kind] = (binary) => {
+      versionChecked.push(binary);
+      return new FakeExecutor({ outcome: "success" });
+    };
+  }
+  try {
+    const report = await checkPrerequisites(configPath, {
+      env: ENV,
+      out: () => undefined,
+      createGitHubClient: () => ({ getAuthenticatedLogin: async () => "gremlyn-bot" }),
+      verifyCredentials: (id, _source, files) => {
+        credentialFilesById.set(id, files);
+      },
+    });
+    // Each agent's declared credential file set is validated, not Cline's.
+    assert.deepEqual(credentialFilesById.get("cline"), ["secrets.json", "settings/providers.json"]);
+    assert.deepEqual(credentialFilesById.get("opencode"), ["auth.json"]);
+    // The version check ran the executor each kind declares, not Cline for both.
+    assert.deepEqual(versionChecked, ["cline", "opencode"]);
+    const clineVersion = report.prerequisites.find((item) => item.id === "agent-version:cline");
+    assert.equal(clineVersion?.met, true);
+    assert.match(clineVersion?.observed ?? "", /cline is 3\.0\.61/u);
+    const opencodeVersion = report.prerequisites.find(
+      (item) => item.id === "agent-version:opencode",
+    );
+    assert.equal(opencodeVersion?.met, true);
+    assert.match(opencodeVersion?.observed ?? "", /opencode is 1\.18\.27/u);
+  } finally {
+    for (const [kind, factory] of originalFactories) {
+      if (factory) EXECUTOR_FACTORIES[kind] = factory;
+      else delete EXECUTOR_FACTORIES[kind];
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unregistered agent kind fails the version prerequisite instead of probing Cline", async () => {
+  const root = tempRoot();
+  const configPath = writeConfig(
+    root,
+    validConfigWithOpencodeAgent().replace("kind: opencode", "kind: mystery"),
+  );
+  try {
+    const report = await checkPrerequisites(configPath, {
+      env: ENV,
+      out: () => undefined,
+      createGitHubClient: () => ({ getAuthenticatedLogin: async () => "gremlyn-bot" }),
+      verifyCredentials: () => undefined,
+    });
+    const version = report.prerequisites.find((item) => item.id === "agent-version:opencode");
+    assert.equal(version?.met, false);
+    assert.match(version?.observed ?? "", /no executor is registered for kind "mystery"/u);
+    assert.equal(report.allMet, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

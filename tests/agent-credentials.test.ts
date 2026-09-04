@@ -23,12 +23,17 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
   CREDENTIAL_SEED_FILES,
+  OPENCODE_CREDENTIAL_FILES,
   persistRotatedCredentials,
   removeAttemptDataDir,
   seedAgentCredentials,
   verifyCredentialSource,
 } from "../src/agent/credentials.js";
-import { agentFailureReason, classifyFailure } from "../src/orchestrator/failures.js";
+import {
+  agentFailureReason,
+  classifyFailure,
+  isAgentBillingFailure,
+} from "../src/orchestrator/failures.js";
 
 const SECRET = '{"apiKey":"sk-not-a-real-key"}';
 const OAUTH = '{"openai-codex":{"refreshToken":"not-a-real-token"}}';
@@ -134,6 +139,55 @@ test("seeding fails loudly when a declared file is absent", () => {
     () => seedAgentCredentials(source, makeAttemptDir()),
     /credential source file not found/u,
   );
+});
+
+test("OpenCode seeds auth.json into the executor's XDG data layout, not the attempt root", () => {
+  // OpenCodeExecutor points XDG_DATA_HOME at <attempt>/xdg-data, and OpenCode
+  // 1.18.27 reads auth at <XDG_DATA_HOME>/opencode/auth.json — seeding to the
+  // attempt root would leave the agent unauthenticated.
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-occredsrc-"));
+  writeFileSync(join(source, "auth.json"), SECRET, "utf8");
+  const dest = makeAttemptDir();
+  try {
+    const seeded = seedAgentCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+
+    assert.deepEqual(seeded, ["auth.json"]);
+    const seededPath = join(dest, "xdg-data", "opencode", "auth.json");
+    assert.equal(readFileSync(seededPath, "utf8"), SECRET);
+    assert.equal(existsSync(join(dest, "auth.json")), false);
+  } finally {
+    removeAttemptDataDir(dest);
+  }
+});
+
+test("OpenCode rotated credentials are read back from the XDG layout and persisted to the source", () => {
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-occredsrc-"));
+  writeFileSync(join(source, "auth.json"), SECRET, "utf8");
+  const dest = makeAttemptDir();
+  seedAgentCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+  const rotated = '{"opencode":{"accessToken":"rotated-token"}}';
+  writeFileSync(join(dest, "xdg-data", "opencode", "auth.json"), rotated, "utf8");
+  try {
+    const persisted = persistRotatedCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+
+    assert.deepEqual(persisted, ["auth.json"]);
+    assert.equal(readFileSync(join(source, "auth.json"), "utf8"), rotated);
+  } finally {
+    removeAttemptDataDir(dest);
+  }
+});
+
+test("Cline seeding is unchanged: files land at the attempt root", () => {
+  const source = makeSource();
+  const dest = makeAttemptDir();
+  try {
+    const seeded = seedAgentCredentials(source, dest, CREDENTIAL_SEED_FILES, "cline");
+    assert.deepEqual(seeded, [...CREDENTIAL_SEED_FILES]);
+    assert.equal(readFileSync(join(dest, "secrets.json"), "utf8"), SECRET);
+    assert.equal(readFileSync(join(dest, "settings", "providers.json"), "utf8"), OAUTH);
+  } finally {
+    removeAttemptDataDir(dest);
+  }
 });
 
 test("seeding refuses a directory standing in for a credential file", () => {
@@ -374,4 +428,61 @@ test("an ordinary agent failure is not an auth failure", () => {
     timedOut: false,
   });
   assert.equal(reason, "agent-nonzero-exit");
+});
+
+/**
+ * OpenCode's session-level error envelope, captured verbatim from a real
+ * invalid-model run (opencode 1.18.27): `{"type":"error", error:{name,data}}`.
+ *
+ * The CreditsError fixture below could not be captured live — it requires a
+ * paid provider account exhausting real credit — so it is reconstructed from
+ * two verified facts rather than invented outright: this envelope shape
+ * (verified live) and design D-opencode's documented finding that the real
+ * payload's wording also matches the unauthorized pattern (verified during
+ * that design's own probe). The top-level `message` field is what makes that
+ * collision real for `isAgentAuthenticationFailure`, which is exactly the
+ * ordering hazard this classifier exists to avoid.
+ */
+const REAL_OPENCODE_UNKNOWN_ERROR =
+  '{"type":"error","timestamp":1788408457085,"sessionID":"ses_f9a8c9a4affeLTGg97zsvkQvOC",' +
+  '"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs ' +
+  'for details.","ref":"err_7be42bd4"}}}';
+
+const OPENCODE_CREDITS_ERROR =
+  '{"type":"error","timestamp":1788408457085,"sessionID":"ses_f9a8c9a4affeLTGg97zsvkQvOC",' +
+  '"message":"Unauthorized: insufficient credits, add a payment method to continue.",' +
+  '"error":{"name":"CreditsError","data":{"message":"401 Unauthorized: insufficient credits, ' +
+  'add a payment method to continue.","ref":"err_credits"}}}';
+
+test("a captured CreditsError payload classifies as billing, not authentication", () => {
+  const result = {
+    stdout: OPENCODE_CREDITS_ERROR,
+    stderr: "",
+    exitCode: 1,
+    startedAt: "2026-08-28T02:10:00.000Z",
+    endedAt: "2026-08-28T02:10:05.000Z",
+    timedOut: false,
+  };
+  assert.equal(isAgentBillingFailure(result), true);
+  assert.equal(agentFailureReason(result), "agent-billing-failed");
+});
+
+test("a genuine unauthorized payload still classifies as authentication, not billing", () => {
+  const result = {
+    stdout: REAL_UNAUTHORIZED_STDOUT,
+    stderr: REAL_UNAUTHORIZED_STDERR,
+    exitCode: 1,
+    startedAt: "2026-08-28T01:53:11.000Z",
+    endedAt: "2026-08-28T01:53:12.700Z",
+    timedOut: false,
+  };
+  assert.equal(isAgentBillingFailure(result), false);
+  assert.equal(agentFailureReason(result), "agent-auth-failed");
+});
+
+test("an unrelated OpenCode error event (UnknownError) is not read as billing", () => {
+  assert.equal(
+    isAgentBillingFailure({ stdout: REAL_OPENCODE_UNKNOWN_ERROR, stderr: "" }),
+    false,
+  );
 });

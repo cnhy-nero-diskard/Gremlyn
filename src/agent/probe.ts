@@ -1,20 +1,22 @@
 /**
- * Agent probe — a diagnostic that exercises the real Cline CLI through the real
- * `ClineExecutor`, with no config file, no SQLite store, and no GitHub token.
+ * Agent probe — a diagnostic that exercises a real agent CLI through its real
+ * executor, with no config file, no SQLite store, and no GitHub token.
  *
  * It exists because the test suite injects a fake `ProcessRunner` everywhere, so
- * the suite proves Gremlyn *constructs* the documented argv but never that Cline
- * *accepts* it. This closes that gap cheaply, ahead of the full acceptance run.
+ * the suite proves Gremlyn *constructs* the documented argv but never that the
+ * CLI *accepts* it. This closes that gap cheaply, ahead of the full acceptance
+ * run. Generalized from a Cline-only tool (design D10) to probe either
+ * registered executor by kind (design D-opencode).
  *
  * It answers three questions the inferred CLI contract leaves open:
- *   1. Is the installed CLI the version design D10 was probed against?
- *   2. Does provider authentication survive a fresh per-attempt `--data-dir`?
- *      (D10 isolates state per attempt; `cline auth` persists it somewhere the
- *      operator controls. If those are the same directory, every attempt starts
+ *   1. Is the installed CLI the version its executor was probed against?
+ *   2. Does provider authentication survive a fresh per-attempt isolated state
+ *      directory? (Isolation is per attempt; the operator's own `auth`
+ *      persists it somewhere else. If those coincide, every attempt starts
  *      unauthenticated.)
- *   3. Does `--json` actually carry a session id in the shape
+ *   3. Does the structured stream actually carry a session id in the shape
  *      `extractSessionId` expects? A mismatch is silent: the console simply
- *      never gets a `cline history export` handle.
+ *      never gets an export handle.
  *
  * Nothing here writes to a workspace: each run gets a throwaway working
  * directory and a read-only prompt.
@@ -22,21 +24,29 @@
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import {
-  ClineExecutor,
-  EXPECTED_CLINE_VERSION,
-  defaultRunner,
-  extractSessionId,
-  extractVersion,
-  type ProcessRunner,
-} from "./cline.js";
-import { CREDENTIAL_SEED_FILES, seedAgentCredentials } from "./credentials.js";
+import { EXPECTED_CLINE_VERSION, extractSessionId, extractVersion } from "./cline.js";
+import { CREDENTIAL_SEED_FILES, OPENCODE_CREDENTIAL_FILES, seedAgentCredentials } from "./credentials.js";
 import { AGENT_ENV_ALLOWLIST, buildAgentEnvironment } from "./environment.js";
+import { defaultRunner, type ProcessRunner } from "./launcher.js";
+import { EXPECTED_OPENCODE_VERSION } from "./opencode.js";
+import { EXECUTOR_FACTORIES } from "./registry.js";
 import { REASONING_EFFORTS, type AgentResult, type ReasoningEffort } from "../types.js";
 import { isAgentAuthenticationFailure } from "../orchestrator/failures.js";
+
+/** Diagnostic-display expectation per kind; the authoritative check is `executor.checkVersion`. */
+const EXPECTED_VERSION_BY_KIND: Record<string, string> = {
+  cline: EXPECTED_CLINE_VERSION,
+  opencode: EXPECTED_OPENCODE_VERSION,
+};
+
+/** Default credential set shown in probe output before a `--seed-files` override. */
+const DEFAULT_SEED_FILES_BY_KIND: Record<string, readonly string[]> = {
+  cline: CREDENTIAL_SEED_FILES,
+  opencode: OPENCODE_CREDENTIAL_FILES,
+};
 
 /** A read-only instruction: the probe tests the invocation surface, not editing. */
 const PROBE_PROMPT =
@@ -101,6 +111,7 @@ interface ProbeRun {
 
 async function runOnce(input: {
   label: string;
+  kind: string;
   binary: string;
   model: string;
   provider: string;
@@ -113,15 +124,21 @@ async function runOnce(input: {
   const dataDir = mkdtempSync(join(input.scratch, "data-"));
   const cwd = mkdtempSync(join(input.scratch, "work-"));
   const sink: { argv?: readonly string[] } = {};
-  const executor = new ClineExecutor(input.binary, recordingRunner(sink));
+  const factory = EXECUTOR_FACTORIES[input.kind];
+  if (!factory) throw new Error(`no probe executor registered for kind "${input.kind}"`);
+  const executor = factory(input.binary, recordingRunner(sink));
   heading(`Run: ${input.label}`);
   out(`data-dir     ${dataDir}`);
   out(`cwd          ${cwd}`);
+  const isolationEnv = executor.additionalEnvironment(dataDir);
+  if (Object.keys(isolationEnv).length > 0) {
+    out(`state env    ${JSON.stringify(isolationEnv)}`);
+  }
   let seeded: readonly string[] | undefined;
   if (input.seedSource) {
-    const files = input.seedFiles ?? CREDENTIAL_SEED_FILES;
+    const files = input.seedFiles ?? DEFAULT_SEED_FILES_BY_KIND[input.kind] ?? CREDENTIAL_SEED_FILES;
     try {
-      const copied = seedAgentCredentials(input.seedSource, dataDir, files);
+      const copied = seedAgentCredentials(input.seedSource, dataDir, files, input.kind);
       seeded = copied;
       out(`seeded       ${copied.join(", ")} from ${input.seedSource}`);
       // Verify permissions: report that files are owner-only where possible
@@ -141,7 +158,7 @@ async function runOnce(input: {
     provider: input.provider,
     effort: input.effort,
     prompt: PROBE_PROMPT,
-    env: buildAgentEnvironment(),
+    env: buildAgentEnvironment(process.env, isolationEnv),
     timeoutSec: input.timeoutSec,
     retries: 1,
     dataDir,
@@ -189,6 +206,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   const { values } = parseArgs({
     args: [...argv],
     options: {
+      kind: { type: "string" },
       binary: { type: "string" },
       model: { type: "string" },
       provider: { type: "string" },
@@ -200,7 +218,12 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     allowPositionals: false,
   });
 
-  const binary = values.binary ?? process.env.GREMLYN_PROBE_BINARY ?? "cline";
+  const kind = values.kind ?? process.env.GREMLYN_PROBE_KIND ?? "cline";
+  if (!EXECUTOR_FACTORIES[kind]) {
+    out(`kind "${kind}" is not a registered executor (known: ${Object.keys(EXECUTOR_FACTORIES).join(", ")})`);
+    return 1;
+  }
+  const binary = values.binary ?? process.env.GREMLYN_PROBE_BINARY ?? kind;
   const model = values.model ?? process.env.GREMLYN_PROBE_MODEL;
   const provider = values.provider ?? process.env.GREMLYN_PROBE_PROVIDER;
   const effortRaw = values.effort ?? process.env.GREMLYN_PROBE_EFFORT ?? "none";
@@ -227,14 +250,15 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   }
 
   heading("Environment");
+  out(`kind         ${kind}`);
   out(`binary       ${binary}`);
   const env = buildAgentEnvironment();
   const present = AGENT_ENV_ALLOWLIST.filter((key) => env[key] !== undefined);
   const absent = AGENT_ENV_ALLOWLIST.filter((key) => env[key] === undefined);
   out(`passed       ${present.join(", ")}`);
   out(`unset        ${absent.length > 0 ? absent.join(", ") : "(none)"}`);
-  out("note         no provider API keys are in the allowlist; Cline must find");
-  out("             credentials via HOME/APPDATA/USERPROFILE or its data dir");
+  out("note         no provider API keys are in the allowlist; the agent must find");
+  out("             credentials via HOME/APPDATA/USERPROFILE or its own state directory");
 
   heading("Version");
   const versionSink: { argv?: readonly string[] } = {};
@@ -243,7 +267,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     version = await readVersion(binary, recordingRunner(versionSink), env);
   } catch (error) {
     out(`could not execute "${binary} --version": ${describe(error)}`);
-    out("Cline is not installed, not on PATH, or not executable. Nothing else can run.");
+    out(`${binary} is not installed, not on PATH, or not executable. Nothing else can run.`);
     return 1;
   }
   out(`argv         ${JSON.stringify(versionSink.argv ?? [])}`);
@@ -253,14 +277,15 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   if (version.exitCode !== 0) {
     out();
     out(`"${binary} --version" exited ${String(version.exitCode)}.`);
-    out("Cline is not installed, not on PATH, or not executable. Nothing else can run.");
+    out(`${binary} is not installed, not on PATH, or not executable. Nothing else can run.`);
     return 1;
   }
   const parsed = extractVersion(version.stdout);
+  const expectedVersion = EXPECTED_VERSION_BY_KIND[kind];
   out(`parsed       ${parsed ?? "(extractVersion found no x.y.z)"}`);
-  out(`expected     ${EXPECTED_CLINE_VERSION}`);
+  out(`expected     ${expectedVersion ?? "(no expectation registered for this kind)"}`);
   out(
-    parsed === EXPECTED_CLINE_VERSION
+    parsed === expectedVersion
       ? "match        yes — the orchestrator will start"
       : `match        NO — checkVersion() rejects this at startup (exact-match pin)`,
   );
@@ -277,10 +302,11 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   // Seeded-run mode: if a credential source is supplied, run one unseeded
   // and one seeded isolated dir to verify the declared file set suffices.
   // This directly exercises design D3's empirical claim.
+  const defaultSeedFiles = DEFAULT_SEED_FILES_BY_KIND[kind] ?? CREDENTIAL_SEED_FILES;
   if (seedSource) {
     heading(`Seed configuration`);
     out(`source       ${seedSource}`);
-    out(`files        ${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).join(", ")}`);
+    out(`files        ${(seedFiles ?? [...defaultSeedFiles]).join(", ")}`);
     out(`note         these files will be copied into the seeded data dir`);
     out(`             with owner-only perms before invocation`);
   }
@@ -290,6 +316,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     if (seedSource) {
       const first = await runOnce({
         label: "first — fresh data dir (unseeded)",
+        kind,
         binary,
         model,
         provider,
@@ -303,6 +330,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
 
       const second = await runOnce({
         label: "second — fresh data dir (seeded)",
+        kind,
         binary,
         model,
         provider,
@@ -320,9 +348,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       const seededUnauthorized = /Unauthorized/iu.test(
         `${second.result.stdout}\n${second.result.stderr}`,
       );
-      out(
-        `seed list    [${(seedFiles ?? [...CREDENTIAL_SEED_FILES]).map((f) => `"${f}"`).join(", ")}]`,
-      );
+      out(`seed list    [${(seedFiles ?? [...defaultSeedFiles]).map((f) => `"${f}"`).join(", ")}]`);
       // Providers fail differently when unseeded: cline-pass says
       // "Unauthorized", openai-codex says "API key is missing". The property
       // that matters is unseeded-fails-and-seeded-succeeds, not the wording.
@@ -385,6 +411,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
 
     const first = await runOnce({
       label: "first — fresh data dir",
+      kind,
       binary,
       model,
       provider,
@@ -398,6 +425,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
 
     const second = await runOnce({
       label: "second — a different fresh data dir",
+      kind,
       binary,
       model,
       provider,
@@ -432,16 +460,11 @@ ${run.result.stderr}`),
       // a regression.
       out();
       out("This is the UNSEEDED control and Unauthorized is the expected result:");
-      out("both runs used a fresh --data-dir, which is where cline keeps its");
-      out("credentials. To exercise the fix, re-run with a credential source:");
+      out("both runs used a fresh isolated state directory, which is where the");
+      out("agent keeps its credentials. To exercise the fix, re-run with the");
+      out("credential source this agent is configured with (config.example.yaml):");
       out();
-      out(
-        `  npm run probe:agent -- --provider <id> --model <id> --seed-source "${join(
-          homedir(),
-          ".cline",
-          "data",
-        )}"`,
-      );
+      out(`  npm run probe:agent -- --kind ${kind} --provider <id> --model <id> --seed-source <path>`);
       out();
       out("That runs one unseeded and one seeded attempt and compares them.");
     }

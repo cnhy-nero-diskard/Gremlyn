@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeExecutor } from "../src/agent/fake.js";
+import { FakeExecutor, type FakeOutcome } from "../src/agent/fake.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
 import { Logger } from "../src/log/logger.js";
@@ -15,7 +15,10 @@ import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
 import { createTempRepo, remoteSha } from "./helpers/gitrepo.js";
 
-async function setup(outcome: "files-modified" | "failure") {
+async function setup(
+  outcome: FakeOutcome,
+  opts: { retries?: number; honorsRetries?: boolean; delayMs?: number } = {},
+) {
   const gitRepo = await createTempRepo();
   const initialSha = await remoteSha(gitRepo.remotePath, gitRepo.headBranch);
   const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-runtime-"));
@@ -79,6 +82,8 @@ async function setup(outcome: "files-modified" | "failure") {
   const executor = new FakeExecutor({
     outcome,
     edits: { "resolved.txt": "resolved\n" },
+    ...(opts.honorsRetries === undefined ? {} : { honorsRetries: opts.honorsRetries }),
+    ...(opts.delayMs === undefined ? {} : { delayMs: opts.delayMs }),
   });
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
@@ -86,7 +91,7 @@ async function setup(outcome: "files-modified" | "failure") {
     allowedAuthors: ["developer"],
     orchestratorLogin: "gremlyn-bot",
     timeoutSec: 30,
-    retries: 1,
+    retries: opts.retries ?? 1,
     github,
     registry: createDefaultCommandRegistry(),
     executors: new Map([["fake", executor]]),
@@ -109,11 +114,27 @@ async function setup(outcome: "files-modified" | "failure") {
   return { store, repository, github, executor, orchestrator, event, gitRepo, initialSha };
 }
 
+type Fixture = Awaited<ReturnType<typeof setup>>;
+
+/**
+ * handleEvent returns as soon as the command is queued, so a test that asserts
+ * on the outcome awaits the queued job itself.
+ */
+async function resolveEvent(data: Fixture) {
+  const [queued] = await data.orchestrator.handleEvent(data.repository, data.event);
+  if (!queued) throw new Error("the event queued no job");
+  return queued.completed;
+}
+
+async function completeRetry(data: Fixture, jobId: number) {
+  return (await data.orchestrator.retry(jobId)).completed;
+}
+
 test("production lifecycle reconstructs context, validates, pushes, replies, and records the timeline", async () => {
   const data = await setup("files-modified");
-  const [result] = await data.orchestrator.handleEvent(data.repository, data.event);
-  assert.equal(result?.kind, "completed");
-  if (result?.kind !== "completed") throw new Error("job did not complete");
+  const result = await resolveEvent(data);
+  assert.equal(result.kind, "completed");
+  if (result.kind !== "completed") throw new Error("job did not complete");
   assert.ok(result.value.commitSha);
   assert.notEqual(
     await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch),
@@ -147,7 +168,7 @@ test("production lifecycle reconstructs context, validates, pushes, replies, and
 
 test("failed agent never pushes and records stage, files, commit, and push facts", async () => {
   const data = await setup("failure");
-  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  await assert.rejects(() => resolveEvent(data));
   assert.equal(await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch), data.initialSha);
   const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
     failure_stage: string;
@@ -169,9 +190,26 @@ test("failed agent never pushes and records stage, files, commit, and push facts
   data.store.close();
 });
 
+test("an executor with no CLI retry allowance is bounded by the orchestrator itself", async () => {
+  // Cline bounds retries via its own --retries flag; an executor that declares
+  // it does not (honorsRetries: false, as OpenCode will) has no such flag, so
+  // the orchestrator must re-invoke the whole attempt itself, still bounded.
+  const data = await setup("failure", { retries: 3, honorsRetries: false });
+  await assert.rejects(() => resolveEvent(data));
+  assert.equal(data.executor.runs.length, 3, "expected exactly the configured number of invocations");
+  data.store.close();
+});
+
+test("an executor that honors its own retries is invoked exactly once per attempt", async () => {
+  const data = await setup("failure", { retries: 3, honorsRetries: true });
+  await assert.rejects(() => resolveEvent(data));
+  assert.equal(data.executor.runs.length, 1, "the orchestrator must not add its own retry loop");
+  data.store.close();
+});
+
 test("retry resumes edits from an abruptly timed-out agent", async () => {
   const data = await setup("failure");
-  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
   const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
     id: number;
@@ -189,7 +227,7 @@ test("retry resumes edits from an abruptly timed-out agent", async () => {
     )
     .run(attempt.id);
 
-  await assert.rejects(() => data.orchestrator.retry(job.id));
+  await assert.rejects(() => completeRetry(data, job.id));
   assert.equal(data.executor.runs.length, 2, "retry reached the agent instead of failing as dirty");
   assert.equal(readFileSync(retained, "utf8"), "retain this\n");
   data.store.close();
@@ -197,7 +235,7 @@ test("retry resumes edits from an abruptly timed-out agent", async () => {
 
 test("retry resumes edits from an agent that exited nonzero mid-run", async () => {
   const data = await setup("failure");
-  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
   const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
     id: number;
@@ -212,7 +250,7 @@ test("retry resumes edits from an agent that exited nonzero mid-run", async () =
     .prepare("UPDATE attempts SET has_uncommitted_changes = 1 WHERE id = ?")
     .run(attempt.id);
 
-  await assert.rejects(() => data.orchestrator.retry(job.id));
+  await assert.rejects(() => completeRetry(data, job.id));
   assert.equal(data.executor.runs.length, 2, "retry reached the agent instead of failing as dirty");
   assert.equal(readFileSync(retained, "utf8"), "retain this\n");
   data.store.close();
@@ -220,7 +258,7 @@ test("retry resumes edits from an agent that exited nonzero mid-run", async () =
 
 test("retry does not inherit a dirty workspace from an agent process crash", async () => {
   const data = await setup("failure");
-  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
   const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
     id: number;
@@ -236,7 +274,7 @@ test("retry does not inherit a dirty workspace from an agent process crash", asy
     )
     .run(attempt.id);
 
-  await assert.rejects(() => data.orchestrator.retry(job.id));
+  await assert.rejects(() => completeRetry(data, job.id));
   assert.equal(data.executor.runs.length, 1, "process crash must not bypass dirty protection");
   assert.equal(
     (
@@ -251,7 +289,7 @@ test("retry does not inherit a dirty workspace from an agent process crash", asy
 
 test("retry can recover an abrupt workspace after a later preparation-only failure", async () => {
   const data = await setup("failure");
-  await assert.rejects(() => data.orchestrator.handleEvent(data.repository, data.event));
+  await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
   const first = data.store.db.prepare("SELECT * FROM attempts").get() as {
     id: number;
@@ -279,7 +317,7 @@ test("retry can recover an abrupt workspace after a later preparation-only failu
   });
   jobs.finishFailure(job.id, second.attemptId, "preparing", "workspace-corrupted");
 
-  await assert.rejects(() => data.orchestrator.retry(job.id));
+  await assert.rejects(() => completeRetry(data, job.id));
   assert.equal(
     data.executor.runs.length,
     2,
@@ -311,4 +349,26 @@ test("Layer1 failure modes use distinct stable reason codes without a generic fa
     FAILURE_REASONS.some((reason) => /unknown|generic/u.test(reason)),
     false,
   );
+});
+
+test("ingestion returns as soon as a job is queued, never waiting for the run", async () => {
+  // A hung agent stands in for any long job. Awaiting it inside handleEvent
+  // parked the single-flight poll loop for the whole run: every repository
+  // stopped being ingested, and the second concurrency slot was unreachable
+  // because the loop could not get far enough to enqueue anything else.
+  const data = await setup("timeout", { delayMs: 500 });
+  const queued = await data.orchestrator.handleEvent(data.repository, data.event);
+  assert.equal(queued.length, 1);
+  const job = queued[0];
+  if (!job) throw new Error("the event queued no job");
+
+  assert.equal(data.executor.runs.length, 0, "handleEvent waited for the agent to finish");
+  const row = data.store.db
+    .prepare("SELECT finished_at FROM jobs WHERE id = ?")
+    .get(job.jobId) as { finished_at: string | null };
+  assert.equal(row.finished_at, null, "handleEvent returned only after the job reached a terminus");
+
+  assert.equal(data.orchestrator.cancel(job.jobId), true);
+  assert.equal((await job.completed).kind, "cancelled");
+  data.store.close();
 });

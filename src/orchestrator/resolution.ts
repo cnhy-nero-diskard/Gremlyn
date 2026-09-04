@@ -8,7 +8,7 @@ import {
   removeAttemptDataDir,
   seedAgentCredentials,
 } from "../agent/credentials.js";
-import { ActivityRecorder, writeActivity } from "../agent/activity.js";
+import { ACTIVITY_LINE_MAPPERS, ActivityRecorder, writeActivity } from "../agent/activity.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { writeAgentOutput } from "../agent/output.js";
 import { buildResolutionPrompt } from "../agent/prompt.js";
@@ -23,6 +23,7 @@ import { reportAttemptOutcome } from "../publish/report.js";
 import { JobStore, type AttemptRow } from "../store/jobs.js";
 import type {
   AgentExecutor,
+  AgentResult,
   FailureStage,
   JobStatus,
   NormalizedEvent,
@@ -35,6 +36,7 @@ import { prepareWorkspace, workspacePathFor } from "../workspace/worktree.js";
 import {
   agentFailureReason,
   isAgentAuthenticationFailure,
+  isAgentBillingFailure,
   StageFailure,
   classifyFailure,
 } from "./failures.js";
@@ -97,6 +99,17 @@ function retainedWorkspaceAttempt(
   return undefined;
 }
 
+/**
+ * A job accepted into the queue. `completed` settles when the attempt itself
+ * finishes; ingestion deliberately does not await it. The orchestrator already
+ * observes its rejection, so awaiting it is optional.
+ */
+export interface QueuedJob {
+  jobId: number;
+  attemptId: number;
+  completed: Promise<QueueResult<{ commitSha?: string }>>;
+}
+
 export interface RuntimeRepository extends RepoConfig {
   id: number;
   /** Undefined means the agent may run until it exits or is cancelled. */
@@ -115,6 +128,8 @@ export interface ResolutionOrchestratorOptions {
   registry: CommandRegistry;
   executors: ReadonlyMap<string, AgentExecutor>;
   credentialSources?: ReadonlyMap<string, string>;
+  /** Per-agent credential file set; falls back to Cline's default when unset. */
+  credentialFiles?: ReadonlyMap<string, readonly string[]>;
   logger: Logger;
   secrets: readonly string[];
   concurrency: number;
@@ -140,10 +155,10 @@ export class ResolutionOrchestrator {
   async handleEvent(
     repository: RuntimeRepository,
     event: NormalizedEvent,
-  ): Promise<QueueResult<{ commitSha?: string }>[]> {
+  ): Promise<QueuedJob[]> {
     this.options.logger.info("event observed", { repository: repository.id, pr: event.prNumber });
     const commands = this.options.registry.detect(event.body);
-    const results: QueueResult<{ commitSha?: string }>[] = [];
+    const queued: QueuedJob[] = [];
     for (const command of commands) {
       this.options.logger.info("command parsed", { command: command.name, pr: event.prNumber });
       const authorization = await authorizeCommand({
@@ -190,8 +205,8 @@ export class ResolutionOrchestrator {
         jobId: claimed.jobId,
         attemptId: attempt.attemptId,
       });
-      results.push(
-        await this.enqueueAttempt(
+      queued.push(
+        this.enqueueAttempt(
           claimed.jobId,
           attempt.attemptId,
           repository,
@@ -202,7 +217,7 @@ export class ResolutionOrchestrator {
         ),
       );
     }
-    return results;
+    return queued;
   }
 
   cancel(jobId: number): boolean {
@@ -234,7 +249,7 @@ export class ResolutionOrchestrator {
     }
   }
 
-  async retry(jobId: number): Promise<QueueResult<{ commitSha?: string }>> {
+  async retry(jobId: number): Promise<QueuedJob> {
     const job = this.jobs.getJob(jobId);
     const repository = this.repositories.get(job.repo_id);
     if (!repository) throw new Error(`repository ${job.repo_id} is not registered at runtime`);
@@ -276,8 +291,8 @@ export class ResolutionOrchestrator {
     model: string,
     command: ParsedCommand,
     retainedWorkspace?: { workspacePath: string; headSha: string },
-  ): Promise<QueueResult<{ commitSha?: string }>> {
-    return this.queue.enqueue({
+  ): QueuedJob {
+    const completed = this.queue.enqueue({
       jobId,
       repoId: repository.id,
       prNumber,
@@ -318,6 +333,20 @@ export class ResolutionOrchestrator {
         removeAttemptDataDir(attemptDataDir);
       },
     });
+    // Ingestion must never await a run. The poll loop is single-flight, so
+    // awaiting here stalled every repository for the lifetime of one job and
+    // put `concurrency` out of reach: the loop could not enqueue a second job
+    // while parked on the first. Observe the rejection now, because callers
+    // are free to drop `completed` and an unhandled rejection would end the
+    // process.
+    completed.catch((error: unknown) => {
+      this.options.logger.error("job failed", {
+        jobId,
+        attemptId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return { jobId, attemptId, completed };
   }
 
   private async runAttempt(input: {
@@ -383,7 +412,15 @@ export class ResolutionOrchestrator {
         // generic classifier, which reads any "unauthorized" wording as a
         // provider auth failure and hides the real cause.
         try {
-          seedAgentCredentials(credentialSource, attemptDataDir);
+          seedAgentCredentials(
+            credentialSource,
+            attemptDataDir,
+            this.options.credentialFiles?.get(repository.agent),
+            // The executor's kind decides where inside the attempt dir each
+            // seeded file must land (OpenCode reads auth under its XDG data
+            // root, not at the attempt root).
+            executor.id,
+          );
         } catch (error) {
           throw new StageFailure(
             stage,
@@ -402,7 +439,7 @@ export class ResolutionOrchestrator {
       // Follow the agent while it works. Nothing here may fail the attempt:
       // the recorder swallows unparsable lines, and a failed snapshot write is
       // logged rather than thrown — losing visibility is not losing the run.
-      const recorder = new ActivityRecorder();
+      const recorder = new ActivityRecorder(ACTIVITY_LINE_MAPPERS[executor.id]);
       let lastFlush = 0;
       const flush = (): void => {
         if (!recorder.hasChanges) return;
@@ -416,29 +453,60 @@ export class ResolutionOrchestrator {
           });
         }
       };
-      const agentResult = await executor.run({
-        cwd: workspace.path,
-        model: input.model,
-        provider: repository.provider,
-        effort: repository.effort,
-        prompt: buildResolutionPrompt(context, this.options.orchestratorLogin),
-        env: buildAgentEnvironment(),
-        ...((repository.timeoutSec ?? this.options.timeoutSec) === undefined
-          ? {}
-          : { timeoutSec: repository.timeoutSec ?? this.options.timeoutSec }),
-        retries: this.options.retries,
-        dataDir: attemptDataDir,
-        signal,
-        onLine: (line) => {
-          recorder.push(line);
-          // The stream arrives token by token; rewriting the snapshot on every
-          // line would mean hundreds of writes a second for no visible gain.
-          const now = Date.now();
-          if (now - lastFlush < ACTIVITY_FLUSH_MS) return;
-          lastFlush = now;
-          flush();
-        },
-      });
+      const runOnce = (): Promise<AgentResult> =>
+        executor.run({
+          cwd: workspace.path,
+          model: input.model,
+          provider: repository.provider,
+          effort: repository.effort,
+          prompt: buildResolutionPrompt(context, this.options.orchestratorLogin),
+          env: buildAgentEnvironment(process.env, executor.additionalEnvironment(attemptDataDir!)),
+          ...((repository.timeoutSec ?? this.options.timeoutSec) === undefined
+            ? {}
+            : { timeoutSec: repository.timeoutSec ?? this.options.timeoutSec }),
+          retries: this.options.retries,
+          dataDir: attemptDataDir!,
+          signal,
+          onLine: (line) => {
+            recorder.push(line);
+            // The stream arrives token by token; rewriting the snapshot on every
+            // line would mean hundreds of writes a second for no visible gain.
+            const now = Date.now();
+            if (now - lastFlush < ACTIVITY_FLUSH_MS) return;
+            lastFlush = now;
+            flush();
+          },
+        });
+      // Cline bounds retries itself (--retries counts consecutive mistakes
+      // within one session); an executor that cannot do that is bounded here
+      // instead, by re-running the whole invocation up to the same allowance.
+      // The units differ deliberately — this counts whole invocations.
+      const maxInvocations = executor.honorsRetries ? 1 : Math.max(1, this.options.retries);
+      // A billing or auth failure is a terminal account condition, not the
+      // transient "mistake" a retry allowance exists to recover from — the
+      // same reason Cline's own internal retry would not run through one.
+      // Retrying it would only spend more of a budget that is already spent.
+      const isTerminalFailure = (result: AgentResult): boolean =>
+        isAgentBillingFailure(result) || isAgentAuthenticationFailure(result);
+      let agentResult = await runOnce();
+      let invocation = 1;
+      while (
+        invocation < maxInvocations &&
+        !signal.aborted &&
+        !agentResult.timedOut &&
+        agentResult.exitCode !== 0 &&
+        !isTerminalFailure(agentResult)
+      ) {
+        invocation += 1;
+        this.options.logger.warn("agent invocation failed, retrying", {
+          jobId,
+          attemptId,
+          invocation,
+          maxInvocations,
+          exitCode: agentResult.exitCode,
+        });
+        agentResult = await runOnce();
+      }
       recorder.finish();
       flush();
       // Reasoning effort is validated per agent at startup, but the CLI enforces
@@ -466,6 +534,12 @@ export class ResolutionOrchestrator {
       });
       if (signal.aborted) throw new Error("job-cancelled");
       if (agentResult.timedOut) throw new StageFailure(stage, "agent-timeout");
+      // Ordering matters: a billing refusal's payload also matches the
+      // unauthorized wording the auth check looks for, so it must be checked
+      // first or a billing failure is misreported as an auth failure.
+      if (isAgentBillingFailure(agentResult)) {
+        throw new StageFailure(stage, "agent-billing-failed");
+      }
       if (isAgentAuthenticationFailure(agentResult)) {
         throw new StageFailure(stage, "agent-auth-failed");
       }
@@ -626,7 +700,13 @@ export class ResolutionOrchestrator {
     const credentialSource = this.options.credentialSources?.get(agent);
     if (credentialSource) {
       try {
-        const rotated = persistRotatedCredentials(credentialSource, attemptDataDir);
+        const rotated = persistRotatedCredentials(
+          credentialSource,
+          attemptDataDir,
+          this.options.credentialFiles?.get(agent),
+          // Same kind-relative layout the seed used; see seedAgentCredentials.
+          this.options.executors.get(agent)?.id,
+        );
         if (rotated.length > 0) {
           this.options.logger.info("credential rotated", {
             jobId,

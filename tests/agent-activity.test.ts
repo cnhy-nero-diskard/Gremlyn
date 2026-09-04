@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActivityRecorder, activityPath, writeActivity } from "../src/agent/activity.js";
+import { ActivityRecorder, activityPath, opencodeLineMapper, writeActivity } from "../src/agent/activity.js";
 
 function line(event: Record<string, unknown>, ts = "2026-08-28T18:05:44.524Z"): string {
   return JSON.stringify({ ts, type: "agent_event", event });
@@ -133,4 +133,117 @@ test("hasChanges gates writes so an idle stream does not thrash the disk", () =>
   assert.equal(recorder.hasChanges, true);
   recorder.snapshot();
   assert.equal(recorder.hasChanges, false);
+});
+
+/**
+ * OpenCode fixtures below are captured verbatim from two real
+ * `opencode run --format json` sessions (opencode 1.18.27, the free
+ * `opencode/big-pickle` OpenCode Zen model — zero-cost, no credential
+ * required): one plain text reply, one tool-using exchange. Every event
+ * carries terminal state, unlike Cline's token deltas, so there is nothing to
+ * de-duplicate — see design D-opencode.
+ */
+const OPENCODE_TEXT_SESSION = [
+  '{"type":"step_start","timestamp":1788408388432,"sessionID":"ses_a",' +
+    '"part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_a","snapshot":"s1","type":"step-start"}}',
+  '{"type":"reasoning","timestamp":1788408389114,"sessionID":"ses_a",' +
+    '"part":{"id":"prt_2","messageID":"msg_1","sessionID":"ses_a","type":"reasoning",' +
+    '"text":"The user is asking me to reply with a single word.","time":{"start":1,"end":2}}}',
+  '{"type":"text","timestamp":1788408389127,"sessionID":"ses_a",' +
+    '"part":{"id":"prt_3","messageID":"msg_1","sessionID":"ses_a","type":"text","text":"READY",' +
+    '"time":{"start":1,"end":2}}}',
+  '{"type":"step_finish","timestamp":1788408389489,"sessionID":"ses_a",' +
+    '"part":{"id":"prt_4","reason":"stop","snapshot":"s2","messageID":"msg_1","sessionID":"ses_a",' +
+    '"type":"step-finish","tokens":{"total":8080,"input":6244,"output":44,"reasoning":0,' +
+    '"cache":{"write":0,"read":1792}},"cost":0}}',
+].join("\n");
+
+const OPENCODE_TOOL_SESSION = [
+  '{"type":"step_start","timestamp":1788408404491,"sessionID":"ses_b",' +
+    '"part":{"id":"prt_10","messageID":"msg_10","sessionID":"ses_b","snapshot":"s1","type":"step-start"}}',
+  '{"type":"reasoning","timestamp":1788408404826,"sessionID":"ses_b",' +
+    '"part":{"id":"prt_11","messageID":"msg_10","sessionID":"ses_b","type":"reasoning",' +
+    '"text":"I will use the Read tool.","time":{"start":1,"end":2}}}',
+  '{"type":"tool_use","timestamp":1788408405125,"sessionID":"ses_b",' +
+    '"part":{"type":"tool","tool":"read","callID":"call_1","state":{"status":"completed",' +
+    '"input":{"filePath":"sample.txt"},"output":"hello world","title":"sample.txt",' +
+    '"time":{"start":1,"end":2}},"id":"prt_12","sessionID":"ses_b","messageID":"msg_10"}}',
+  '{"type":"step_finish","timestamp":1788408406073,"sessionID":"ses_b",' +
+    '"part":{"id":"prt_13","reason":"tool-calls","snapshot":"s2","messageID":"msg_10",' +
+    '"sessionID":"ses_b","type":"step-finish","tokens":{"total":8111,"input":8037,"output":74,' +
+    '"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}',
+  '{"type":"step_start","timestamp":1788408409974,"sessionID":"ses_b",' +
+    '"part":{"id":"prt_14","messageID":"msg_14","sessionID":"ses_b","snapshot":"s3","type":"step-start"}}',
+  '{"type":"text","timestamp":1788408410404,"sessionID":"ses_b",' +
+    '"part":{"id":"prt_15","messageID":"msg_14","sessionID":"ses_b","type":"text",' +
+    '"text":"The exact contents of `sample.txt` are:\\n\\n```\\nhello world\\n```",' +
+    '"time":{"start":1,"end":2}}}',
+  '{"type":"step_finish","timestamp":1788408412188,"sessionID":"ses_b",' +
+    '"part":{"id":"prt_16","reason":"stop","snapshot":"s4","messageID":"msg_14","sessionID":"ses_b",' +
+    '"type":"step-finish","tokens":{"total":8230,"input":179,"output":51,"reasoning":0,' +
+    '"cache":{"write":0,"read":8000}},"cost":0}}',
+].join("\n");
+
+/** Captured verbatim from a real invalid-model run: a session-level error event. */
+const OPENCODE_ERROR_EVENT =
+  '{"type":"error","timestamp":1788408457085,"sessionID":"ses_c",' +
+  '"error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs ' +
+  'for details.","ref":"err_7be42bd4"}}}';
+
+test("OpenCode: text and reasoning are recovered as separate closed blocks", () => {
+  const recorder = new ActivityRecorder(opencodeLineMapper);
+  for (const l of OPENCODE_TEXT_SESSION.split("\n")) recorder.push(l);
+  const activity = recorder.snapshot();
+  assert.deepEqual(
+    activity.blocks.map((b) => b.kind),
+    ["reasoning", "text"],
+  );
+  assert.equal(activity.blocks[0]?.text, "The user is asking me to reply with a single word.");
+  assert.equal(activity.blocks[1]?.text, "READY");
+  assert.ok(activity.blocks.every((b) => b.done), "OpenCode blocks arrive already complete");
+  assert.equal(activity.iterations, 1);
+  assert.deepEqual(activity.usage, {
+    tokens: { total: 8080, input: 6244, output: 44, reasoning: 0, cache: { write: 0, read: 1792 } },
+    cost: 0,
+  });
+});
+
+test("OpenCode: a tool call is recovered with its name, input, and count, across two iterations", () => {
+  const recorder = new ActivityRecorder(opencodeLineMapper);
+  for (const l of OPENCODE_TOOL_SESSION.split("\n")) recorder.push(l);
+  const activity = recorder.snapshot();
+  assert.deepEqual(
+    activity.blocks.map((b) => b.kind),
+    ["reasoning", "tool", "text"],
+  );
+  assert.match(activity.blocks[1]?.text ?? "", /^read\n/u);
+  assert.match(activity.blocks[1]?.text ?? "", /sample\.txt/u);
+  assert.equal(activity.toolCalls, 1);
+  // Two step_start events: the tool-using step and the final response step.
+  assert.equal(activity.iterations, 2);
+  assert.deepEqual(activity.usage, {
+    tokens: { total: 8230, input: 179, output: 51, reasoning: 0, cache: { write: 0, read: 8000 } },
+    cost: 0,
+  });
+});
+
+test("OpenCode: a session-level error event is recovered as a result block", () => {
+  const recorder = new ActivityRecorder(opencodeLineMapper);
+  recorder.push(OPENCODE_ERROR_EVENT);
+  const activity = recorder.snapshot();
+  assert.equal(activity.blocks.length, 1);
+  assert.equal(activity.blocks[0]?.kind, "result");
+  assert.match(activity.blocks[0]?.text ?? "", /UnknownError/u);
+  assert.match(activity.blocks[0]?.text ?? "", /Unexpected server error/u);
+  assert.equal(activity.blocks[0]?.done, true);
+});
+
+test("OpenCode: an unparsable or unknown event line is swallowed, matching the Cline mapper", () => {
+  const recorder = new ActivityRecorder(opencodeLineMapper);
+  for (const bad of ["", "not json", "{oops", JSON.stringify({ type: "mystery" }), "[]"]) {
+    assert.doesNotThrow(() => {
+      recorder.push(bad);
+    });
+  }
+  assert.equal(recorder.snapshot().blocks.length, 0);
 });

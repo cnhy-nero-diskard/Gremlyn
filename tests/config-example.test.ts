@@ -14,6 +14,12 @@ test("config.example.yaml parses successfully with no real credentials", () => {
     name: "Your Name",
     email: "your-github-verified-email@example.com",
   });
-  assert.equal(config.repositories.length, 1);
+  assert.equal(config.repositories.length, 2);
   assert.equal(config.repositories[0]!.effort, "xhigh");
+  const opencodeRepo = config.repositories.find((r) => r.agent === "opencode")!;
+  assert.ok(opencodeRepo, "expected an OpenCode repository entry");
+  assert.equal(opencodeRepo.provider, "");
+  assert.equal(opencodeRepo.effort, "high");
+  assert.equal(config.agents.opencode?.kind, "opencode");
+  assert.deepEqual(config.agents.opencode?.credentialFiles, ["auth.json"]);
 });

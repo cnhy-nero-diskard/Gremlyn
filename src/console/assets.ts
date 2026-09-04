@@ -384,6 +384,14 @@ export const clientScript = `
   };
   let modelCatalog = null;
   const customProvider = '__custom__';
+  // Each catalog entry names the executor kinds it serves (the same mapping
+  // the server-rendered pickers filter by), so a card only ever offers the
+  // providers its repository's own agent can authenticate against.
+  const providersFor = (root) => {
+    const kind = root.dataset.agentKind || '';
+    if (!kind) return modelCatalog || [];
+    return (modelCatalog || []).filter((provider) => Array.isArray(provider.kinds) && provider.kinds.indexOf(kind) !== -1);
+  };
   const providerFor = (root) => {
     const select = root.querySelector('[data-repo-provider-select]');
     const input = root.querySelector('[data-repo-provider-input]');
@@ -437,9 +445,12 @@ export const clientScript = `
     if (!providerSelect || !modelSelect || !modelInput) return;
     const providerId = providerFor(root);
     const staticProvider = [...modelSelect.options].some((option) => option.dataset.providerId === providerId);
-    const provider = modelCatalog?.find((entry) => entry.id === providerId) ||
+    const provider = providersFor(root).find((entry) => entry.id === providerId) ||
       (staticProvider ? { id: providerId, description: '' } : null);
-    providerInput.hidden = Boolean(provider);
+    // An empty provider is a real selection for provider-optional agents, not
+    // an unnamed custom one — keep the free-text provider input hidden then.
+    const noProvider = providerId === '' && root.dataset.providerOptional !== undefined;
+    providerInput.hidden = Boolean(provider) || noProvider;
     modelSelect.hidden = !provider;
     modelInput.hidden = Boolean(provider);
     if (!provider) { modelInput.value = preferredModel || modelInput.value; updateModelDescription(root); return; }
@@ -447,8 +458,12 @@ export const clientScript = `
       const visible = option.dataset.providerId === provider.id;
       option.hidden = !visible;
     });
+    // HTMLOptGroupElement has no .options (only HTMLSelectElement does), so
+    // reading it here threw and aborted the rest of syncPicker: the model
+    // value, hint, and description below kept the previous provider's text
+    // while the option list had already been re-filtered.
     modelSelect.querySelectorAll('optgroup').forEach((group) => {
-      group.hidden = ![...group.options].some((option) => !option.hidden);
+      group.hidden = ![...group.querySelectorAll('option')].some((option) => !option.hidden);
     });
     const current = preferredModel || modelSelect.value;
     const usable = [...modelSelect.options].find((option) => option.dataset.providerId === provider.id);
@@ -459,7 +474,7 @@ export const clientScript = `
     updateModelDescription(root);
   };
   const renderLivePicker = (root, preferredModel) => {
-    const providers = modelCatalog || [];
+    const providers = providersFor(root);
     const providerSelect = root.querySelector('[data-repo-provider-select]');
     const providerInput = root.querySelector('[data-repo-provider-input]');
     const modelSelect = root.querySelector('[data-repo-model-select]');
@@ -467,11 +482,15 @@ export const clientScript = `
     const currentProvider = providerFor(root);
     const currentModel = preferredModel || modelFor(root);
     providerSelect.textContent = '';
+    if (root.dataset.providerOptional !== undefined) {
+      const none = document.createElement('option'); none.value = ''; none.textContent = 'None — provider is folded into the model id'; providerSelect.append(none);
+    }
     providers.forEach((provider) => {
       const option = document.createElement('option'); option.value = provider.id; option.textContent = providerLabel(provider); providerSelect.append(option);
     });
     const custom = document.createElement('option'); custom.value = customProvider; custom.textContent = 'Custom provider'; providerSelect.append(custom);
-    const known = providers.some((provider) => provider.id === currentProvider);
+    const known = providers.some((provider) => provider.id === currentProvider) ||
+      (root.dataset.providerOptional !== undefined && currentProvider === '');
     providerSelect.value = known ? currentProvider : customProvider;
     providerInput.value = known ? '' : currentProvider;
     modelSelect.textContent = '';

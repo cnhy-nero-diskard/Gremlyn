@@ -42,7 +42,11 @@ agent_defaults:
   # Initial per-repository timeout in seconds. 0 means no limit; the live
   # value can be changed from the repository card in the console.
   timeout_seconds: 0
-  # Bounded consecutive-mistake allowance passed to the agent.
+  # Bounded retry allowance. Its unit differs by agent: for Cline this is a
+  # consecutive-mistake allowance passed straight to `--retries` and enforced
+  # within one agent session; OpenCode's CLI has no such flag, so Gremlyn
+  # bounds it itself by re-running the whole `opencode run` invocation this
+  # many times. A budget of 2 does not mean the same thing under both agents.
   retries: 2
 
 # GitHub logins permitted to issue commands. Case-insensitive. The
@@ -61,13 +65,28 @@ allowed_authors:
 # orchestrator logs a warning when the model's advertised set disagrees.
 # Known tiers: none, low, medium, high, xhigh, max.
 # `credential_source` is the read-only directory holding the operator's
-# authenticated cline installation (where `cline auth` stored credentials).
-# It is scoped per-agent, verified at startup, and never written to.
+# authenticated agent installation (where the agent's own `auth`/`login`
+# command stored credentials). It is scoped per-agent, verified at startup,
+# and never written to.
+#
+# `kind` selects the registered executor (currently `cline` or `opencode`)
+# and defaults to the agent's own key when omitted, so an id can be any label
+# an operator likes as long as the kind names a real executor.
 agents:
   cline:
     binary: cline
     efforts: [none, low, medium, high, xhigh]
     credential_source: C:/Users/you/.cline/data
+
+  opencode:
+    kind: opencode
+    binary: opencode
+    # OpenCode's per-model ceiling is unverified beyond what the CLI accepts
+    # silently (see design D-opencode's Risks); bound this list to what your
+    # models actually support, the same caution as for Cline above.
+    efforts: [none, low, medium, high, xhigh, max]
+    # Holds auth.json (`opencode debug paths` reports its data root).
+    credential_source: C:/Users/you/.local/share/opencode
 
 repositories:
   - owner: your-github-login
@@ -99,3 +118,23 @@ repositories:
     # Optional repository-specific instructions appended to every prompt.
     agent_instructions: |
       Follow the existing code conventions in this repository.
+
+  - owner: your-github-login
+    name: your-opencode-repo
+    source_path: D:/code/your-opencode-repo
+    workspace_root: D:/code/gremlyn-workspaces/your-opencode-repo
+    agent: opencode
+    # No `provider` field: OpenCode folds the provider into the model id
+    # (`provider/model`) instead of taking it as a separate argument, so it
+    # is not required here — unlike the Cline entry above. In the console's
+    # repository settings, an "OpenCode" entry in the Provider picker lists
+    # every model Zen serves (`opencode models opencode`); "Custom provider"
+    # (shared with Cline) still works for any other provider/model OpenCode
+    # understands. Either way, whatever is typed there is accepted but ignored.
+    model: opencode/claude-sonnet-5
+    effort: high
+    enabled: true
+    validation_commands:
+      - [npm, run, build]
+      - [npm, test]
+    workspace_seed_files: []

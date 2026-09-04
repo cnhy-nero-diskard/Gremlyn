@@ -212,6 +212,216 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   data.store.close();
 });
 
+test("an OpenCode repository renders on the dashboard and its settings are configurable through the console", async () => {
+  // OpenCode has no ProviderCatalog entries (design D-opencode's non-goal), so
+  // its repository must be configurable purely through the existing
+  // agent-agnostic "Custom provider" free-text path — the same route used
+  // above for Cline — with no console-side change.
+  const data = fixture();
+  const opencodeRepoId = Number(
+    data.store.db
+      .prepare(
+        `INSERT INTO repositories
+           (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      )
+      .run(
+        "acme",
+        "opencode-widgets",
+        "source-2",
+        "workspaces-2",
+        "opencode",
+        "opencode/claude-sonnet-5",
+        "",
+        "high",
+      ).lastInsertRowid,
+  );
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(dashboard.statusCode, 200);
+  assert.match(dashboard.body, /acme\/opencode-widgets/);
+  assert.match(dashboard.body, /opencode\/claude-sonnet-5/);
+
+  const updated = await app.inject({
+    method: "POST",
+    url: `/repos/${opencodeRepoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "opencode", model: "opencode/gpt-5.4", effort: "xhigh" },
+  });
+  assert.equal(updated.statusCode, 200);
+  assert.deepEqual(
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(opencodeRepoId),
+    { provider: "opencode", model: "opencode/gpt-5.4", effort: "xhigh" },
+  );
+  await app.close();
+  data.store.close();
+});
+
+const CONSOLE_AGENTS = {
+  cline: {
+    id: "cline",
+    kind: "cline",
+    binary: "cline",
+    efforts: ["none", "low", "medium", "high", "xhigh"] as const,
+    credentialSource: "/tmp/cline-data",
+    credentialFiles: ["secrets.json", "settings/providers.json"],
+  },
+  opencode: {
+    id: "opencode",
+    kind: "opencode",
+    binary: "opencode",
+    efforts: ["none", "low", "medium", "high", "xhigh", "max"] as const,
+    credentialSource: "/tmp/opencode-data",
+    credentialFiles: ["auth.json"],
+  },
+};
+
+test("an empty provider is saved for provider-optional agents and refused for Cline", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  const opencodeRepoId = Number(
+    data.store.db
+      .prepare(
+        `INSERT INTO repositories
+           (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      )
+      .run(
+        "acme",
+        "opencode-widgets",
+        "source-2",
+        "workspaces-2",
+        "opencode",
+        "opencode/claude-sonnet-5",
+        "",
+        "high",
+      ).lastInsertRowid,
+  );
+  const app = buildConsoleServer(data.options);
+  // OpenCode folds the provider into the model id, so provider "" is a valid
+  // state and the save must not be rejected as provider-required.
+  const saved = await app.inject({
+    method: "POST",
+    url: `/repos/${opencodeRepoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "", model: "opencode/gpt-5.4", effort: "max" },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(opencodeRepoId),
+    { provider: "", model: "opencode/gpt-5.4", effort: "max" },
+  );
+  // Cline still requires a provider argument on its argv.
+  const refused = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "", model: "gpt-5.6-sol", effort: "high" },
+  });
+  assert.equal(refused.statusCode, 400);
+  assert.deepEqual(refused.json(), { error: "provider-required" });
+  await app.close();
+  data.store.close();
+});
+
+test("the dashboard drives effort tiers and provider semantics from each repository's agent", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.store.db
+    .prepare(
+      `INSERT INTO repositories
+         (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    )
+    .run(
+      "acme",
+      "opencode-widgets",
+      "source-2",
+      "workspaces-2",
+      "opencode",
+      "opencode/claude-sonnet-5",
+      "",
+      "max",
+    );
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(dashboard.statusCode, 200);
+  const body = dashboard.body;
+  // Only the OpenCode agent declares "max", so exactly one card offers it —
+  // a Cline card must not present a tier its agent does not support.
+  assert.equal((body.match(/<option value="max"/gu) ?? []).length, 1);
+  // Only the provider-optional card renders the empty-provider option and flag.
+  assert.equal(
+    (body.match(/None — provider is folded into the model id/gu) ?? []).length,
+    1,
+  );
+  assert.equal((body.match(/data-provider-optional/gu) ?? []).length, 1);
+  await app.close();
+  data.store.close();
+});
+
+test("the dashboard filters the provider catalog by each repository's agent kind", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.store.db
+    .prepare(
+      `INSERT INTO repositories
+         (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    )
+    .run(
+      "acme",
+      "opencode-widgets",
+      "source-2",
+      "workspaces-2",
+      "opencode",
+      "opencode/claude-sonnet-5",
+      "",
+      "max",
+    );
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(dashboard.statusCode, 200);
+  const cards = dashboard.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/gu) ?? [];
+  assert.equal(cards.length, 2);
+  const clineCard = cards.find((card) => card.includes('data-agent-kind="cline"'));
+  const opencodeCard = cards.find((card) => card.includes('data-agent-kind="opencode"'));
+  assert.ok(clineCard);
+  assert.ok(opencodeCard);
+  // A Cline card offers the Cline-owned entries and never the OpenCode Zen
+  // gateway, whose credentials its executor does not hold.
+  assert.match(clineCard, /<option value="cline">/);
+  assert.match(clineCard, /<option value="cline-pass">/);
+  assert.match(clineCard, /<option value="openai-codex">/);
+  assert.doesNotMatch(clineCard, /<option value="opencode">/);
+  // An OpenCode card offers only the Zen gateway; the Cline-only entries are
+  // not selectable for a provider-optional executor. "Custom provider" stays
+  // for intentionally opaque values.
+  assert.match(opencodeCard, /<option value="opencode">/);
+  assert.doesNotMatch(opencodeCard, /<option value="cline">/);
+  assert.doesNotMatch(opencodeCard, /<option value="cline-pass">/);
+  assert.doesNotMatch(opencodeCard, /<option value="openai-codex">/);
+  assert.match(opencodeCard, /Custom provider/);
+  // The live-refresh payload carries the same kind mapping, so the client
+  // script applies the identical filter when it fetches /model-catalog.
+  const catalog = await app.inject({ method: "GET", url: "/model-catalog", headers: AUTH });
+  assert.equal(catalog.statusCode, 200);
+  const providers = (
+    catalog.json() as { providers: Array<{ id: string; kinds: string[] }> }
+  ).providers;
+  const kindsOf = (id: string) => providers.find((provider) => provider.id === id)?.kinds;
+  assert.deepEqual(kindsOf("cline"), ["cline"]);
+  assert.deepEqual(kindsOf("cline-pass"), ["cline"]);
+  assert.deepEqual(kindsOf("openai-codex"), ["cline"]);
+  assert.deepEqual(kindsOf("opencode"), ["opencode"]);
+  await app.close();
+  data.store.close();
+});
+
 test("job detail separates attempts and shows context, failure, output, validation, commit, and reporting", async () => {
   const data = fixture();
   const app = buildConsoleServer(data.options);

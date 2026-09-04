@@ -110,13 +110,15 @@ test("rejects a repository naming an unknown agent", () => {
   );
 });
 
-test("rejects a repository with an empty provider", () => {
+test("rejects a Cline repository with an empty provider", () => {
   const config = VALID_CONFIG.replace("provider: test-provider", 'provider: ""');
   assert.throws(
     () => loadConfig(writeConfig(config), VALID_ENV),
     (err: unknown) => {
       assert.ok(err instanceof ConfigError);
-      assert.ok(err.problems.includes("repositories[0].provider is required"));
+      assert.ok(
+        err.problems.some((p) => p.includes('repositories[0].provider is required for agent "cline"')),
+      );
       return true;
     },
   );

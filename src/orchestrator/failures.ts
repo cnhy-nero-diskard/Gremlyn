@@ -21,6 +21,7 @@ export const FAILURE_REASONS = [
   "agent-timeout",
   "agent-nonzero-exit",
   "agent-auth-failed",
+  "agent-billing-failed",
   "credential-seed-failed",
   "validation-failed",
   "push-rejected",
@@ -90,7 +91,40 @@ export function isAgentAuthenticationFailure(
   return false;
 }
 
+/**
+ * Detect OpenCode's billing refusal, distinct from an expired or invalid
+ * credential.
+ *
+ * Verified against opencode 1.18.27: an unrecognized model produces a
+ * `{"type":"error"}` event whose `error.name` is `"UnknownError"`, and design
+ * D-opencode's probe recorded exhausted credit surfacing the same envelope
+ * with `error.name` `"CreditsError"`, wrapping an HTTP 401 that also carries
+ * the word "Unauthorized" — the same wording {@link isAgentAuthenticationFailure}
+ * matches. Classification keys on the structured `error.name` the provider
+ * actually reports rather than that shared wording, so a billing refusal is
+ * never misread as an authentication failure telling the operator to
+ * re-authenticate a credential that was accepted correctly.
+ */
+export function isAgentBillingFailure(result: Pick<AgentResult, "stdout" | "stderr">): boolean {
+  const combined = `${result.stdout}\n${result.stderr}`;
+  for (const line of combined.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let value: { type?: unknown; error?: { name?: unknown } };
+    try {
+      value = JSON.parse(trimmed) as typeof value;
+    } catch {
+      continue;
+    }
+    if (value.type === "error" && value.error?.name === "CreditsError") return true;
+  }
+  return false;
+}
+
 export function agentFailureReason(result: AgentResult): FailureReason {
+  // Ordering matters: a billing refusal's payload also matches the
+  // unauthorized wording the auth check looks for.
+  if (isAgentBillingFailure(result)) return "agent-billing-failed";
   if (isAgentAuthenticationFailure(result)) return "agent-auth-failed";
   return "agent-nonzero-exit";
 }
