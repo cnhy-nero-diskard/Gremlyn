@@ -6,14 +6,16 @@ import {
   ProviderCatalog,
 } from "../src/agent/provider-catalog.js";
 
-test("bundled provider catalog exposes current Cline and Codex choices", () => {
+test("bundled provider catalog exposes current Cline, Codex, and OpenCode choices", () => {
   const catalog = bundledProviderCatalog();
   const cline = catalog.providers.find((provider) => provider.id === "cline");
   const pass = catalog.providers.find((provider) => provider.id === "cline-pass");
   const codex = catalog.providers.find((provider) => provider.id === "openai-codex");
+  const opencode = catalog.providers.find((provider) => provider.id === "opencode");
   assert.ok(cline);
   assert.ok(pass);
   assert.ok(codex);
+  assert.ok(opencode);
   assert.ok(cline.models.some((model) => model.id === "moonshotai/kimi-k3"));
   assert.ok(pass.models.some((model) => model.id === "cline-pass/kimi-k3"));
   assert.deepEqual(
@@ -28,6 +30,9 @@ test("bundled provider catalog exposes current Cline and Codex choices", () => {
       "gpt-5.4-mini",
     ],
   );
+  assert.equal(opencode.defaultModelId, "opencode/claude-sonnet-5");
+  assert.ok(opencode.models.every((model) => model.id.startsWith("opencode/")));
+  assert.ok(opencode.models.some((model) => model.id === "opencode/claude-sonnet-5"));
 });
 
 test("provider catalog refreshes from the Cline featured-model feed", async () => {

@@ -187,9 +187,11 @@ change beyond `agent: opencode`:
 - **Provider**: OpenCode has no separate provider argument — it is folded into
   the model id as `opencode/<model>` (`opencode models opencode` lists them).
   A repository naming an OpenCode agent does not need a `provider` field at
-  all; in the console's repository settings, the "Custom provider" field is
-  still shown (it is shared with Cline) but whatever is typed there is
-  accepted and ignored.
+  all. The console's repository settings offer an "OpenCode" entry in the
+  Provider picker with a curated `opencode/<model>` shortlist; picking
+  "Custom provider" instead (shared with Cline) still works for any other
+  `provider/model` OpenCode itself understands, and whatever is typed there
+  is accepted and ignored by the executor either way.
 - **Retries**: OpenCode's CLI has no retry flag, so `agent_defaults.retries`
   is enforced by Gremlyn itself, re-running the whole invocation up to that
   many times on failure — see the comment in `config.example.yaml`. This

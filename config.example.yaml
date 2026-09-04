@@ -127,8 +127,10 @@ repositories:
     # No `provider` field: OpenCode folds the provider into the model id
     # (`provider/model`) instead of taking it as a separate argument, so it
     # is not required here — unlike the Cline entry above. In the console's
-    # repository settings, OpenCode uses the same "Custom provider" free-text
-    # field Cline does; whatever is typed there is accepted but ignored.
+    # repository settings, an "OpenCode" entry in the Provider picker offers a
+    # curated `opencode/<model>` shortlist; "Custom provider" (shared with
+    # Cline) still works for any other provider/model OpenCode understands.
+    # Either way, whatever is typed there is accepted but ignored.
     model: opencode/claude-sonnet-5
     effort: high
     enabled: true

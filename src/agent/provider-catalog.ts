@@ -6,6 +6,13 @@
  * bundled feed keeps the picker useful offline. OpenAI Codex is deliberately
  * kept as a separate provider: Cline uses bare Codex model ids there, while
  * Cline usage-billing models use provider-qualified ids.
+ *
+ * The OpenCode entry is a curated, static list of `opencode/<model>` ids from
+ * its built-in Zen gateway — the one namespace every installation can reach
+ * without extra provider auth. It exists purely to save typing for the
+ * common case; picking "Custom provider" and typing any `provider/model`
+ * OpenCode itself understands (per `opencode models opencode`) still works,
+ * per config.example.yaml.
  */
 
 export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models";
@@ -169,6 +176,38 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
   ],
 };
 
+/**
+ * Curated `opencode/<model>` ids for OpenCode's built-in Zen gateway
+ * provider. OpenCode also accepts other configured providers folded into the
+ * same `-m` argument (e.g. `anthropic/claude-opus-5`), but those depend on
+ * each installation's own `opencode auth login` state, so only the
+ * always-available `opencode/` namespace is listed here; the "Custom
+ * provider" path (config.example.yaml) remains the way to target anything
+ * else.
+ */
+const OPENCODE_MODELS: ProviderModelOption[] = [
+  {
+    id: "opencode/claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    description: "Anthropic's balanced model for everyday coding, via OpenCode's Zen gateway.",
+  },
+  {
+    id: "opencode/claude-opus-5",
+    name: "Claude Opus 5",
+    description: "Anthropic's frontier model, via OpenCode's Zen gateway.",
+  },
+  {
+    id: "opencode/gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
+    description: "OpenAI's flagship coding tier, via OpenCode's Zen gateway.",
+  },
+  {
+    id: "opencode/kimi-k3",
+    name: "Kimi K3",
+    description: "Moonshot AI's flagship agentic coding model, via OpenCode's Zen gateway.",
+  },
+];
+
 const CODEX_MODELS: ProviderModelOption[] = [
   {
     id: "gpt-5.6-sol",
@@ -297,6 +336,14 @@ function makeCatalog(
         "Sign in with ChatGPT Subscription",
         "gpt-5.6-sol",
         CODEX_MODELS.map((model) => ({ ...model })),
+      ),
+      provider(
+        "opencode",
+        "OpenCode",
+        "OpenCode's built-in Zen gateway models, folded into the model id.",
+        "opencode auth login",
+        "opencode/claude-sonnet-5",
+        OPENCODE_MODELS.map((model) => ({ ...model })),
       ),
     ],
   };
