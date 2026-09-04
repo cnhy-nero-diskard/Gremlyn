@@ -73,8 +73,8 @@
 ## 8. Verification
 
 - [ ] 8.1 Run `npm run build`, `npm test`, `npm run lint` and `npm run format:check` and confirm all pass
-- [ ] 8.2 Start the orchestrator against a scratch data directory, open the console, confirm live updates and local times, then stop with a single interrupt and confirm the process exits and the claim file is gone
-- [ ] 8.3 Change a repository's effort, then its model, then reload and navigate away and back, and confirm the persisted provider and model are unchanged throughout and the audit records only the edits made
-- [ ] 8.4 Run the reclamation preview against the development workspace roots and confirm it reports the accumulated `pr-*` directories, retains any dirty ones, and lists no path outside the configured roots
+- [x] 8.2 Start the orchestrator against a scratch data directory, open the console, confirm live updates and local times, then stop with a single interrupt and confirm the process exits and the claim file is gone
+- [x] 8.3 Change a repository's effort, then its model, then reload and navigate away and back, and confirm the persisted provider and model are unchanged throughout and the audit records only the edits made
+- [x] 8.4 Run the reclamation preview against the development workspace roots and confirm it reports the accumulated `pr-*` directories, retains any dirty ones, and lists no path outside the configured roots
 - [ ] 8.5 With adoption off, issue a command on a pull request whose branch is held by an operator worktree and confirm the job runs in an independent clone and the operator worktree is unchanged; then enable adoption, clean that worktree, and confirm the next attempt runs in it, publishes from it, leaves it on its branch, and leaves no claim behind
-- [ ] 8.6 Run `openspec validate harden-operator-runtime --strict` and confirm the change is valid
+- [x] 8.6 Run `openspec validate harden-operator-runtime --strict` and confirm the change is valid
