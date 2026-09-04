@@ -13,11 +13,8 @@ import { Store } from "../src/store/db.js";
 import type { AgentExecutor, NormalizedEvent } from "../src/types.js";
 import { currentBranch, git, statusEntries } from "../src/workspace/gitops.js";
 import { reclaimWorkspaces, listReclamationCandidates } from "../src/workspace/reclamation.js";
-import {
-  prepareWorkspace,
-  WorkspaceError,
-  workspacePathFor,
-} from "../src/workspace/worktree.js";
+import { resetWorkspace } from "../src/workspace/reset.js";
+import { prepareWorkspace, WorkspaceError, workspacePathFor } from "../src/workspace/worktree.js";
 import { createTempRepo, pushCommit, remoteSha, type TempRepo } from "./helpers/gitrepo.js";
 
 test("reclamation candidates include only derived PR directories inside the root", async () => {
@@ -54,7 +51,12 @@ test("reclamation removes an old clean linked worktree and audits the outcome", 
   });
   assert.equal(report.reclaimed, 1);
   assert.equal(existsSync(prepared.path), false);
-  assert.equal((await git(["worktree", "list", "--porcelain"], { cwd: repo.sourcePath })).stdout.includes(prepared.path), false);
+  assert.equal(
+    (await git(["worktree", "list", "--porcelain"], { cwd: repo.sourcePath })).stdout.includes(
+      prepared.path,
+    ),
+    false,
+  );
   const audit = new OperatorActionStore(fixture.store.db).list(1)[0];
   assert.deepEqual(
     { action: audit?.action, target: audit?.target, effect: audit?.effect },
@@ -115,7 +117,9 @@ test("reclamation retains a dirty workspace byte-for-byte and reports the refusa
   assert.equal(report.reclaimed, 0);
   assert.equal(report.retained, 1);
   assert.equal(readFileSync(dirtyPath, "utf8"), before);
-  assert.ok((await statusEntries(prepared.path)).some((entry) => entry.includes("operator-notes.txt")));
+  assert.ok(
+    (await statusEntries(prepared.path)).some((entry) => entry.includes("operator-notes.txt")),
+  );
   assert.match(report.decisions[0]?.reason ?? "", /uncommitted or untracked/u);
   fixture.store.close();
 });
@@ -151,9 +155,18 @@ test("reclamation retains active, recent, and indeterminate workspaces", async (
   });
   assert.equal(report.reclaimed, 0);
   assert.equal(report.retained, 3);
-  assert.match(report.decisions.find((decision) => decision.prNumber === 44)?.reason ?? "", /active/u);
-  assert.match(report.decisions.find((decision) => decision.prNumber === 45)?.reason ?? "", /newer/u);
-  assert.match(report.decisions.find((decision) => decision.prNumber === 46)?.reason ?? "", /cleanliness/u);
+  assert.match(
+    report.decisions.find((decision) => decision.prNumber === 44)?.reason ?? "",
+    /active/u,
+  );
+  assert.match(
+    report.decisions.find((decision) => decision.prNumber === 45)?.reason ?? "",
+    /newer/u,
+  );
+  assert.match(
+    report.decisions.find((decision) => decision.prNumber === 46)?.reason ?? "",
+    /cleanliness/u,
+  );
   assert.equal(existsSync(prepared.path), true);
   assert.equal(existsSync(recentPath), true);
   assert.equal(existsSync(unknownPath), true);
@@ -187,6 +200,39 @@ test("reclamation preview reports eligible and retained workspaces without remov
   assert.equal(existsSync(prepared.path), true);
   assert.equal(existsSync(retainedPath), true);
   fixture.store.close();
+});
+
+test("reset refuses an adopted checkout and reclamation never lists it", async () => {
+  const repo = await createTempRepo();
+  const fixture = await makeFixture(repo, 114, 11400);
+  const adopted = join(repo.root, "adopted-operator-checkout");
+  await git(["worktree", "add", adopted, repo.headBranch], { cwd: repo.sourcePath });
+  const actions = new OperatorActionStore(fixture.store.db);
+
+  try {
+    await assert.rejects(
+      resetWorkspace({
+        sourcePath: repo.sourcePath,
+        workspaceRoot: repo.workspaceRoot,
+        prNumber: 114,
+        headBranch: repo.headBranch,
+        headSha: fixture.originalHead,
+        targetPath: adopted,
+        actions,
+      }),
+      (error: unknown) =>
+        error instanceof WorkspaceError && error.reason === "workspace-outside-root",
+    );
+    assert.equal(existsSync(adopted), true);
+    assert.deepEqual(await listReclamationCandidates(reclamationRepository(fixture)), []);
+    const audit = actions.list(1)[0];
+    assert.deepEqual(
+      { action: audit?.action, target: audit?.target, effect: audit?.effect },
+      { action: "workspace-reset", target: adopted, effect: "refused" },
+    );
+  } finally {
+    fixture.store.close();
+  }
 });
 
 test("a full job leaves the dirty source checkout tree, index, and branch unchanged", async () => {

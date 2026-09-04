@@ -104,17 +104,12 @@ export function timeElement(
     `datetime="${at}"`,
     `title="${at}"`,
     ...(zone ? [`data-time-zone="${escapeHtml(zone)}"`] : []),
-    ...(format === "elapsed" && options.end
-      ? [`data-time-end="${escapeHtml(options.end)}"`]
-      : []),
+    ...(format === "elapsed" && options.end ? [`data-time-end="${escapeHtml(options.end)}"`] : []),
   ].join(" ");
   return `<time ${attrs}>${escapeHtml(text)}</time>`;
 }
 
-export function relativeTimeElement(
-  value: string | null | undefined,
-  now = Date.now(),
-): string {
+export function relativeTimeElement(value: string | null | undefined, now = Date.now()): string {
   return timeElement(value, "relative", relativeTimestamp(value, now));
 }
 
@@ -219,20 +214,21 @@ export function attemptCard(
   attempt: AttemptDetail,
   options: { showActivity?: boolean; timeZone?: string | undefined } = {},
 ): string {
-  const head = `<div class="attempt-head"><h3>Attempt ${attempt.attempt_number}</h3>${statusPill(attempt.outcome ?? "pending")}<span class="muted attempt-elapsed">${elapsedTimeElement(attempt.started_at, attempt.ended_at)}</span></div>`;
+  const head = `<div class="attempt-head"><h3>Attempt ${attempt.attempt_number}</h3>${statusPill(attempt.outcome ?? "pending")}${attempt.adopted ? '<span class="chip adoption-marker">adopted checkout</span>' : ""}<span class="muted attempt-elapsed">${elapsedTimeElement(attempt.started_at, attempt.ended_at)}</span></div>`;
   const spec = `<p class="attempt-spec"><span class="chip">${escapeHtml(attempt.agent)}</span><span class="chip">${escapeHtml(attempt.model)}</span><span class="chip">${escapeHtml(attempt.effort)}</span></p>`;
   const failure = attempt.failure_reason
     ? `<p class="attempt-failure"><strong>${escapeHtml(attempt.failure_stage ?? "failed")}</strong> ${escapeHtml(attempt.failure_reason)}</p>`
     : "";
-  const facts = keyValueTable({
-    Workspace: attempt.workspace_path ?? "not prepared",
-    Commit: attempt.commit_sha ?? "none",
-    Reporting: attempt.report_status ?? "pending",
-    "Exit code": attempt.agent_exit_code,
-    Pushed: attempt.pushed === 1 ? "yes" : "no",
-    Uncommitted: attempt.has_uncommitted_changes === 1 ? "yes" : "no",
-    "Head SHA at prepare": attempt.head_sha_at_prepare,
-  }) +
+  const facts =
+    keyValueTable({
+      Workspace: attempt.workspace_path ?? "not prepared",
+      Commit: attempt.commit_sha ?? "none",
+      Reporting: attempt.report_status ?? "pending",
+      "Exit code": attempt.agent_exit_code,
+      Pushed: attempt.pushed === 1 ? "yes" : "no",
+      Uncommitted: attempt.has_uncommitted_changes === 1 ? "yes" : "no",
+      "Head SHA at prepare": attempt.head_sha_at_prepare,
+    }) +
     keyValueTable(
       {
         Started: attempt.started_at,

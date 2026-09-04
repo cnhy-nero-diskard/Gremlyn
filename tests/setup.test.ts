@@ -187,6 +187,7 @@ test("CLI help names every setup subcommand and supported flag", () => {
     "--owner",
     "--name",
     "--workspace-root",
+    "--adopt-worktree",
     "--agent",
     "--provider",
     "--model",

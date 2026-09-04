@@ -74,6 +74,8 @@ export interface AttemptDetail {
   report_status: string | null;
   has_uncommitted_changes: number;
   output_ref: string | null;
+  /** Whether the attempt ran in a clean foreign checkout adopted by Gremlyn. */
+  adopted: boolean;
   output: string;
   /** Whether the referenced captured output file is still present. */
   outputRetained: boolean;
@@ -353,6 +355,7 @@ export function readJobDetail(
         ...safe,
         output: redact(artifact.text),
         outputRetained: artifact.retained,
+        adopted: raw.adopted === 1,
         activity: readActivity(dataDir, safe.id),
       };
     });

@@ -150,4 +150,10 @@ ALTER TABLE jobs ADD COLUMN review_context TEXT;
 ALTER TABLE repositories ADD COLUMN timeout_seconds INTEGER;
 `,
   },
+  {
+    id: "0005_attempt_adopted_workspace",
+    sql: `
+ALTER TABLE attempts ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0;
+`,
+  },
 ];

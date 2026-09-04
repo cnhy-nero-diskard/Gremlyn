@@ -74,6 +74,7 @@ export interface AddRepositoryOptions extends FlowIO {
   owner?: string | undefined;
   name?: string | undefined;
   workspaceRoot?: string | undefined;
+  adoptWorktree?: boolean | undefined;
   agent?: string | undefined;
   provider?: string | undefined;
   model?: string | undefined;
@@ -210,9 +211,7 @@ export async function unlockDataDirectory(options: UnlockOptions): Promise<Unloc
 }
 
 /** Preview or apply the configured workspace reclamation sweep from the CLI. */
-export async function reclaimConfiguredWorkspaces(
-  options: ReclaimOptions,
-): Promise<ReclaimResult> {
+export async function reclaimConfiguredWorkspaces(options: ReclaimOptions): Promise<ReclaimResult> {
   const configPath = resolve(options.configPath);
   const io = makeIO(options, configPath);
   const config = readSetupConfig(configPath, io.env);
@@ -350,6 +349,7 @@ export async function addRepository(options: AddRepositoryOptions): Promise<Flow
     name,
     sourcePath,
     workspaceRoot,
+    adoptWorktree: options.adoptWorktree ?? false,
     agent,
     provider,
     model,
@@ -791,6 +791,7 @@ function toYamlRepository(entry: RepoConfig): Record<string, unknown> {
     name: entry.name,
     source_path: entry.sourcePath,
     workspace_root: entry.workspaceRoot,
+    adopt_worktree: entry.adoptWorktree ?? false,
     agent: entry.agent,
     provider: entry.provider,
     model: entry.model,

@@ -25,6 +25,7 @@ interface CliValues {
   owner?: string;
   name?: string;
   "workspace-root"?: string;
+  "adopt-worktree"?: boolean;
   agent?: string;
   provider?: string;
   model?: string;
@@ -49,6 +50,7 @@ const OPTION_DEFINITIONS = {
   owner: { type: "string" },
   name: { type: "string" },
   "workspace-root": { type: "string" },
+  "adopt-worktree": { type: "boolean" },
   agent: { type: "string" },
   provider: { type: "string" },
   model: { type: "string" },
@@ -89,6 +91,7 @@ Flags:
       --owner <owner>            Explicit GitHub owner.
       --name <name>              Explicit GitHub repository name.
       --workspace-root <path>    Explicit workspace root outside source repositories.
+      --adopt-worktree            Allow clean foreign checkouts to be adopted.
       --agent <id>               Explicit configured agent id.
       --provider <id>            Explicit agent provider.
       --model <id>               Explicit model.
@@ -234,6 +237,7 @@ function repositoryOptions(
     ...(values.owner !== undefined ? { owner: values.owner } : {}),
     ...(values.name !== undefined ? { name: values.name } : {}),
     ...(values["workspace-root"] !== undefined ? { workspaceRoot: values["workspace-root"] } : {}),
+    ...(values["adopt-worktree"] === true ? { adoptWorktree: true } : {}),
     ...(values.agent !== undefined ? { agent: values.agent } : {}),
     ...(values.provider !== undefined ? { provider: values.provider } : {}),
     ...(values.model !== undefined ? { model: values.model } : {}),

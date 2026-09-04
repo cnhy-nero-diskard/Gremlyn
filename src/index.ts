@@ -16,10 +16,7 @@ import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
 import { JobStore } from "./store/jobs.js";
 import { type AgentExecutor, type ReasoningEffort } from "./types.js";
-import {
-  reportRepositoryProviderMismatches,
-  syncRepositories,
-} from "./runtime/repositories.js";
+import { reportRepositoryProviderMismatches, syncRepositories } from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
 import { reclaimWorkspaces } from "./workspace/reclamation.js";
 import { retainArtifacts } from "./artifact-retention.js";
@@ -179,6 +176,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       secrets: [config.githubToken, config.consoleToken],
       concurrency: config.concurrency,
       commitAuthor: config.commitAuthor,
+      operatorActions,
     });
     for (const repository of repositories) orchestrator.registerRepository(repository);
     const eventSource = new PollingEventSource(github, store.db);

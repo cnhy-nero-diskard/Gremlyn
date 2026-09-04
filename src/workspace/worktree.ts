@@ -1,6 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { isLockOwnerAlive } from "../orchestrator/instance-lock.js";
+import type { OperatorActionStore } from "../store/actions.js";
 import {
   currentBranch,
   git,
@@ -50,7 +52,34 @@ export interface PreparedWorkspace {
   headSha: string;
   /** Whether the workspace was created fresh or refreshed. */
   created: boolean;
+  /** Whether the path belongs to an operator checkout adopted for this attempt. */
+  adopted: boolean;
+  /** Claim held outside the adopted checkout's working tree until the attempt ends. */
+  adoptionClaim?: AdoptionClaimHandle;
 }
+
+export interface AdoptionClaim {
+  attemptId: number;
+  pid: number;
+  claimedAt: string;
+}
+
+export interface AdoptionClaimHandle extends AdoptionClaim {
+  path: string;
+  release(): void;
+}
+
+export class AdoptionClaimError extends Error {
+  readonly reason: "adoption-claimed" | "adoption-claim-indeterminate";
+
+  constructor(reason: AdoptionClaimError["reason"], message: string) {
+    super(message);
+    this.name = "AdoptionClaimError";
+    this.reason = reason;
+  }
+}
+
+const ADOPTION_CLAIM_NAME = "gremlyn-adoption-claim.json";
 
 /** Deterministic workspace path: workspace root plus PR number only. */
 export function workspacePathFor(workspaceRoot: string, prNumber: number): string {
@@ -85,122 +114,166 @@ export async function prepareWorkspace(options: {
   seedFiles?: readonly string[];
   /** Permit edits only for a validated abrupt-run retry. */
   resumeDirtyWorkspace?: boolean;
+  /** Allow a clean foreign checkout holding the branch to be used for this attempt. */
+  adoptExistingCheckout?: boolean;
+  /** Required to publish a discoverable claim when adoption is enabled. */
+  attemptId?: number;
+  /** Audit adoption decisions when the caller has an operator-action store. */
+  actions?: Pick<OperatorActionStore, "record">;
 }): Promise<PreparedWorkspace> {
   const { sourcePath, workspaceRoot, prNumber, headBranch } = options;
   const expectedSha = options.headSha;
   const path = workspacePathFor(workspaceRoot, prNumber);
+  let preparedPath = path;
   // Set when a stray local commit ahead of `expectedSha` was fast-forward
   // pushed to reconcile the workspace (see below) — the final invariant
   // check then compares against that new head instead of the stale one.
   let reconciledSha: string | undefined;
+  let adoptionClaim: AdoptionClaimHandle | undefined;
 
-  await mkdir(workspaceRoot, { recursive: true });
-  await git(["fetch", "origin", "--prune"], { cwd: sourcePath });
-
-  const existed = existsSync(path);
-  if (!existed) {
-    await createWorkspaceCheckout(sourcePath, path, headBranch);
-    // Fast-forward to the recorded head; the local branch may lag the remote.
+  try {
+    await mkdir(workspaceRoot, { recursive: true });
     try {
-      await git(["merge", "--ff-only", expectedSha], { cwd: path });
-    } catch {
-      throw new WorkspaceError(
-        "workspace-diverged",
-        `workspace ${path} cannot fast-forward to ${expectedSha}`,
-      );
-    }
-  } else {
-    await assertValidWorktree(path);
-    // A standalone fallback clone has its own object database and remote
-    // refs; refresh it independently before resolving the recorded head.
-    await git(["fetch", "origin", "--prune"], { cwd: path });
-    if ((await unmergedEntries(path)).length > 0 || (await mergeInProgress(path))) {
-      throw new WorkspaceError(
-        "workspace-conflicted",
-        `workspace ${path} contains unresolved conflicts`,
-      );
-    }
-    const branch = await currentBranch(path);
-    if (branch === "HEAD") {
-      throw new WorkspaceError("workspace-detached", `workspace ${path} has a detached HEAD`);
-    }
-    // Refresh: dirty means stop (design D9) — never discard.
-    const dirty = (await statusEntries(path)).length > 0;
-    if (branch !== headBranch && dirty) {
-      throw new WorkspaceError(
-        "workspace-dirty",
-        `workspace ${path} has uncommitted modifications`,
-      );
-    }
-    if (dirty && !options.resumeDirtyWorkspace) {
-      throw new WorkspaceError(
-        "workspace-dirty",
-        `workspace ${path} has uncommitted modifications`,
-      );
-    }
-    if (branch !== headBranch) {
-      try {
-        await git(["checkout", headBranch], { cwd: path });
-      } catch {
+      await git(["fetch", "origin", "--prune"], { cwd: sourcePath });
+    } catch (error) {
+      const holder = await worktreeHoldingBranch(sourcePath, headBranch).catch(() => undefined);
+      if (
+        holder !== undefined &&
+        samePath(holder, sourcePath) &&
+        !(await hasUsableOrigin(sourcePath))
+      ) {
         throw new WorkspaceError(
-          "workspace-diverged",
-          `workspace ${path} cannot switch safely to ${headBranch}`,
+          "workspace-branch-in-use",
+          `branch ${headBranch} is checked out at ${sourcePath}, and the source checkout has no usable origin for an independent workspace`,
         );
       }
+      throw error;
     }
-    if (dirty && options.resumeDirtyWorkspace) {
-      const actualSha = await headSha(path);
-      if (actualSha !== expectedSha) {
-        throw new WorkspaceError(
-          "workspace-diverged",
-          `workspace ${path} is dirty at ${actualSha}, expected ${expectedSha}`,
-        );
-      }
-    } else {
-      const localSha = await headSha(path);
-      if (localSha !== expectedSha && (await isAncestor(path, expectedSha, localSha))) {
-        // The workspace already contains everything at `expectedSha` plus at
-        // least one further commit, with an otherwise clean tree — a prior
-        // agent run committed its own fix but never published it (the cause
-        // behind a `no-changes` publish block that then wedges every retry
-        // as `workspace-diverged`). Nothing here is missing or conflicting,
-        // so finishing that publish is a plain fast-forward, never a force
-        // push, and discarding the commit instead would silently throw away
-        // real, already-validated work.
+
+    const existed = existsSync(path);
+    if (!existed) {
+      const checkout = await createWorkspaceCheckout(sourcePath, path, headBranch, {
+        ...options,
+        expectedSha,
+      });
+      adoptionClaim = checkout.adoptionClaim;
+      preparedPath = checkout.path ?? path;
+      // A newly-created checkout may lag the recorded head. Adoption already
+      // performs this fast-forward as part of its admission checks.
+      if (!checkout.adopted) {
         try {
-          await git(["push", "origin", `${localSha}:${headBranch}`], { cwd: path });
-        } catch (error) {
-          throw new WorkspaceError(
-            "workspace-diverged",
-            `workspace ${path} at ${localSha} is ahead of expected ${expectedSha} and could not be reconciled: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-        reconciledSha = localSha;
-      } else {
-        // Fast-forward only; divergence means stop, not rewrite.
-        try {
-          await git(["merge", "--ff-only", expectedSha], { cwd: path });
+          await git(["merge", "--ff-only", expectedSha], { cwd: preparedPath });
         } catch {
           throw new WorkspaceError(
             "workspace-diverged",
-            `workspace ${path} cannot fast-forward to ${expectedSha}`,
+            `workspace ${preparedPath} cannot fast-forward to ${expectedSha}`,
           );
         }
       }
+    } else {
+      await assertValidWorktree(path);
+      // A standalone fallback clone has its own object database and remote
+      // refs; refresh it independently before resolving the recorded head.
+      await git(["fetch", "origin", "--prune"], { cwd: path });
+      if ((await unmergedEntries(path)).length > 0 || (await mergeInProgress(path))) {
+        throw new WorkspaceError(
+          "workspace-conflicted",
+          `workspace ${path} contains unresolved conflicts`,
+        );
+      }
+      const branch = await currentBranch(path);
+      if (branch === "HEAD") {
+        throw new WorkspaceError("workspace-detached", `workspace ${path} has a detached HEAD`);
+      }
+      // Refresh: dirty means stop (design D9) — never discard.
+      const dirty = (await statusEntries(path)).length > 0;
+      if (branch !== headBranch && dirty) {
+        throw new WorkspaceError(
+          "workspace-dirty",
+          `workspace ${path} has uncommitted modifications`,
+        );
+      }
+      if (dirty && !options.resumeDirtyWorkspace) {
+        throw new WorkspaceError(
+          "workspace-dirty",
+          `workspace ${path} has uncommitted modifications`,
+        );
+      }
+      if (branch !== headBranch) {
+        try {
+          await git(["checkout", headBranch], { cwd: path });
+        } catch {
+          throw new WorkspaceError(
+            "workspace-diverged",
+            `workspace ${path} cannot switch safely to ${headBranch}`,
+          );
+        }
+      }
+      if (dirty && options.resumeDirtyWorkspace) {
+        const actualSha = await headSha(path);
+        if (actualSha !== expectedSha) {
+          throw new WorkspaceError(
+            "workspace-diverged",
+            `workspace ${path} is dirty at ${actualSha}, expected ${expectedSha}`,
+          );
+        }
+      } else {
+        const localSha = await headSha(path);
+        if (localSha !== expectedSha && (await isAncestor(path, expectedSha, localSha))) {
+          // The workspace already contains everything at `expectedSha` plus at
+          // least one further commit, with an otherwise clean tree — a prior
+          // agent run committed its own fix but never published it (the cause
+          // behind a `no-changes` publish block that then wedges every retry
+          // as `workspace-diverged`). Nothing here is missing or conflicting,
+          // so finishing that publish is a plain fast-forward, never a force
+          // push, and discarding the commit instead would silently throw away
+          // real, already-validated work.
+          try {
+            await git(["push", "origin", `${localSha}:${headBranch}`], { cwd: path });
+          } catch (error) {
+            throw new WorkspaceError(
+              "workspace-diverged",
+              `workspace ${path} at ${localSha} is ahead of expected ${expectedSha} and could not be reconciled: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+          reconciledSha = localSha;
+        } else {
+          // Fast-forward only; divergence means stop, not rewrite.
+          try {
+            await git(["merge", "--ff-only", expectedSha], { cwd: path });
+          } catch {
+            throw new WorkspaceError(
+              "workspace-diverged",
+              `workspace ${path} cannot fast-forward to ${expectedSha}`,
+            );
+          }
+        }
+      }
     }
-  }
 
-  const actualSha = await headSha(path);
-  if (actualSha !== (reconciledSha ?? expectedSha)) {
-    throw new WorkspaceError(
-      "workspace-diverged",
-      `workspace ${path} is at ${actualSha}, expected ${expectedSha}`,
-    );
+    const actualSha = await headSha(preparedPath);
+    if (actualSha !== (reconciledSha ?? expectedSha)) {
+      throw new WorkspaceError(
+        "workspace-diverged",
+        `workspace ${preparedPath} is at ${actualSha}, expected ${expectedSha}`,
+      );
+    }
+    await seedIgnoredFiles(sourcePath, preparedPath, options.seedFiles ?? []);
+    const adopted = adoptionClaim !== undefined;
+    return {
+      path: preparedPath,
+      branch: headBranch,
+      headSha: actualSha,
+      created: !existed && !adopted,
+      adopted,
+      ...(adoptionClaim === undefined ? {} : { adoptionClaim }),
+    };
+  } catch (error) {
+    adoptionClaim?.release();
+    throw error;
   }
-  await seedIgnoredFiles(sourcePath, path, options.seedFiles ?? []);
-  return { path, branch: headBranch, headSha: actualSha, created: !existed };
 }
 
 /** Re-read the remote branch immediately before publication. */
@@ -261,7 +334,13 @@ async function createWorkspaceCheckout(
   sourcePath: string,
   path: string,
   branch: string,
-): Promise<void> {
+  options: {
+    expectedSha: string;
+    adoptExistingCheckout?: boolean;
+    attemptId?: number;
+    actions?: Pick<OperatorActionStore, "record">;
+  },
+): Promise<{ adopted: boolean; path?: string; adoptionClaim?: AdoptionClaimHandle }> {
   // Drop registrations whose directories are gone before asking for a new one.
   // Git treats a stale ("prunable") entry as still holding its branch, so
   // `worktree add` fails with "already used by worktree at <path>" and the job
@@ -280,12 +359,34 @@ async function createWorkspaceCheckout(
   if (holder !== undefined && !samePath(holder, path)) {
     if (samePath(holder, sourcePath)) {
       await createStandaloneCheckout(sourcePath, path, branch);
-      return;
+      return { adopted: false };
     }
-    throw new WorkspaceError(
-      "workspace-branch-in-use",
-      `branch ${branch} is already checked out at ${holder}`,
-    );
+    if (!options.adoptExistingCheckout) {
+      recordAdoptionDecision(options.actions, holder, "refused", "adoption-disabled");
+    } else if (options.attemptId === undefined) {
+      recordAdoptionDecision(options.actions, holder, "refused", "attempt-id-missing");
+    } else {
+      const adopted = await tryAdoptCheckout({
+        holder,
+        branch,
+        expectedSha: options.expectedSha,
+        attemptId: options.attemptId,
+        actions: options.actions,
+      });
+      if (adopted !== undefined) return { ...adopted, path: holder };
+    }
+    try {
+      await createStandaloneCheckout(sourcePath, path, branch);
+      return { adopted: false };
+    } catch (error) {
+      if (error instanceof WorkspaceError) throw error;
+      throw new WorkspaceError(
+        "workspace-branch-in-use",
+        `branch ${branch} is already checked out at ${holder}; independent clone failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   const localExists = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {
@@ -299,6 +400,216 @@ async function createWorkspaceCheckout(
     await git(["worktree", "add", "--track", "-b", branch, path, `origin/${branch}`], {
       cwd: sourcePath,
     });
+  }
+  return { adopted: false };
+}
+
+async function tryAdoptCheckout(options: {
+  holder: string;
+  branch: string;
+  expectedSha: string;
+  attemptId: number;
+  actions?: Pick<OperatorActionStore, "record"> | undefined;
+}): Promise<{ adopted: true; adoptionClaim: AdoptionClaimHandle } | undefined> {
+  const refuse = (reason: string): undefined => {
+    recordAdoptionDecision(options.actions, options.holder, "refused", reason, options.attemptId);
+    return undefined;
+  };
+
+  try {
+    await assertValidWorktree(options.holder);
+  } catch {
+    return refuse("not-a-valid-worktree");
+  }
+  let branch: string;
+  try {
+    branch = await currentBranch(options.holder);
+  } catch {
+    return refuse("branch-undeterminable");
+  }
+  if (branch === "HEAD") return refuse("detached");
+  if (branch !== options.branch) return refuse(`branch-mismatch:${branch}`);
+
+  try {
+    if ((await unmergedEntries(options.holder)).length > 0) return refuse("unmerged-entries");
+    if (await mergeInProgress(options.holder)) return refuse("merge-in-progress");
+  } catch {
+    return refuse("conflict-state-undeterminable");
+  }
+  try {
+    if ((await statusEntries(options.holder)).length > 0) return refuse("dirty");
+  } catch {
+    return refuse("cleanliness-undeterminable");
+  }
+
+  let currentSha: string;
+  try {
+    currentSha = await headSha(options.holder);
+  } catch {
+    return refuse("head-undeterminable");
+  }
+  if (currentSha !== options.expectedSha) {
+    const fastForwardable = await isAncestor(options.holder, currentSha, options.expectedSha);
+    if (!fastForwardable) return refuse("not-fast-forwardable");
+  }
+
+  let gitDir: string;
+  try {
+    const reported = (await git(["rev-parse", "--git-dir"], { cwd: options.holder })).stdout.trim();
+    if (!reported) return refuse("git-dir-undeterminable");
+    gitDir = resolve(options.holder, reported);
+  } catch {
+    return refuse("git-dir-undeterminable");
+  }
+
+  let claim: AdoptionClaimHandle;
+  try {
+    claim = claimAdoptedCheckout(gitDir, options.attemptId);
+  } catch (error) {
+    return refuse(error instanceof AdoptionClaimError ? error.reason : "claim-unavailable");
+  }
+
+  if (currentSha !== options.expectedSha) {
+    try {
+      await git(["merge", "--ff-only", options.expectedSha], { cwd: options.holder });
+    } catch {
+      claim.release();
+      return refuse("fast-forward-failed");
+    }
+  }
+  recordAdoptionDecision(
+    options.actions,
+    options.holder,
+    "adopted",
+    "preconditions-passed",
+    options.attemptId,
+  );
+  return { adopted: true, adoptionClaim: claim };
+}
+
+export function adoptionClaimPath(gitDir: string): string {
+  return join(gitDir, ADOPTION_CLAIM_NAME);
+}
+
+export function readAdoptionClaim(path: string): AdoptionClaim | undefined {
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      typeof (value as { attemptId?: unknown }).attemptId !== "number" ||
+      !Number.isSafeInteger((value as { attemptId: number }).attemptId) ||
+      (value as { attemptId: number }).attemptId < 1 ||
+      typeof (value as { pid?: unknown }).pid !== "number" ||
+      !Number.isSafeInteger((value as { pid: number }).pid) ||
+      (value as { pid: number }).pid < 1 ||
+      typeof (value as { claimedAt?: unknown }).claimedAt !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      attemptId: (value as { attemptId: number }).attemptId,
+      pid: (value as { pid: number }).pid,
+      claimedAt: (value as { claimedAt: string }).claimedAt,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function claimAdoptedCheckout(gitDir: string, attemptId: number): AdoptionClaimHandle {
+  if (!Number.isSafeInteger(attemptId) || attemptId < 1) {
+    throw new AdoptionClaimError("adoption-claim-indeterminate", "attempt id is invalid");
+  }
+  const path = adoptionClaimPath(gitDir);
+  const claim: AdoptionClaim = {
+    attemptId,
+    pid: process.pid,
+    claimedAt: new Date().toISOString(),
+  };
+  for (;;) {
+    try {
+      writeFileSync(path, `${JSON.stringify(claim)}\n`, { encoding: "utf8", flag: "wx" });
+      let released = false;
+      return {
+        ...claim,
+        path,
+        release: (): void => {
+          if (released) return;
+          released = true;
+          const current = readAdoptionClaim(path);
+          if (
+            current?.attemptId !== claim.attemptId ||
+            current?.pid !== claim.pid ||
+            current?.claimedAt !== claim.claimedAt
+          ) {
+            return;
+          }
+          try {
+            unlinkSync(path);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") return;
+          }
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new AdoptionClaimError(
+          "adoption-claim-indeterminate",
+          `cannot create adoption claim ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const existing = readAdoptionClaim(path);
+      if (existing === undefined) {
+        throw new AdoptionClaimError(
+          "adoption-claim-indeterminate",
+          `adoption claim ${path} is unreadable`,
+        );
+      }
+      if (isLockOwnerAlive(existing.pid)) {
+        throw new AdoptionClaimError(
+          "adoption-claimed",
+          `adoption claim ${path} is held by live process ${existing.pid}`,
+        );
+      }
+      try {
+        unlinkSync(path);
+      } catch (reclaimError) {
+        if ((reclaimError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new AdoptionClaimError(
+          "adoption-claim-indeterminate",
+          `cannot reclaim adoption claim ${path}: ${
+            reclaimError instanceof Error ? reclaimError.message : String(reclaimError)
+          }`,
+        );
+      }
+    }
+  }
+}
+
+function recordAdoptionDecision(
+  actions: Pick<OperatorActionStore, "record"> | undefined,
+  target: string,
+  effect: "adopted" | "refused",
+  reason: string,
+  attemptId?: number,
+): void {
+  actions?.record({
+    action: "workspace-adoption",
+    target,
+    effect,
+    detail: { reason, ...(attemptId === undefined ? {} : { attemptId }) },
+  });
+}
+
+async function hasUsableOrigin(sourcePath: string): Promise<boolean> {
+  try {
+    return (
+      (await git(["remote", "get-url", "origin"], { cwd: sourcePath })).stdout.trim().length > 0
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -324,8 +635,8 @@ async function createStandaloneCheckout(
   const remoteUrl = (await git(["remote", "get-url", "origin"], { cwd: sourcePath })).stdout.trim();
   if (remoteUrl.length === 0) {
     throw new WorkspaceError(
-      "workspace-diverged",
-      `source checkout ${sourcePath} has no usable origin for an independent workspace`,
+      "workspace-branch-in-use",
+      `branch ${branch} is already checked out at ${sourcePath}; the source checkout has no usable origin for an independent workspace`,
     );
   }
   await git(["clone", "--no-local", "--branch", branch, remoteUrl, path], {

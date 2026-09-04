@@ -1,6 +1,6 @@
 # Gremlyn
 
-Gremlyn is a local PR-resolution orchestrator. It polls configured GitHub repositories for an authorized `!RESOLVE` reply on an inline review thread, prepares an isolated git checkout, runs Cline, independently validates the result, pushes a normal commit to the existing PR branch, and replies with the outcome. The developer's normal checkout is never modified. Context: I normally use 5.6 SOL HIGH in chat mode to review my PR's since it doesn't incur weekly usage; this is the invariant I try to create gremlyn around. Would I be extending this to the whole implementation pipeline? Maybe, but I treat the ideation (explore and proposal), first run implementation(apply) and the output corrections (PR, feedback and subsequent changes) as 3 separate processes that shouldn't be time locked. 
+Gremlyn is a local PR-resolution orchestrator. It polls configured GitHub repositories for an authorized `!RESOLVE` reply on an inline review thread, prepares an isolated git checkout, runs Cline, independently validates the result, pushes a normal commit to the existing PR branch, and replies with the outcome. The developer's normal checkout is never modified. Context: I normally use 5.6 SOL HIGH in chat mode to review my PR's since it doesn't incur weekly usage; this is the invariant I try to create gremlyn around. Would I be extending this to the whole implementation pipeline? Maybe, but I treat the ideation (explore and proposal), first run implementation(apply) and the output corrections (PR, feedback and subsequent changes) as 3 separate processes that shouldn't be time locked.
 
 Automatic workspace reclamation is opt-in. It only considers deterministic `pr-N` directories beneath configured workspace roots, and retains active, recent, dirty, or indeterminate workspaces. Review the decisions without deleting anything before enabling it:
 
@@ -15,6 +15,11 @@ to trim terminal-job output, validation files, and per-attempt state after
 `maximum_age_seconds` or when the combined `maximum_total_bytes` ceiling is
 exceeded. Trimming is oldest-first and never removes artifacts for a live job;
 the job view labels files that are no longer retained.
+
+Foreign branch holders are cloned into the configured workspace root by default.
+Set a repository's `adopt_worktree: true` only when you explicitly want a clean,
+validated operator checkout to be used in place; dirty or claimed checkouts are
+left untouched and cloned instead. Adopted attempts are marked in the console.
 
 ## Requirements
 
@@ -203,7 +208,7 @@ change beyond `agent: opencode`:
   A repository naming an OpenCode agent does not need a `provider` field at
   all. The console's repository settings offer an "OpenCode" entry in the
   Provider picker listing every model Zen serves (the full `opencode models
-  opencode` output for the pinned release); picking "Custom provider" instead
+opencode` output for the pinned release); picking "Custom provider" instead
   (shared with Cline) still works for any other `provider/model` OpenCode
   understands — an installation-specific one you authenticated yourself, say
   — and whatever is typed there is accepted and ignored by the executor

@@ -16,6 +16,7 @@ test("config.example.yaml parses successfully with no real credentials", () => {
   });
   assert.equal(config.repositories.length, 2);
   assert.equal(config.repositories[0]!.effort, "xhigh");
+  assert.equal(config.repositories[0]!.adoptWorktree, false);
   const opencodeRepo = config.repositories.find((r) => r.agent === "opencode")!;
   assert.ok(opencodeRepo, "expected an OpenCode repository entry");
   assert.equal(opencodeRepo.provider, "");

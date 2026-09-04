@@ -15,7 +15,12 @@ import { Store } from "../src/store/db.js";
 import { JOB_LOG_TAIL, readHealth, readJobDetail } from "../src/console/queries.js";
 import { SharedChangeTicker } from "../src/console/stream.js";
 import { jobRegions } from "../src/console/views/job.js";
-import { assetHash, clientScript, clientScriptPath, stylesheetPath } from "../src/console/assets.js";
+import {
+  assetHash,
+  clientScript,
+  clientScriptPath,
+  stylesheetPath,
+} from "../src/console/assets.js";
 import {
   dangerZone,
   duration,
@@ -433,12 +438,16 @@ test("a persisted provider mismatch stays visible and is not demoted to custom",
   const data = fixture();
   data.options.agents = CONSOLE_AGENTS;
   data.store.db
-    .prepare("UPDATE repositories SET agent = 'cline', provider = 'opencode', model = 'opencode/gpt-5.4' WHERE id = ?")
+    .prepare(
+      "UPDATE repositories SET agent = 'cline', provider = 'opencode', model = 'opencode/gpt-5.4' WHERE id = ?",
+    )
     .run(data.repoId);
   const app = buildConsoleServer(data.options);
   const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
   assert.equal(response.statusCode, 200);
-  const card = (response.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/u) ?? [""])[0];
+  const card = (response.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/u) ?? [
+    "",
+  ])[0];
   assert.match(card, /data-provider-mismatch/);
   assert.match(card, /Provider mismatch/);
   assert.match(card, /Current provider: opencode/);
@@ -518,6 +527,27 @@ test("job detail labels a trimmed captured artifact without losing its reference
   assert.match(response.body, /Captured agent output is no longer retained by the disk policy\./u);
   assert.match(response.body, /Raw agent output/u);
   await app.close();
+  data.store.close();
+});
+
+test("job detail marks an adopted attempt and leaves an ordinary attempt unmarked", () => {
+  const data = fixture();
+  const adoptedPath = join(
+    mkdtempSync(join(tmpdir(), "gremlyn-adopted-console-")),
+    "operator-checkout",
+  );
+  data.store.db
+    .prepare(
+      "UPDATE attempts SET workspace_path = ?, adopted = 1 WHERE id = (SELECT MAX(id) FROM attempts)",
+    )
+    .run(adoptedPath);
+  const model = readJobDetail(data.store.db, data.jobId, [SECRET]);
+  assert.ok(model);
+  assert.equal(model.attempts[0]?.adopted, false);
+  assert.equal(model.attempts[1]?.adopted, true);
+  const html = jobRegions(model)["job-detail-region"];
+  assert.equal((html.match(/adopted checkout/gu) ?? []).length, 1);
+  assert.ok(html.includes(adoptedPath));
   data.store.close();
 });
 
@@ -731,7 +761,12 @@ test("command and audit streams deliver newly recorded rows", async () => {
           const line = events[1]!.split("\n").find((entry) => entry.startsWith("data: "));
           assert.ok(line);
           req.destroy();
-          resolve(JSON.parse(line.slice("data: ".length)) as { kind: string; fragments: Record<string, string> });
+          resolve(
+            JSON.parse(line.slice("data: ".length)) as {
+              kind: string;
+              fragments: Record<string, string>;
+            },
+          );
         });
         response.on("error", reject);
       });
@@ -830,16 +865,26 @@ test("ticker emits tagged heartbeats without database activity and changes when 
   };
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.ok(changes.some((change) => change.kind === "heartbeat"));
-  data.store.db.prepare("UPDATE repositories SET provider = 'changed' WHERE id = ?").run(data.repoId);
+  data.store.db
+    .prepare("UPDATE repositories SET provider = 'changed' WHERE id = ?")
+    .run(data.repoId);
   await waitForChange(1);
-  data.store.db.prepare("UPDATE repositories SET model = 'changed-model' WHERE id = ?").run(data.repoId);
+  data.store.db
+    .prepare("UPDATE repositories SET model = 'changed-model' WHERE id = ?")
+    .run(data.repoId);
   await waitForChange(2);
   data.store.db.prepare("UPDATE repositories SET effort = 'low' WHERE id = ?").run(data.repoId);
   await waitForChange(3);
-  data.store.db.prepare("UPDATE repositories SET timeout_seconds = 123 WHERE id = ?").run(data.repoId);
+  data.store.db
+    .prepare("UPDATE repositories SET timeout_seconds = 123 WHERE id = ?")
+    .run(data.repoId);
   await waitForChange(4);
   const attemptId = Number(
-    (data.store.db.prepare("SELECT id FROM attempts WHERE job_id = ? ORDER BY id LIMIT 1").get(data.jobId) as { id: number }).id,
+    (
+      data.store.db
+        .prepare("SELECT id FROM attempts WHERE job_id = ? ORDER BY id LIMIT 1")
+        .get(data.jobId) as { id: number }
+    ).id,
   );
   data.store.db
     .prepare(
@@ -847,7 +892,9 @@ test("ticker emits tagged heartbeats without database activity and changes when 
     )
     .run(attemptId);
   await waitForChange(5);
-  assert.ok(changes.every((change, index) => index === 0 || change.sequence > changes[index - 1]!.sequence));
+  assert.ok(
+    changes.every((change, index) => index === 0 || change.sequence > changes[index - 1]!.sequence),
+  );
   unsubscribe();
   data.store.close();
 });
@@ -1120,17 +1167,20 @@ test("the job log tails a bounded number of newest entries in chronological orde
 
 test("log fields render as chips rather than a raw JSON blob", () => {
   const long = "x".repeat(200);
-  const html = logEntries([
-    {
-      id: 1,
-      at: "2026-08-28T17:53:05.254Z",
-      level: "error",
-      event: "job failed",
-      job_id: 1,
-      attempt_id: 2,
-      fields: JSON.stringify({ reason: "agent-auth-failed", detail: long }),
-    },
-  ], "UTC");
+  const html = logEntries(
+    [
+      {
+        id: 1,
+        at: "2026-08-28T17:53:05.254Z",
+        level: "error",
+        event: "job failed",
+        job_id: 1,
+        attempt_id: 2,
+        fields: JSON.stringify({ reason: "agent-auth-failed", detail: long }),
+      },
+    ],
+    "UTC",
+  );
   // Compact clock, not the full ISO stamp, with the exact value kept for hover.
   assert.match(html, /&gt;17:53:05\.254&lt;|>17:53:05\.254</u);
   assert.match(html, /title="2026-08-28T17:53:05\.254Z"/u);

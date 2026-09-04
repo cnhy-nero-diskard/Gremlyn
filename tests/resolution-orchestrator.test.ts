@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { FakeExecutor, type FakeOutcome } from "../src/agent/fake.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
@@ -11,16 +11,29 @@ import { FAILURE_REASONS } from "../src/orchestrator/failures.js";
 import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
 import { JobStore } from "../src/store/jobs.js";
 import { Store } from "../src/store/db.js";
+import { OperatorActionStore } from "../src/store/actions.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
+import { adoptionClaimPath, readAdoptionClaim } from "../src/workspace/worktree.js";
+import { currentBranch, git, statusEntries } from "../src/workspace/gitops.js";
 import { createTempRepo, remoteSha } from "./helpers/gitrepo.js";
 
 async function setup(
   outcome: FakeOutcome,
-  opts: { retries?: number; honorsRetries?: boolean; delayMs?: number } = {},
+  opts: {
+    retries?: number;
+    honorsRetries?: boolean;
+    delayMs?: number;
+    adoptWorktree?: boolean;
+  } = {},
 ) {
   const gitRepo = await createTempRepo();
   const initialSha = await remoteSha(gitRepo.remotePath, gitRepo.headBranch);
+  const foreignPath = opts.adoptWorktree
+    ? join(gitRepo.root, "operator-runtime-checkout")
+    : undefined;
+  if (foreignPath)
+    await git(["worktree", "add", foreignPath, gitRepo.headBranch], { cwd: gitRepo.sourcePath });
   const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-runtime-"));
   const store = new Store({ dataDir, file: ":memory:" });
   const [repository] = syncRepositories(store.db, [
@@ -34,6 +47,7 @@ async function setup(
       model: "fixture/model",
       effort: "xhigh",
       enabled: true,
+      adoptWorktree: opts.adoptWorktree ?? false,
       validationCommands: [],
       allowedModels: ["fixture/model"],
     },
@@ -85,6 +99,7 @@ async function setup(
     ...(opts.honorsRetries === undefined ? {} : { honorsRetries: opts.honorsRetries }),
     ...(opts.delayMs === undefined ? {} : { delayMs: opts.delayMs }),
   });
+  const operatorActions = new OperatorActionStore(store.db);
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
     dataDir,
@@ -99,6 +114,7 @@ async function setup(
     secrets: ["fixture-secret"],
     concurrency: 2,
     commitAuthor: { name: "Gremlyn", email: "gremlyn@localhost" },
+    operatorActions,
   });
   orchestrator.registerRepository(repository);
   const event: NormalizedEvent = {
@@ -111,7 +127,17 @@ async function setup(
     prNumber: 27,
     observedAt: "2026-08-27T00:01:00.000Z",
   };
-  return { store, repository, github, executor, orchestrator, event, gitRepo, initialSha };
+  return {
+    store,
+    repository,
+    github,
+    executor,
+    orchestrator,
+    event,
+    gitRepo,
+    initialSha,
+    foreignPath,
+  };
 }
 
 type Fixture = Awaited<ReturnType<typeof setup>>;
@@ -124,6 +150,19 @@ async function resolveEvent(data: Fixture) {
   const [queued] = await data.orchestrator.handleEvent(data.repository, data.event);
   if (!queued) throw new Error("the event queued no job");
   return queued.completed;
+}
+
+async function claimPathFor(worktree: string): Promise<string> {
+  const reported = (await git(["rev-parse", "--git-dir"], { cwd: worktree })).stdout.trim();
+  return adoptionClaimPath(resolve(worktree, reported));
+}
+
+async function waitForClaim(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (readAdoptionClaim(path) !== undefined) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
+  throw new Error(`adoption claim did not appear at ${path}`);
 }
 
 async function completeRetry(data: Fixture, jobId: number) {
@@ -166,6 +205,56 @@ test("production lifecycle reconstructs context, validates, pushes, replies, and
   data.store.close();
 });
 
+test("a successful adopted attempt publishes from the foreign checkout and releases its claim", async () => {
+  const data = await setup("files-modified", { adoptWorktree: true });
+  assert.ok(data.foreignPath);
+  const claimPath = await claimPathFor(data.foreignPath);
+  const result = await resolveEvent(data);
+  assert.equal(result.kind, "completed");
+  const attempt = data.store.db.prepare("SELECT workspace_path, adopted FROM attempts").get() as {
+    workspace_path: string;
+    adopted: number;
+  };
+  assert.equal(resolve(attempt.workspace_path), resolve(data.foreignPath));
+  assert.equal(attempt.adopted, 1);
+  assert.equal(readAdoptionClaim(claimPath), undefined);
+  assert.equal(await currentBranch(data.foreignPath), data.gitRepo.headBranch);
+  assert.deepEqual(await statusEntries(data.foreignPath), []);
+  assert.ok(
+    new OperatorActionStore(data.store.db)
+      .list()
+      .some((row) => row.action === "workspace-adoption" && row.effect === "adopted"),
+  );
+  data.store.close();
+});
+
+test("failed, timed-out, and cancelled adopted attempts release their claims", async () => {
+  const failed = await setup("failure", { adoptWorktree: true });
+  assert.ok(failed.foreignPath);
+  const failedClaim = await claimPathFor(failed.foreignPath);
+  await assert.rejects(() => resolveEvent(failed));
+  assert.equal(readAdoptionClaim(failedClaim), undefined);
+  failed.store.close();
+
+  const timedOut = await setup("timeout", { adoptWorktree: true, delayMs: 1 });
+  assert.ok(timedOut.foreignPath);
+  const timeoutClaim = await claimPathFor(timedOut.foreignPath);
+  await assert.rejects(() => resolveEvent(timedOut));
+  assert.equal(readAdoptionClaim(timeoutClaim), undefined);
+  timedOut.store.close();
+
+  const cancelled = await setup("timeout", { adoptWorktree: true, delayMs: 60_000 });
+  assert.ok(cancelled.foreignPath);
+  const cancelClaim = await claimPathFor(cancelled.foreignPath);
+  const [queued] = await cancelled.orchestrator.handleEvent(cancelled.repository, cancelled.event);
+  assert.ok(queued);
+  await waitForClaim(cancelClaim);
+  assert.equal(cancelled.orchestrator.cancel(queued.jobId), true);
+  assert.equal((await queued.completed).kind, "cancelled");
+  assert.equal(readAdoptionClaim(cancelClaim), undefined);
+  cancelled.store.close();
+});
+
 test("failed agent never pushes and records stage, files, commit, and push facts", async () => {
   const data = await setup("failure");
   await assert.rejects(() => resolveEvent(data));
@@ -196,7 +285,11 @@ test("an executor with no CLI retry allowance is bounded by the orchestrator its
   // the orchestrator must re-invoke the whole attempt itself, still bounded.
   const data = await setup("failure", { retries: 3, honorsRetries: false });
   await assert.rejects(() => resolveEvent(data));
-  assert.equal(data.executor.runs.length, 3, "expected exactly the configured number of invocations");
+  assert.equal(
+    data.executor.runs.length,
+    3,
+    "expected exactly the configured number of invocations",
+  );
   data.store.close();
 });
 
@@ -363,9 +456,9 @@ test("ingestion returns as soon as a job is queued, never waiting for the run", 
   if (!job) throw new Error("the event queued no job");
 
   assert.equal(data.executor.runs.length, 0, "handleEvent waited for the agent to finish");
-  const row = data.store.db
-    .prepare("SELECT finished_at FROM jobs WHERE id = ?")
-    .get(job.jobId) as { finished_at: string | null };
+  const row = data.store.db.prepare("SELECT finished_at FROM jobs WHERE id = ?").get(job.jobId) as {
+    finished_at: string | null;
+  };
   assert.equal(row.finished_at, null, "handleEvent returned only after the job reached a terminus");
 
   assert.equal(data.orchestrator.cancel(job.jobId), true);

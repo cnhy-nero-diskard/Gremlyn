@@ -116,6 +116,9 @@ repositories:
     # Root under which per-PR disposable isolated checkouts are created.
     # Must not be inside the source repository.
     workspace_root: D:/code/gremlyn-workspaces/your-repo
+    # Adoption is opt-in: a clean foreign checkout may be used when the branch
+    # is already held elsewhere. Leave false to preserve workspace isolation.
+    adopt_worktree: false
     agent: cline
     provider: your-provider
     model: your-provider/lune-5.6
@@ -142,6 +145,7 @@ repositories:
     name: your-opencode-repo
     source_path: D:/code/your-opencode-repo
     workspace_root: D:/code/gremlyn-workspaces/your-opencode-repo
+    adopt_worktree: false
     agent: opencode
     # No `provider` field: OpenCode folds the provider into the model id
     # (`provider/model`) instead of taking it as a separate argument, so it

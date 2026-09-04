@@ -53,6 +53,7 @@ test("loads a valid config", () => {
   assert.equal(config.repositories.length, 1);
   const repo = config.repositories[0]!;
   assert.equal(repo.agent, "cline");
+  assert.equal(repo.adoptWorktree, false);
   // No effort configured: defaults to the agent's highest tier.
   assert.equal(repo.effort, "xhigh");
   assert.equal(config.agentTimeoutSec, undefined);
@@ -97,7 +98,8 @@ test("loads workspace reclamation settings and rejects invalid values", () => {
         VALID_ENV,
       ),
     (error: unknown) =>
-      error instanceof ConfigError && /workspace_reclamation\.enabled must be a boolean/u.test(error.message),
+      error instanceof ConfigError &&
+      /workspace_reclamation\.enabled must be a boolean/u.test(error.message),
   );
 });
 
@@ -143,12 +145,10 @@ test("loads artifact retention settings and rejects invalid values", () => {
   }
   assert.throws(
     () =>
-      loadConfig(
-        writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  enabled: yes\n`),
-        VALID_ENV,
-      ),
+      loadConfig(writeConfig(`${VALID_CONFIG}\nartifact_retention:\n  enabled: yes\n`), VALID_ENV),
     (error: unknown) =>
-      error instanceof ConfigError && /artifact_retention\.enabled must be a boolean/u.test(error.message),
+      error instanceof ConfigError &&
+      /artifact_retention\.enabled must be a boolean/u.test(error.message),
   );
 });
 
@@ -160,12 +160,10 @@ test("loads an optional console timezone and rejects invalid zones", () => {
   assert.equal(configured.consoleTimezone, "Asia/Taipei");
   assert.throws(
     () =>
-      loadConfig(
-        writeConfig(`${VALID_CONFIG}\nconsole:\n  timezone: Not/A_Timezone\n`),
-        VALID_ENV,
-      ),
+      loadConfig(writeConfig(`${VALID_CONFIG}\nconsole:\n  timezone: Not/A_Timezone\n`), VALID_ENV),
     (error: unknown) =>
-      error instanceof ConfigError && error.problems.some((problem) => problem.includes("console.timezone")),
+      error instanceof ConfigError &&
+      error.problems.some((problem) => problem.includes("console.timezone")),
   );
 });
 
@@ -228,7 +226,9 @@ test("rejects a Cline repository with an empty provider", () => {
     (err: unknown) => {
       assert.ok(err instanceof ConfigError);
       assert.ok(
-        err.problems.some((p) => p.includes('repositories[0].provider is required for agent "cline"')),
+        err.problems.some((p) =>
+          p.includes('repositories[0].provider is required for agent "cline"'),
+        ),
       );
       return true;
     },
@@ -330,5 +330,33 @@ test("workspace_seed_files rejects a non-list value", () => {
     (error: unknown) =>
       error instanceof ConfigError &&
       /workspace_seed_files must be a list of strings/u.test(error.message),
+  );
+});
+
+test("adopt_worktree is opt-in and must be boolean", () => {
+  const enabled = loadConfig(
+    writeConfig(
+      VALID_CONFIG.replace(
+        "    validation_commands: []",
+        "    validation_commands: []\n    adopt_worktree: true",
+      ),
+    ),
+    VALID_ENV,
+  );
+  assert.equal(enabled.repositories[0]?.adoptWorktree, true);
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(
+          VALID_CONFIG.replace(
+            "    validation_commands: []",
+            "    validation_commands: []\n    adopt_worktree: yes",
+          ),
+        ),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError &&
+      /repositories\[0\]\.adopt_worktree must be a boolean/u.test(error.message),
   );
 });

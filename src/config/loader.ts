@@ -53,6 +53,8 @@ export interface RepoConfig {
   name: string;
   sourcePath: string;
   workspaceRoot: string;
+  /** Permit clean foreign checkouts to be used outside workspaceRoot. */
+  adoptWorktree: boolean;
   agent: string;
   provider: string;
   model: string;
@@ -189,6 +191,7 @@ interface RawRepoEntry {
   name?: unknown;
   source_path?: unknown;
   workspace_root?: unknown;
+  adopt_worktree?: unknown;
   agent?: unknown;
   provider?: unknown;
   model?: unknown;
@@ -221,6 +224,7 @@ function parseRepositories(
     const name = asString(r.name);
     const sourcePath = asString(r.source_path);
     const workspaceRoot = asString(r.workspace_root);
+    const adoptWorktree = asBoolean(r.adopt_worktree) ?? false;
     const agent = asString(r.agent);
     const provider = asString(r.provider) ?? "";
     const model = asString(r.model);
@@ -244,6 +248,9 @@ function parseRepositories(
     }
     if (r.workspace_seed_files !== undefined && workspaceSeedFiles === undefined) {
       problems.push(`${label}.workspace_seed_files must be a list of strings`);
+    }
+    if (r.adopt_worktree !== undefined && adoptWorktree === false && r.adopt_worktree !== false) {
+      problems.push(`${label}.adopt_worktree must be a boolean`);
     }
     // Agent must exist; effort must be within the agent's supported tiers.
     let effort: ReasoningEffort | undefined;
@@ -277,6 +284,7 @@ function parseRepositories(
         name,
         sourcePath,
         workspaceRoot,
+        adoptWorktree,
         agent,
         provider,
         model,
@@ -393,8 +401,7 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   }
   const configuredWorkspaceAge = raw.workspace_reclamation?.minimum_age_seconds;
   const parsedWorkspaceAge = asNumber(configuredWorkspaceAge);
-  const workspaceMinimumAgeSec =
-    parsedWorkspaceAge ?? DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC;
+  const workspaceMinimumAgeSec = parsedWorkspaceAge ?? DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC;
   if (
     configuredWorkspaceAge !== undefined &&
     (parsedWorkspaceAge === undefined ||
@@ -505,7 +512,14 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
       }
       const credentialFiles = credentialFilesRaw ?? DEFAULT_CREDENTIAL_FILES[kind] ?? [];
       if (!credentialSource) continue;
-      agents[id] = { id, kind, binary, efforts, credentialSource, credentialFiles: [...credentialFiles] };
+      agents[id] = {
+        id,
+        kind,
+        binary,
+        efforts,
+        credentialSource,
+        credentialFiles: [...credentialFiles],
+      };
     }
   }
 

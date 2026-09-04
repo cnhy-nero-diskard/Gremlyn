@@ -417,7 +417,7 @@ test("a stale worktree registration holding the branch is pruned, not fatal", as
   assert.equal(await currentBranch(prepared.path), repo.headBranch);
 });
 
-test("a live worktree holding the branch fails as branch-in-use, not corruption", async () => {
+test("a foreign worktree holding the branch falls back to a clone and stays untouched", async () => {
   const repo = await createTempRepo();
   const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
 
@@ -425,24 +425,50 @@ test("a live worktree holding the branch fails as branch-in-use, not corruption"
   // not touch it, and force-adding would corrupt that working copy.
   const live = join(repo.workspaceRoot, "live-holder");
   await git(["worktree", "add", live, repo.headBranch], { cwd: repo.sourcePath });
+  writeFileSync(join(live, "operator-notes.txt"), "leave this alone\n", "utf8");
+  const liveStatus = await statusEntries(live);
+
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 13,
+    headBranch: repo.headBranch,
+    headSha: expectedSha,
+  });
+
+  assert.equal(prepared.adopted, false);
+  assert.equal(prepared.path, workspacePathFor(repo.workspaceRoot, 13));
+  assert.equal(await currentBranch(prepared.path), repo.headBranch);
+  assert.equal(await headSha(prepared.path), expectedSha);
+  assert.equal(existsSync(live), true, "the live worktree must survive");
+  assert.equal(readFileSync(join(live, "operator-notes.txt"), "utf8"), "leave this alone\n");
+  assert.deepEqual(await statusEntries(live), liveStatus);
+});
+
+test("a source checkout without a usable origin reports branch-in-use", async () => {
+  const repo = await createTempRepo();
+  const expectedSha = await remoteSha(repo.remotePath, repo.headBranch);
+  await git(["checkout", repo.headBranch], { cwd: repo.sourcePath });
+  await git(["remote", "remove", "origin"], { cwd: repo.sourcePath });
+  const sourceStatus = await statusEntries(repo.sourcePath);
 
   await assert.rejects(
     prepareWorkspace({
       sourcePath: repo.sourcePath,
       workspaceRoot: repo.workspaceRoot,
-      prNumber: 13,
+      prNumber: 94,
       headBranch: repo.headBranch,
       headSha: expectedSha,
     }),
     (error: unknown) => {
       assert.ok(error instanceof WorkspaceError);
       assert.equal(error.reason, "workspace-branch-in-use");
-      // The operator has to release a specific directory; name it.
-      assert.match(error.message, /live-holder/u);
+      assert.match(error.message, /no usable origin/u);
       return true;
     },
   );
-  assert.equal(existsSync(live), true, "the live worktree must survive");
+  assert.equal(await currentBranch(repo.sourcePath), repo.headBranch);
+  assert.deepEqual(await statusEntries(repo.sourcePath), sourceStatus);
 });
 
 /** A feature-branch commit that ignores `local.properties`, plus the file itself. */

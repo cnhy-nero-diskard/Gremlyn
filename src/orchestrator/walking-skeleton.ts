@@ -86,7 +86,7 @@ export async function runWalkingSkeleton(
       headSha: pr.headSha,
     });
     workspacePath = workspace.path;
-    jobs.recordPreparation(attemptId, workspace.path, workspace.headSha);
+    jobs.recordPreparation(attemptId, workspace.path, workspace.headSha, workspace.adopted);
 
     stage = "running";
     jobs.setStatus(jobId, stage, attemptId);
