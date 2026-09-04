@@ -1,18 +1,18 @@
 ## 1. Publication accepts and observes cancellation
 
-- [ ] 1.1 Add a `signal: AbortSignal` field to the `publishIfEligible` input and a
+- [x] 1.1 Add a `signal: AbortSignal` field to the `publishIfEligible` input and a
   third result kind `{ kind: "cancelled"; commitSha?: string }` to
   `PublicationResult` in `src/publish/policy.ts`; verify `npm run build` passes and
   every existing caller is forced to handle the new kind
-- [ ] 1.2 Check the signal after the preconditions pass and before `commitAll`,
+- [x] 1.2 Check the signal after the preconditions pass and before `commitAll`,
   returning `{ kind: "cancelled" }` with no `commitSha`; verify with a unit test in
   `tests/validation-publication.test.ts` that an already-aborted signal produces no
   commit and no push
-- [ ] 1.3 Check the signal again after `commitAll` returns and before `pushHead`,
+- [x] 1.3 Check the signal again after `commitAll` returns and before `pushHead`,
   returning `{ kind: "cancelled", commitSha }`; verify with a unit test that a
   signal aborted between the two steps leaves the commit in the workspace, performs
   no push, and reports the sha
-- [ ] 1.4 Verify the uncancelled path is unchanged: existing publication tests still
+- [x] 1.4 Verify the uncancelled path is unchanged: existing publication tests still
   pass with `npm test`
 
 ## 2. Orchestrator maps a cancelled publish to the cancellation path

@@ -641,16 +641,26 @@ export class ResolutionOrchestrator {
         headBranch: context.headBranch,
         commentId,
         author: this.options.commitAuthor,
+        // Publishing is the one stage whose consequences leave the machine, so
+        // the operator's stop has to reach inside it rather than only up to it.
+        signal,
+        onCommitted: (commitSha) => {
+          // Recorded before the push is attempted: `commit_sha` set with
+          // `pushed = 0` is a commit still private to the workspace.
+          this.jobs.recordCommit(attemptId, commitSha);
+          this.options.logger.info("commit created", { jobId, attemptId, commitSha });
+        },
       });
+      // A cancel is not a judgement about the work, so it must not travel the
+      // StageFailure path — that names a publication precondition as the cause
+      // and reports it to the pull request. Converge on the same
+      // `job-cancelled` error the pre-validation check raises and let the
+      // queue's cancellation handler record the outcome.
+      if (publication.kind === "cancelled") throw new Error("job-cancelled");
       if (publication.kind === "blocked") {
         throw new StageFailure(stage, publication.reason);
       }
-      this.jobs.recordPublication(attemptId, publication.commitSha);
-      this.options.logger.info("commit created", {
-        jobId,
-        attemptId,
-        commitSha: publication.commitSha,
-      });
+      this.jobs.recordPush(attemptId);
       this.options.logger.info("push completed", {
         jobId,
         attemptId,

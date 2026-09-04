@@ -126,9 +126,10 @@ export async function runWalkingSkeleton(
       options.commitAuthor,
     );
     if (commitSha === null) throw new Error("no-changes");
+    jobs.recordCommit(attemptId, commitSha);
     throwIfAborted(signal);
     await pushHead(workspace.path, pr.headBranch);
-    jobs.recordPublication(attemptId, commitSha);
+    jobs.recordPush(attemptId);
 
     stage = "reporting";
     jobs.setStatus(jobId, stage, attemptId);

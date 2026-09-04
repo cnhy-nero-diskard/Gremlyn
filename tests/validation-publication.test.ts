@@ -19,13 +19,13 @@ import { Store } from "../src/store/db.js";
 import { JobStore } from "../src/store/jobs.js";
 import { inspectWorkspace } from "../src/validate/inspection.js";
 import { runValidationCommands, type ValidationProcessRunner } from "../src/validate/runner.js";
-import { currentBranch, git } from "../src/workspace/gitops.js";
+import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
 import { prepareWorkspace } from "../src/workspace/worktree.js";
-import { createTempRepo, remoteSha } from "./helpers/gitrepo.js";
+import { createTempRepo, pushCommit, remoteSha } from "./helpers/gitrepo.js";
 
 const AUTHOR = { name: "Gremlyn", email: "gremlyn@localhost" };
 
-function createAttempt(): { store: Store; jobs: JobStore; attemptId: number } {
+function createAttempt(): { store: Store; jobs: JobStore; jobId: number; attemptId: number } {
   const store = new Store({ dataDir: ".", file: ":memory:" });
   const repo = store.db
     .prepare(
@@ -53,7 +53,7 @@ function createAttempt(): { store: Store; jobs: JobStore; attemptId: number } {
     provider: "provider",
     effort: "xhigh",
   });
-  return { store, jobs, attemptId: attempt.attemptId };
+  return { store, jobs, jobId: created.jobId, attemptId: attempt.attemptId };
 }
 
 test("validation commands run in argv order and persist separate outcomes", async () => {
@@ -190,6 +190,7 @@ test("a successful agent with no changes publishes nothing", async () => {
     headBranch: repo.headBranch,
     commentId: 77,
     author: AUTHOR,
+    signal: new AbortController().signal,
   });
   assert.deepEqual(result, { kind: "blocked", reason: "no-changes" });
   assert.equal(await remoteSha(repo.remotePath, repo.headBranch), before);
@@ -217,12 +218,153 @@ test("eligible work gets an attributable deterministic commit recorded by the ca
     headBranch: repo.headBranch,
     commentId: 808,
     author: AUTHOR,
+    signal: new AbortController().signal,
   });
   assert.equal(result.kind, "published");
   assert.equal(await remoteSha(repo.remotePath, repo.headBranch), result.commitSha);
   const message = (await git(["log", "-1", "--pretty=%s"], { cwd: prepared.path })).stdout;
   assert.equal(message, resolutionCommitMessage(808));
   assert.equal(await currentBranch(prepared.path), repo.headBranch);
+});
+
+/**
+ * Job 52 (2026-09-04): a cancel requested at 18:39 while the attempt sat in
+ * publishing pushed anyway at 18:42, because the signal was never consulted
+ * once publication had begun. Publication now observes cancellation at both
+ * boundaries between operations, independently of its preconditions.
+ */
+test("a cancel before the commit publishes nothing even when every precondition passes", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 65,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "resolution.txt"), "fixed\n");
+  const controller = new AbortController();
+  controller.abort();
+  let committed: string | undefined;
+  const result = await publishIfEligible({
+    facts: {
+      ...passingFacts(),
+      inspection: { ok: true, modified: true, branch: repo.headBranch },
+      expectedHeadSha: sha,
+      currentHeadSha: sha,
+    },
+    workspacePath: prepared.path,
+    headBranch: repo.headBranch,
+    commentId: 65,
+    author: AUTHOR,
+    signal: controller.signal,
+    onCommitted: (commitSha) => {
+      committed = commitSha;
+    },
+  });
+  // Cancelled, not blocked: no precondition is named as the cause.
+  assert.deepEqual(result, { kind: "cancelled" });
+  assert.equal(committed, undefined);
+  assert.equal(await headSha(prepared.path), sha);
+  assert.equal(await remoteSha(repo.remotePath, repo.headBranch), sha);
+  assert.equal((await statusEntries(prepared.path)).length, 1);
+});
+
+test("a cancel between the commit and the push keeps the commit and records it unpushed", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 66,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "resolution.txt"), "fixed\n");
+  const { store, jobs, jobId, attemptId } = createAttempt();
+  const controller = new AbortController();
+  const result = await publishIfEligible({
+    facts: {
+      ...passingFacts(),
+      inspection: { ok: true, modified: true, branch: repo.headBranch },
+      expectedHeadSha: sha,
+      currentHeadSha: sha,
+    },
+    workspacePath: prepared.path,
+    headBranch: repo.headBranch,
+    commentId: 66,
+    author: AUTHOR,
+    signal: controller.signal,
+    // `onCommitted` is the moment the commit exists and the push has not been
+    // attempted — the one instant a cancel can land in this window, and where
+    // the orchestrator itself records the sha.
+    onCommitted: (commitSha) => {
+      jobs.recordCommit(attemptId, commitSha);
+      controller.abort();
+    },
+  });
+  assert.equal(result.kind, "cancelled");
+  if (result.kind !== "cancelled") throw new Error("expected a cancelled publication");
+  assert.ok(result.commitSha);
+  assert.equal(await headSha(prepared.path), result.commitSha);
+  assert.equal(await remoteSha(repo.remotePath, repo.headBranch), sha);
+  // Committing consumed the modifications, so the record cannot lean on
+  // `has_uncommitted_changes` to say the work survived.
+  assert.deepEqual(await statusEntries(prepared.path), []);
+  jobs.cancelJob(jobId, attemptId, (await statusEntries(prepared.path)).length > 0);
+  const attempt = jobs.getAttempt(attemptId);
+  assert.equal(attempt.outcome, "cancelled");
+  assert.equal(attempt.failure_reason, null);
+  assert.equal(attempt.commit_sha, result.commitSha);
+  assert.equal(attempt.pushed, 0);
+  assert.equal(attempt.has_uncommitted_changes, 0);
+  store.close();
+});
+
+test("a failed push still leaves the commit it was pushing recorded and unpushed", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 67,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "resolution.txt"), "fixed\n");
+  // The branch moves on the remote after preparation, so a non-force push of
+  // this workspace's HEAD is rejected.
+  await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    "elsewhere.txt",
+    "concurrent\n",
+    "concurrent commit",
+  );
+  const { store, jobs, attemptId } = createAttempt();
+  await assert.rejects(() =>
+    publishIfEligible({
+      facts: {
+        ...passingFacts(),
+        inspection: { ok: true, modified: true, branch: repo.headBranch },
+        expectedHeadSha: sha,
+        currentHeadSha: sha,
+      },
+      workspacePath: prepared.path,
+      headBranch: repo.headBranch,
+      commentId: 67,
+      author: AUTHOR,
+      signal: new AbortController().signal,
+      onCommitted: (commitSha) => {
+        jobs.recordCommit(attemptId, commitSha);
+      },
+    }),
+  );
+  const attempt = jobs.getAttempt(attemptId);
+  assert.equal(attempt.commit_sha, await headSha(prepared.path));
+  assert.equal(attempt.pushed, 0);
+  store.close();
 });
 
 test("outcome replies distinguish success, failure, and decline without transcripts or secrets", () => {
@@ -261,7 +403,8 @@ test("report failure remains separate after a successful push and thread state i
     }
   }
   const { store, jobs, attemptId } = createAttempt();
-  jobs.recordPublication(attemptId, "commit-123");
+  jobs.recordCommit(attemptId, "commit-123");
+  jobs.recordPush(attemptId);
   const github = new FailingReplyClient({ login: "gremlyn-bot" });
   const report = await reportAttemptOutcome({
     github,
