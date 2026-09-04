@@ -24,6 +24,7 @@ import {
   SharedChangeTicker,
   type StreamEnd,
   type StreamRegistrar,
+  type StreamChange,
 } from "./stream.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 
@@ -168,13 +169,14 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       ),
   );
   app.get<{ Querystring: { snapshot?: string } }>("/stream", async (request, reply) => {
-    const fragments = () => {
+    const fragments = (change: StreamChange) => {
       const regions = dashboardRegions(
         queries.readDashboard(),
         providerCatalog.snapshot(),
         options.agents,
         options.timezone,
       );
+      if (change.kind === "heartbeat") return { "health-region": regions.health };
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -187,20 +189,21 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       response: reply.raw,
       ticker,
       event: "dashboard-update",
-      initial: fragments(),
+      initial: fragments({ sequence: 0, kind: "change" }),
       render: fragments,
       snapshot: request.query.snapshot === "1",
       register: registerStream,
     });
   });
   app.get<{ Querystring: { snapshot?: string } }>("/dashboard/stream", async (request, reply) => {
-    const fragments = () => {
+    const fragments = (change: StreamChange) => {
       const regions = dashboardRegions(
         queries.readDashboard(),
         providerCatalog.snapshot(),
         options.agents,
         options.timezone,
       );
+      if (change.kind === "heartbeat") return { "health-region": regions.health };
       return {
         "health-region": regions.health,
         repositories: regions.repositories,
@@ -213,7 +216,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       response: reply.raw,
       ticker,
       event: "dashboard-update",
-      initial: fragments(),
+      initial: fragments({ sequence: 0, kind: "change" }),
       render: fragments,
       snapshot: request.query.snapshot === "1",
       register: registerStream,
@@ -239,7 +242,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       const id = positiveInteger(request.params.id);
       const model = queries.readJobDetail(id);
       if (!model) return reply.code(404).send({ error: "job-not-found" });
-      const fragments = () => {
+      const fragments = (change: StreamChange) => {
+        if (change.kind === "heartbeat") return {};
         const current = queries.readJobDetail(id);
         return current ? jobRegions(current, options.timezone) : {};
       };
@@ -262,13 +266,62 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.get("/commands", async (_request, reply) =>
     reply
       .type("text/html")
-      .send(layout("Command ingestion", commandsView(queries.readProcessedCommands(), options.timezone))),
+      .send(
+        layout(
+          "Command ingestion",
+          `<div id="commands-region">${commandsView(queries.readProcessedCommands(), options.timezone)}</div>`,
+          { stream: "/commands/stream" },
+        ),
+      ),
+  );
+  app.get<{ Querystring: { snapshot?: string } }>(
+    "/commands/stream",
+    async (request, reply) => {
+      const render = (change: StreamChange) =>
+        change.kind === "heartbeat"
+          ? {}
+          : { "commands-region": commandsView(queries.readProcessedCommands(), options.timezone) };
+      reply.hijack();
+      openSseStream({
+        request: request.raw,
+        response: reply.raw,
+        ticker,
+        event: "commands-update",
+        initial: render({ sequence: 0, kind: "change" }),
+        render,
+        snapshot: request.query.snapshot === "1",
+        register: registerStream,
+      });
+    },
   );
   app.get("/audit", async (_request, reply) =>
     reply
       .type("text/html")
-      .send(layout("Operator audit", auditView(queries.readOperatorActions(), options.timezone))),
+      .send(
+        layout(
+          "Operator audit",
+          `<div id="audit-region">${auditView(queries.readOperatorActions(), options.timezone)}</div>`,
+          { stream: "/audit/stream" },
+        ),
+      ),
   );
+  app.get<{ Querystring: { snapshot?: string } }>("/audit/stream", async (request, reply) => {
+    const render = (change: StreamChange) =>
+      change.kind === "heartbeat"
+        ? {}
+        : { "audit-region": auditView(queries.readOperatorActions(), options.timezone) };
+    reply.hijack();
+    openSseStream({
+      request: request.raw,
+      response: reply.raw,
+      ticker,
+      event: "audit-update",
+      initial: render({ sequence: 0, kind: "change" }),
+      render,
+      snapshot: request.query.snapshot === "1",
+      register: registerStream,
+    });
+  });
   app.post<{ Params: { id: string } }>("/jobs/:id/retry", async (request, reply) => {
     const id = positiveInteger(request.params.id);
     if (!options.actions?.retry) return reply.code(501).send({ error: "retry-unavailable" });

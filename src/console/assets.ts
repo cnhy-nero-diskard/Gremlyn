@@ -44,6 +44,8 @@ section.panel > h3 { font-size: .8rem; font-weight: 700; text-transform: upperca
 .metric span { display: block; font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .metric strong { display: block; font-size: 1.35rem; line-height: 1.25; font-variant-numeric: tabular-nums; }
 .metric small { color: var(--muted); }
+.health-summary { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; margin-bottom: .8rem; }
+.page-summary { font-size: .9rem; }
 .stale { border-color: var(--failure); color: var(--failure); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -356,6 +358,37 @@ pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font
 export const clientScript = `
 (() => {
   const status = (message) => { const node = document.querySelector('[data-live-status]'); if (node) node.textContent = message; };
+  const relativeText = (value, now = Date.now()) => {
+    if (!value) return 'never';
+    const ms = now - Date.parse(value);
+    if (!Number.isFinite(ms)) return 'unknown';
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return seconds + 's ago';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    return Math.floor(hours / 24) + 'd ago';
+  };
+  const elapsedText = (start, end, now = Date.now()) => {
+    if (!start) return '—';
+    const from = Date.parse(start);
+    const to = end ? Date.parse(end) : now;
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return '—';
+    const ms = Math.max(0, to - from);
+    if (ms < 1000) return ms + 'ms';
+    const seconds = ms / 1000;
+    if (seconds < 60) return seconds.toFixed(1) + 's';
+    return Math.floor(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's';
+  };
+  const refreshTimes = () => document.querySelectorAll('[data-console-time]').forEach((node) => {
+    const format = node.dataset.timeFormat;
+    const instant = node.getAttribute('datetime');
+    if (format === 'relative') node.textContent = relativeText(instant);
+    if (format === 'elapsed') node.textContent = elapsedText(instant, node.dataset.timeEnd);
+  });
+  refreshTimes();
+  setInterval(refreshTimes, 1000);
   // The log region is replaced wholesale on every stream tick, so anything the
   // operator set by hand — filter text, level, follow, scroll position — has to
   // be carried across the swap or it resets several times a second.
@@ -686,19 +719,28 @@ export const clientScript = `
       reset.dataset.body = JSON.stringify({ confirm: 'RESET', prNumber: Number(pr?.value) });
     }
   };
-  const swap = (fragments) => Object.entries(fragments || {}).forEach(([id, html]) => {
-    const root = document.getElementById(id); if (!root) return;
-    if (id === 'repositories' && pickerBusy(root)) return;
-    const atBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 24;
-    const state = remember(root); root.innerHTML = html; restore(root, state);
-    root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
-    if (atBottom) root.scrollTop = root.scrollHeight;
-  });
+  const swap = (fragments) => {
+    Object.entries(fragments || {}).forEach(([id, html]) => {
+      const root = document.getElementById(id); if (!root) return;
+      if (id === 'repositories' && pickerBusy(root)) return;
+      const atBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 24;
+      const state = remember(root); root.innerHTML = html; restore(root, state);
+      root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
+      if (atBottom) root.scrollTop = root.scrollHeight;
+    });
+    refreshTimes();
+  };
   const eventSource = document.querySelector('[data-stream]');
   if (eventSource && window.EventSource) {
     const stream = new EventSource(eventSource.dataset.stream);
-    stream.addEventListener('job-update', (event) => { try { swap(JSON.parse(event.data)); status('Updated just now'); } catch { status('Unable to apply live update'); } });
-    stream.addEventListener('dashboard-update', (event) => { try { swap(JSON.parse(event.data)); status('Updated just now'); } catch { status('Unable to apply live update'); } });
+    const applyStreamEvent = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        swap(payload.fragments || payload);
+        status(payload.kind === 'heartbeat' ? 'Live heartbeat' : 'Updated just now');
+      } catch { status('Unable to apply live update'); }
+    };
+    ['job-update', 'dashboard-update', 'commands-update', 'audit-update'].forEach((name) => stream.addEventListener(name, applyStreamEvent));
     stream.onerror = () => status('Live updates reconnecting…');
   }
   document.addEventListener('click', async (event) => {

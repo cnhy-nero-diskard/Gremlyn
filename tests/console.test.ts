@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
+import { runInNewContext } from "node:vm";
 import {
   buildConsoleServer,
   consoleListenOptions,
@@ -14,7 +15,7 @@ import { Store } from "../src/store/db.js";
 import { JOB_LOG_TAIL, readHealth, readJobDetail } from "../src/console/queries.js";
 import { SharedChangeTicker } from "../src/console/stream.js";
 import { jobRegions } from "../src/console/views/job.js";
-import { assetHash, clientScriptPath, stylesheetPath } from "../src/console/assets.js";
+import { assetHash, clientScript, clientScriptPath, stylesheetPath } from "../src/console/assets.js";
 import {
   dangerZone,
   duration,
@@ -214,6 +215,9 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /Running/);
   assert.match(response.body, /Queued/);
   assert.match(response.body, /Recent successes and failures/);
+  assert.ok(
+    response.body.indexOf('class="health-summary"') > response.body.indexOf('id="health-region"'),
+  );
   assert.match(response.headers["set-cookie"] as string, /HttpOnly/);
   await app.close();
   data.store.close();
@@ -669,6 +673,75 @@ test("commands and audit views expose outcomes and redacted action details", asy
   data.store.close();
 });
 
+test("command and audit streams deliver newly recorded rows", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const readChange = async (
+    path: string,
+    mutate: () => void,
+  ): Promise<{ kind: string; fragments: Record<string, string> }> => {
+    return await new Promise((resolve, reject) => {
+      const req = httpRequest({
+        host: "127.0.0.1",
+        port: address.port,
+        path,
+        headers: AUTH,
+      });
+      let buffer = "";
+      let initialSeen = false;
+      const timeout = setTimeout(() => {
+        req.destroy();
+        reject(new Error(`stream did not deliver a change: ${path}`));
+      }, 3_000);
+      req.on("response", (response) => {
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          buffer += chunk;
+          const events = buffer.split("\n\n").filter((event) => event.startsWith("event: "));
+          if (!initialSeen && events.length >= 1) {
+            initialSeen = true;
+            mutate();
+          }
+          if (events.length < 2) return;
+          clearTimeout(timeout);
+          const line = events[1]!.split("\n").find((entry) => entry.startsWith("data: "));
+          assert.ok(line);
+          req.destroy();
+          resolve(JSON.parse(line.slice("data: ".length)) as { kind: string; fragments: Record<string, string> });
+        });
+        response.on("error", reject);
+      });
+      req.on("error", (error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+      });
+      req.end();
+    });
+  };
+  const command = await readChange("/commands/stream", () => {
+    data.store.db
+      .prepare(
+        "INSERT INTO processed_commands (repo_id, pr_number, comment_id, command, author_login, observed_at, outcome) VALUES (?, 99, 999, 'RESOLVE', 'operator', ?, 'rejected')",
+      )
+      .run(data.repoId, "2026-08-27T00:00:01.000Z");
+  });
+  assert.equal(command.kind, "change");
+  assert.match(command.fragments["commands-region"] ?? "", /<td>999<\/td>/);
+  const audit = await readChange("/audit/stream", () => {
+    data.options.operatorActions.record({
+      action: "stream-test",
+      target: "repository:1",
+      effect: "recorded",
+    });
+  });
+  assert.equal(audit.kind, "change");
+  assert.match(audit.fragments["audit-region"] ?? "", /stream-test/);
+  await app.close();
+  data.store.close();
+});
+
 test("ticker lifecycle is shared and held-open SSE emits a second event on one connection", async () => {
   const data = fixture();
   const ticker = new SharedChangeTicker(data.store.db, 20);
@@ -720,6 +793,139 @@ test("ticker lifecycle is shared and held-open SSE emits a second event on one c
   assert.equal(chunks.join("").match(/event: job-update/g)?.length, 2);
   await app.close();
   data.store.close();
+});
+
+test("ticker emits tagged heartbeats without database activity and changes when data moves", async () => {
+  const data = fixture();
+  const ticker = new SharedChangeTicker(data.store.db, 10);
+  const changes: Array<{ kind: string; sequence: number }> = [];
+  const unsubscribe = ticker.subscribe((change) => changes.push(change));
+  const waitForChange = async (count: number): Promise<void> => {
+    const deadline = Date.now() + 1_000;
+    while (changes.filter((change) => change.kind === "change").length < count) {
+      if (Date.now() >= deadline) throw new Error(`expected ${String(count)} ticker changes`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.ok(changes.some((change) => change.kind === "heartbeat"));
+  data.store.db.prepare("UPDATE repositories SET provider = 'changed' WHERE id = ?").run(data.repoId);
+  await waitForChange(1);
+  data.store.db.prepare("UPDATE repositories SET model = 'changed-model' WHERE id = ?").run(data.repoId);
+  await waitForChange(2);
+  data.store.db.prepare("UPDATE repositories SET effort = 'low' WHERE id = ?").run(data.repoId);
+  await waitForChange(3);
+  data.store.db.prepare("UPDATE repositories SET timeout_seconds = 123 WHERE id = ?").run(data.repoId);
+  await waitForChange(4);
+  const attemptId = Number(
+    (data.store.db.prepare("SELECT id FROM attempts WHERE job_id = ? ORDER BY id LIMIT 1").get(data.jobId) as { id: number }).id,
+  );
+  data.store.db
+    .prepare(
+      "INSERT INTO validation_runs (attempt_id, seq, command, exit_code, duration_ms, output_ref) VALUES (?, 2, '[]', 0, 1, NULL)",
+    )
+    .run(attemptId);
+  await waitForChange(5);
+  assert.ok(changes.every((change, index) => index === 0 || change.sequence > changes[index - 1]!.sequence));
+  unsubscribe();
+  data.store.close();
+});
+
+test("dashboard heartbeats re-render health and surface polling staleness", async () => {
+  const data = fixture();
+  data.options.pollIntervalSec = 0.05;
+  data.store.db
+    .prepare("INSERT INTO ingestion_state (repo_id, last_polled_at) VALUES (?, ?)")
+    .run(data.repoId, new Date(Date.now() - 10).toISOString());
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  await new Promise<void>((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port: address.port,
+      path: "/stream",
+      headers: AUTH,
+    });
+    let buffer = "";
+    const timeout = setTimeout(() => {
+      req.destroy();
+      reject(new Error("dashboard heartbeat did not expose staleness"));
+    }, 3_000);
+    req.on("response", (response) => {
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => {
+        buffer += chunk;
+        const events = buffer.split("\n\n").filter((event) => event.startsWith("event: "));
+        if (events.length < 2) return;
+        const line = events[1]!.split("\n").find((entry) => entry.startsWith("data: "));
+        assert.ok(line);
+        const payload = JSON.parse(line.slice("data: ".length)) as {
+          kind: string;
+          fragments: Record<string, string>;
+        };
+        if (payload.kind !== "heartbeat") return;
+        clearTimeout(timeout);
+        assert.match(payload.fragments["health-region"] ?? "", /status-stale/);
+        assert.match(payload.fragments["health-region"] ?? "", /stale/);
+        assert.equal(payload.fragments.repositories, undefined);
+        req.destroy();
+        resolve();
+      });
+      response.on("error", reject);
+    });
+    req.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+    });
+    req.end();
+  });
+  await app.close();
+  data.store.close();
+});
+
+test("client time refresh uses carried instants without a database update", () => {
+  const nodes = [
+    {
+      dataset: { timeFormat: "relative" },
+      getAttribute: (name: string) => (name === "datetime" ? "2026-09-04T00:00:00.000Z" : null),
+      textContent: "",
+    },
+    {
+      dataset: { timeFormat: "elapsed", timeEnd: undefined },
+      getAttribute: (name: string) => (name === "datetime" ? "2026-09-04T00:00:00.000Z" : null),
+      textContent: "",
+    },
+  ];
+  let refresh: (() => void) | undefined;
+  class TestDate extends Date {
+    static override now(): number {
+      return now;
+    }
+    static override parse(value: string): number {
+      return Date.parse(value);
+    }
+  }
+  let now = Date.parse("2026-09-04T00:00:01.000Z");
+  const start = clientScript.indexOf("  const relativeText");
+  const end = clientScript.indexOf("  // The log region", start);
+  assert.ok(start >= 0 && end > start);
+  runInNewContext(clientScript.slice(start, end), {
+    Date: TestDate,
+    Math,
+    Number,
+    document: { querySelectorAll: () => nodes },
+    setInterval: (callback: () => void, delay: number) => {
+      assert.equal(delay, 1000);
+      refresh = callback;
+      return 1;
+    },
+  });
+  assert.equal(nodes[1]!.textContent, "1.0s");
+  now += 1_000;
+  refresh?.();
+  assert.equal(nodes[1]!.textContent, "2.0s");
+  assert.equal(nodes[0]!.textContent, "2s ago");
 });
 
 test("console shutdown drains every registered live-update stream", async () => {

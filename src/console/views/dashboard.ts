@@ -269,6 +269,8 @@ export function dashboardRegions(
   jobs: string;
 } {
   const health = model.health;
+  const tracked = model.running.length + model.queued.length;
+  const summary = `${String(model.repositories.length)} ${model.repositories.length === 1 ? "repository" : "repositories"} · ${String(tracked)} active ${tracked === 1 ? "job" : "jobs"}`;
   const catalogStatus = catalog.updatedAt
     ? `Cline catalog refreshed ${relativeTimeElement(catalog.updatedAt)}.`
     : "Cline catalog fallback is ready; live featured models refresh when available.";
@@ -276,7 +278,7 @@ export function dashboardRegions(
   // repositories region rather than stranded at the top of the page.
   const catalogNote = `<p class="catalog-note">Provider catalog: ${catalogStatus} Cline models use provider-qualified ids; OpenAI Codex models use bare Codex ids.</p>`;
   return {
-    health: `<section class="stat-strip" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimeElement(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.lastPolledAt ? relativeTimeElement(health.lastPolledAt) : "—"}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${String(health.pollIntervalSec)}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${String(health.queueDepth)}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${String(health.inFlight)} / ${String(health.concurrency)}</strong><small>jobs executing</small></div></section>`,
+    health: `<div class="health-summary">${statusPill(health.status)}<span class="muted page-summary">${escapeHtml(summary)}</span></div><section class="stat-strip" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimeElement(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.lastPolledAt ? relativeTimeElement(health.lastPolledAt) : "—"}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${String(health.pollIntervalSec)}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${String(health.queueDepth)}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${String(health.inFlight)} / ${String(health.concurrency)}</strong><small>jobs executing</small></div></section>`,
     repositories: `<h2>Repositories <span class="muted panel-note">${String(model.repositories.length)}</span></h2>${catalogNote}${repositoryCards(model.repositories, catalog, agents)}`,
     jobs: `<div class="lanes">${jobLane("Running", model.running)}${jobLane("Queued", model.queued)}${jobLane("Recent successes and failures", model.recent)}</div>`,
   };
@@ -295,8 +297,6 @@ export function dashboardView(
   timeZone?: string,
 ): string {
   const regions = dashboardRegions(model, catalog, agents, timeZone);
-  const tracked = model.running.length + model.queued.length;
-  const summary = `${String(model.repositories.length)} ${model.repositories.length === 1 ? "repository" : "repositories"} · ${String(tracked)} active ${tracked === 1 ? "job" : "jobs"}`;
-  const head = `<header class="page-head"><div class="page-title"><h1>Dashboard</h1>${statusPill(model.health.status)}<span class="muted page-summary">${escapeHtml(summary)}</span></div><div id="health-region">${regions.health}</div><p class="sr-status" data-live-status role="status">Live updates are connected when supported.</p></header>`;
+  const head = `<header class="page-head"><div class="page-title"><h1>Dashboard</h1></div><div id="health-region">${regions.health}</div><p class="sr-status" data-live-status role="status">Live updates are connected when supported.</p></header>`;
   return `<div class="dash-page">${head}<div id="job-lanes">${regions.jobs}</div><section class="panel" id="repositories">${regions.repositories}</section></div>`;
 }

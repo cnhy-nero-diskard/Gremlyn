@@ -29,14 +29,14 @@
 
 ## 4. Proactive console updates
 
-- [ ] 4.1 Give the ticker a heartbeat that emits at least once per second while it has a subscriber, tagged distinctly from a change emission; verify a test asserts a heartbeat arrives with no database activity and carries its kind
-- [ ] 4.2 Have each region declare whether a heartbeat re-renders it — health yes, job lanes and repositories and job detail no; verify a test asserts a heartbeat re-renders only the health region
-- [ ] 4.3 Add a one-second client tick that re-derives relative and elapsed text from each element's carried instant, and re-run it after every region swap; verify a test asserts elapsed text advances with no new database activity
-- [ ] 4.4 Widen the change signature to cover each repository's provider, model, effort and timeout, and `validation_runs` rows; verify tests assert a signature change for each of those mutations
-- [ ] 4.5 Narrow the signature to non-terminal jobs and attempts plus a bounded window of recent rows, keeping the ticker's interface unchanged; verify a test asserts detection still fires for live and recent work and that the query no longer scans the whole job table
-- [ ] 4.6 Add live-update streams to the command-ingestion and audit routes; verify tests assert a newly ingested command and a newly recorded operator action each reach an open stream
-- [ ] 4.7 Move the dashboard header's status pill and summary inside the health region; verify a test asserts both change on a health emission
-- [ ] 4.8 Confirm staleness surfaces without a reload when polling stops; verify a test advances the clock past the poll interval with no other activity and asserts the console reports stale
+- [x] 4.1 Give the ticker a heartbeat that emits at least once per second while it has a subscriber, tagged distinctly from a change emission; verify a test asserts a heartbeat arrives with no database activity and carries its kind
+- [x] 4.2 Have each region declare whether a heartbeat re-renders it — health yes, job lanes and repositories and job detail no; verify a test asserts a heartbeat re-renders only the health region
+- [x] 4.3 Add a one-second client tick that re-derives relative and elapsed text from each element's carried instant, and re-run it after every region swap; verify a test asserts elapsed text advances with no new database activity
+- [x] 4.4 Widen the change signature to cover each repository's provider, model, effort and timeout, and `validation_runs` rows; verify tests assert a signature change for each of those mutations
+- [x] 4.5 Narrow the signature to non-terminal jobs and attempts plus a bounded window of recent rows, keeping the ticker's interface unchanged; verify a test asserts detection still fires for live and recent work and that the query no longer scans the whole job table
+- [x] 4.6 Add live-update streams to the command-ingestion and audit routes; verify tests assert a newly ingested command and a newly recorded operator action each reach an open stream
+- [x] 4.7 Move the dashboard header's status pill and summary inside the health region; verify a test asserts both change on a health emission
+- [x] 4.8 Confirm staleness surfaces without a reload when polling stops; verify a test advances the clock past the poll interval with no other activity and asserts the console reports stale
 
 ## 5. Workspace reclamation
 
