@@ -37,6 +37,8 @@ console:
   port: 4780
   # Name of the environment variable holding the console auth token.
   token_env: GREMLYN_CONSOLE_TOKEN
+  # Optional IANA timezone for wall-clock values; omitted uses the host zone.
+  # timezone: Asia/Taipei
 
 agent_defaults:
   # Initial per-repository timeout in seconds. 0 means no limit; the live

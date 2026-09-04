@@ -7,7 +7,12 @@ import {
   type ProviderModelOption,
   type ProviderOption,
 } from "../../agent/provider-catalog.js";
-import { duration, escapeHtml, relativeTimestamp, statusPill } from "./components.js";
+import {
+  elapsedTimeElement,
+  escapeHtml,
+  relativeTimeElement,
+  statusPill,
+} from "./components.js";
 
 /** Configured agent definitions, keyed by the agent id a repository references. */
 type AgentDefinitions = Record<string, AgentDefinition>;
@@ -236,11 +241,10 @@ function repositoryCard(
  * the command and timings drop to a quieter second line.
  */
 function jobItem(job: JobSummary): string {
-  const elapsed = job.finished_at ? duration(job.created_at, job.finished_at) : null;
   const meta = [
     `<code>${escapeHtml(job.command)}</code>`,
-    `<span>${escapeHtml(relativeTimestamp(job.created_at))}</span>`,
-    elapsed ? `<span class="job-row-elapsed">${elapsed}</span>` : "",
+    relativeTimeElement(job.created_at),
+    `<span class="job-row-elapsed">${elapsedTimeElement(job.created_at, job.finished_at)}</span>`,
   ].join("");
   return `<li class="job-row"><a class="job-row-main" href="/jobs/${job.id}"><span class="job-row-repo">${escapeHtml(`${job.owner}/${job.name}`)} <span class="job-row-pr">#${String(job.pr_number)}</span></span>${statusPill(job.status)}</a><span class="job-row-meta">${meta}</span></li>`;
 }
@@ -258,6 +262,7 @@ export function dashboardRegions(
   model: DashboardModel,
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
   agents: AgentDefinitions = {},
+  _timeZone?: string,
 ): {
   health: string;
   repositories: string;
@@ -265,13 +270,13 @@ export function dashboardRegions(
 } {
   const health = model.health;
   const catalogStatus = catalog.updatedAt
-    ? `Cline catalog refreshed ${relativeTimestamp(catalog.updatedAt)}.`
+    ? `Cline catalog refreshed ${relativeTimeElement(catalog.updatedAt)}.`
     : "Cline catalog fallback is ready; live featured models refresh when available.";
   // The note describes the pickers directly below it, so it belongs inside the
   // repositories region rather than stranded at the top of the page.
-  const catalogNote = `<p class="catalog-note">Provider catalog: ${escapeHtml(catalogStatus)} Cline models use provider-qualified ids; OpenAI Codex models use bare Codex ids.</p>`;
+  const catalogNote = `<p class="catalog-note">Provider catalog: ${catalogStatus} Cline models use provider-qualified ids; OpenAI Codex models use bare Codex ids.</p>`;
   return {
-    health: `<section class="stat-strip" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimestamp(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.pollAgeSec === null ? "—" : `${String(health.pollAgeSec)}s`}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${String(health.pollIntervalSec)}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${String(health.queueDepth)}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${String(health.inFlight)} / ${String(health.concurrency)}</strong><small>jobs executing</small></div></section>`,
+    health: `<section class="stat-strip" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimeElement(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.lastPolledAt ? relativeTimeElement(health.lastPolledAt) : "—"}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${String(health.pollIntervalSec)}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${String(health.queueDepth)}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${String(health.inFlight)} / ${String(health.concurrency)}</strong><small>jobs executing</small></div></section>`,
     repositories: `<h2>Repositories <span class="muted panel-note">${String(model.repositories.length)}</span></h2>${catalogNote}${repositoryCards(model.repositories, catalog, agents)}`,
     jobs: `<div class="lanes">${jobLane("Running", model.running)}${jobLane("Queued", model.queued)}${jobLane("Recent successes and failures", model.recent)}</div>`,
   };
@@ -287,8 +292,9 @@ export function dashboardView(
   model: DashboardModel,
   catalog: ProviderCatalogSnapshot = bundledProviderCatalog(),
   agents: AgentDefinitions = {},
+  timeZone?: string,
 ): string {
-  const regions = dashboardRegions(model, catalog, agents);
+  const regions = dashboardRegions(model, catalog, agents, timeZone);
   const tracked = model.running.length + model.queued.length;
   const summary = `${String(model.repositories.length)} ${model.repositories.length === 1 ? "repository" : "repositories"} · ${String(tracked)} active ${tracked === 1 ? "job" : "jobs"}`;
   const head = `<header class="page-head"><div class="page-title"><h1>Dashboard</h1>${statusPill(model.health.status)}<span class="muted page-summary">${escapeHtml(summary)}</span></div><div id="health-region">${regions.health}</div><p class="sr-status" data-live-status role="status">Live updates are connected when supported.</p></header>`;

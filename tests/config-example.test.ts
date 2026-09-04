@@ -22,4 +22,5 @@ test("config.example.yaml parses successfully with no real credentials", () => {
   assert.equal(opencodeRepo.effort, "high");
   assert.equal(config.agents.opencode?.kind, "opencode");
   assert.deepEqual(config.agents.opencode?.credentialFiles, ["auth.json"]);
+  assert.equal(config.consoleTimezone, undefined);
 });

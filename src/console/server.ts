@@ -43,6 +43,8 @@ export interface ConsoleOptions {
   concurrency?: number;
   /** Where attempt output and activity snapshots live; used for live tailing. */
   dataDir?: string;
+  /** Optional IANA timezone used for server-rendered wall-clock values. */
+  timezone?: string | undefined;
   providerCatalog?: ProviderCatalog;
   /**
    * The configured agent definitions, keyed by the agent id repositories
@@ -155,7 +157,12 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       .send(
         layout(
           "Gremlyn dashboard",
-          dashboardView(queries.readDashboard(), providerCatalog.snapshot(), options.agents),
+          dashboardView(
+            queries.readDashboard(),
+            providerCatalog.snapshot(),
+            options.agents,
+            options.timezone,
+          ),
           { stream: "/stream", wide: true },
         ),
       ),
@@ -166,6 +173,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         queries.readDashboard(),
         providerCatalog.snapshot(),
         options.agents,
+        options.timezone,
       );
       return {
         "health-region": regions.health,
@@ -191,6 +199,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         queries.readDashboard(),
         providerCatalog.snapshot(),
         options.agents,
+        options.timezone,
       );
       return {
         "health-region": regions.health,
@@ -219,7 +228,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       .send(
         layout(
           `Job ${id} · ${model.job.owner}/${model.job.name} PR #${String(model.job.pr_number)}`,
-          jobView(model),
+          jobView(model, options.timezone),
           { stream: `/jobs/${id}/stream`, wide: true },
         ),
       );
@@ -232,7 +241,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       if (!model) return reply.code(404).send({ error: "job-not-found" });
       const fragments = () => {
         const current = queries.readJobDetail(id);
-        return current ? jobRegions(current) : {};
+        return current ? jobRegions(current, options.timezone) : {};
       };
       reply.hijack();
       openSseStream({
@@ -240,7 +249,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         response: reply.raw,
         ticker,
         event: "job-update",
-        initial: jobRegions(model),
+        initial: jobRegions(model, options.timezone),
         render: fragments,
         snapshot: request.query.snapshot === "1",
         register: registerStream,
@@ -253,12 +262,12 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.get("/commands", async (_request, reply) =>
     reply
       .type("text/html")
-      .send(layout("Command ingestion", commandsView(queries.readProcessedCommands()))),
+      .send(layout("Command ingestion", commandsView(queries.readProcessedCommands(), options.timezone))),
   );
   app.get("/audit", async (_request, reply) =>
     reply
       .type("text/html")
-      .send(layout("Operator audit", auditView(queries.readOperatorActions()))),
+      .send(layout("Operator audit", auditView(queries.readOperatorActions(), options.timezone))),
   );
   app.post<{ Params: { id: string } }>("/jobs/:id/retry", async (request, reply) => {
     const id = positiveInteger(request.params.id);

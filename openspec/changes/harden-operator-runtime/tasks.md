@@ -22,10 +22,10 @@
 
 ## 3. Local time rendering
 
-- [ ] 3.1 Emit every timestamp as an element carrying its exact UTC instant and its display format (clock, relative, elapsed), with the server rendering the initial text; verify `tests/console.test.ts` asserts each rendered time carries the underlying instant and its format
-- [ ] 3.2 Reimplement `clockTime` and `logClock` with `Intl.DateTimeFormat`, defaulting to the host timezone; verify unit tests assert a known instant formats to the expected local time and no longer to the UTC field
-- [ ] 3.3 Add an optional `console.timezone` setting that overrides the host zone, and document it in `config.example.yaml` and `README.md`; verify `tests/config.test.ts` and `tests/config-example.test.ts` cover the setting and its absence
-- [ ] 3.4 Make rendered wall-clock times unambiguous about their zone; verify a test asserts the zone is identifiable from the rendered output
+- [x] 3.1 Emit every timestamp as an element carrying its exact UTC instant and its display format (clock, relative, elapsed), with the server rendering the initial text; verify `tests/console.test.ts` asserts each rendered time carries the underlying instant and its format
+- [x] 3.2 Reimplement `clockTime` and `logClock` with `Intl.DateTimeFormat`, defaulting to the host timezone; verify unit tests assert a known instant formats to the expected local time and no longer to the UTC field
+- [x] 3.3 Add an optional `console.timezone` setting that overrides the host zone, and document it in `config.example.yaml` and `README.md`; verify `tests/config.test.ts` and `tests/config-example.test.ts` cover the setting and its absence
+- [x] 3.4 Make rendered wall-clock times unambiguous about their zone; verify a test asserts the zone is identifiable from the rendered output
 
 ## 4. Proactive console updates
 

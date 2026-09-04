@@ -56,6 +56,24 @@ test("loads a valid config", () => {
   // No effort configured: defaults to the agent's highest tier.
   assert.equal(repo.effort, "xhigh");
   assert.equal(config.agentTimeoutSec, undefined);
+  assert.equal(config.consoleTimezone, undefined);
+});
+
+test("loads an optional console timezone and rejects invalid zones", () => {
+  const configured = loadConfig(
+    writeConfig(`${VALID_CONFIG}\nconsole:\n  timezone: Asia/Taipei\n`),
+    VALID_ENV,
+  );
+  assert.equal(configured.consoleTimezone, "Asia/Taipei");
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(`${VALID_CONFIG}\nconsole:\n  timezone: Not/A_Timezone\n`),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError && error.problems.some((problem) => problem.includes("console.timezone")),
+  );
 });
 
 test("accepts zero agent timeout as unlimited", () => {

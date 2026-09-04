@@ -148,6 +148,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       secrets: [config.githubToken, config.consoleToken],
       operatorActions,
       dataDir: config.dataDir,
+      timezone: config.consoleTimezone,
       pollIntervalSec: config.pollIntervalSec,
       concurrency: config.concurrency,
       // Effort tiers and provider semantics are resolved per repository from its

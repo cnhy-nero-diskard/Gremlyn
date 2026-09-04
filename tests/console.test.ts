@@ -20,10 +20,13 @@ import {
   duration,
   escapeHtml,
   agentActivity,
+  clockTime,
   keyValueTable,
+  logClock,
   logEntries,
   relativeTimestamp,
   statusPill,
+  timeElement,
 } from "../src/console/views/components.js";
 
 const TOKEN = "console-token";
@@ -828,6 +831,19 @@ test("pure view helpers escape values and render absent values safely", () => {
   assert.match(dangerZone(1, 12), /disabled/);
 });
 
+test("wall-clock helpers use the requested local timezone and retain the UTC instant", () => {
+  const instant = "2026-08-28T18:05:44.524Z";
+  assert.equal(clockTime(instant, "Asia/Taipei"), "02:05:44");
+  assert.equal(logClock(instant, "Asia/Taipei"), "02:05:44.524");
+  const html = timeElement(instant, "clock", clockTime(instant, "Asia/Taipei"), {
+    timeZone: "Asia/Taipei",
+  });
+  assert.match(html, /data-time-format="clock"/u);
+  assert.match(html, /data-time-zone="Asia\/Taipei"/u);
+  assert.match(html, /datetime="2026-08-28T18:05:44.524Z"/u);
+  assert.match(html, />02:05:44</u);
+});
+
 test("terminal status treatments use distinct classes and non-colour cues", () => {
   const data = fixture();
   for (const status of ["succeeded", "failed", "cancelled", "interrupted"]) {
@@ -887,7 +903,7 @@ test("log fields render as chips rather than a raw JSON blob", () => {
       attempt_id: 2,
       fields: JSON.stringify({ reason: "agent-auth-failed", detail: long }),
     },
-  ]);
+  ], "UTC");
   // Compact clock, not the full ISO stamp, with the exact value kept for hover.
   assert.match(html, /&gt;17:53:05\.254&lt;|>17:53:05\.254</u);
   assert.match(html, /title="2026-08-28T17:53:05\.254Z"/u);

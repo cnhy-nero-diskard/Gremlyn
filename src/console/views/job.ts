@@ -3,7 +3,7 @@ import {
   agentActivity,
   attemptCard,
   dangerZone,
-  duration,
+  elapsedTimeElement,
   escapeHtml,
   keyValueTable,
   logEntries,
@@ -156,7 +156,7 @@ function jobHeader(model: JobDetail): string {
  * now", side by side with the log that explains it. The newest attempt leads;
  * older attempts keep their own transcripts on their cards.
  */
-function activityPanel(model: JobDetail): string {
+function activityPanel(model: JobDetail, timeZone?: string): string {
   const latest = model.attempts.at(-1);
   const attempt = latest
     ? ` <span class="muted panel-note">attempt ${String(latest.attempt_number)}</span>`
@@ -166,7 +166,7 @@ function activityPanel(model: JobDetail): string {
   // left off. The operator's own choice survives every stream tick after that.
   const live = LIVE_STATUSES.includes(model.job.status);
   const follow = `<label class="follow-toggle" title="Pin to the newest step while the agent runs"><input type="checkbox" data-activity-follow${live ? " checked" : ""}> Follow</label>`;
-  return `<section class="panel activity-panel" data-resizable="activity"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null, follow)}</section>`;
+  return `<section class="panel activity-panel" data-resizable="activity"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null, follow, timeZone)}</section>`;
 }
 
 /**
@@ -177,38 +177,41 @@ function activityPanel(model: JobDetail): string {
  * attempts both want the full width. Putting a tall panel beside a short one
  * left a column of dead space taller than either.
  */
-function jobAside(model: JobDetail): string {
+function jobAside(model: JobDetail, timeZone?: string): string {
   const totalStart = model.job.created_at ?? model.timeline[0]?.at;
   const totalEnd = model.job.finished_at ?? undefined;
   const attempts =
     model.attempts
       .map((attempt, index) =>
-        attemptCard(attempt, { showActivity: index !== model.attempts.length - 1 }),
+        attemptCard(attempt, {
+          showActivity: index !== model.attempts.length - 1,
+          timeZone,
+        }),
       )
       .join("") || '<p class="muted">No attempts recorded.</p>';
-  const timeline = `<section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
+  const timeline = `<section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at, timeZone)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
   const review = `<section class="panel span-all"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
   const attemptPanel = `<section class="panel span-all"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
   const validation = `<section class="panel span-2"><h2>Validation results</h2><div class="table-scroll">${validationTable(model.validation)}</div></section>`;
   return `<div class="job-aside">${timeline}${validation}${review}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
-export function jobRegions(model: JobDetail): {
+export function jobRegions(model: JobDetail, timeZone?: string): {
   "job-detail-region": string;
   "job-log-region": string;
 } {
   const logControls = `<div class="actions log-controls"><label class="log-search">Search <input data-log-filter placeholder="Filter entries"></label><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div>`;
   return {
-    "job-detail-region": `${jobHeader(model)}${activityPanel(model)}${jobAside(model)}`,
-    "job-log-region": `<section class="panel" id="log-viewer" data-resizable="log"><h2>Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs)}</div></section>`,
+    "job-detail-region": `${jobHeader(model)}${activityPanel(model, timeZone)}${jobAside(model, timeZone)}`,
+    "job-log-region": `<section class="panel" id="log-viewer" data-resizable="log"><h2>Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs, timeZone)}</div></section>`,
   };
 }
 
 function durationBetween(start: string | null | undefined, end: string | null | undefined): string {
-  return start ? duration(start, end) : "—";
+  return elapsedTimeElement(start, end);
 }
 
-export function jobView(model: JobDetail): string {
-  const regions = jobRegions(model);
+export function jobView(model: JobDetail, timeZone?: string): string {
+  const regions = jobRegions(model, timeZone);
   return `<div class="job-page"><div id="job-detail-region">${regions["job-detail-region"]}</div><div id="job-log-region">${regions["job-log-region"]}</div></div>`;
 }

@@ -79,6 +79,8 @@ export interface AppConfig {
   consoleHost: string;
   consolePort: number;
   consoleToken: string;
+  /** Optional IANA timezone for server-rendered console wall-clock values. */
+  consoleTimezone?: string;
   /** Initial per-repository agent timeout; undefined means no limit. */
   agentTimeoutSec?: number;
   agentRetries: number;
@@ -104,6 +106,7 @@ interface RawConfig {
     host?: unknown;
     port?: unknown;
     token_env?: unknown;
+    timezone?: unknown;
   };
   agent_defaults?: {
     timeout_seconds?: unknown;
@@ -319,6 +322,16 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   if (!consoleToken) {
     problems.push(`console token missing: environment variable ${consoleTokenEnv} is not set`);
   }
+  const consoleTimezone = asString(raw.console?.timezone);
+  if (raw.console?.timezone !== undefined && !consoleTimezone) {
+    problems.push("console.timezone must be a non-empty IANA timezone");
+  } else if (consoleTimezone) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: consoleTimezone }).format();
+    } catch {
+      problems.push(`console.timezone must be a valid IANA timezone (got "${consoleTimezone}")`);
+    }
+  }
 
   // Agent defaults.
   const configuredAgentTimeoutSec = asNumber(raw.agent_defaults?.timeout_seconds);
@@ -424,6 +437,7 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     consoleHost,
     consolePort,
     consoleToken: consoleToken as string,
+    ...(consoleTimezone === undefined ? {} : { consoleTimezone }),
     ...(agentTimeoutSec === undefined ? {} : { agentTimeoutSec }),
     agentRetries,
     allowedAuthors,
