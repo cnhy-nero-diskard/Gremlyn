@@ -5,6 +5,8 @@ import { activityPath } from "../agent/activity.js";
 
 export type StreamChange = { sequence: number };
 export type StreamListener = (change: StreamChange) => void;
+export type StreamEnd = () => void;
+export type StreamRegistrar = (end: StreamEnd) => () => void;
 
 export class SharedChangeTicker {
   private readonly listeners = new Set<StreamListener>();
@@ -96,6 +98,7 @@ export interface HeldOpenStreamOptions {
   render: () => Record<string, string>;
   snapshot?: boolean;
   keepaliveMs?: number;
+  register?: StreamRegistrar;
 }
 
 export function openSseStream(options: HeldOpenStreamOptions): void {
@@ -110,14 +113,8 @@ export function openSseStream(options: HeldOpenStreamOptions): void {
     return;
   }
   let closed = false;
-  const unsubscribe = ticker.subscribe(() => {
-    if (closed) return;
-    try {
-      response.write(sseEvent(event, render()));
-    } catch {
-      cleanup();
-    }
-  });
+  let unsubscribe = (): void => undefined;
+  let unregister = (): void => undefined;
   const keepalive = setInterval(() => {
     if (!closed) {
       try {
@@ -132,8 +129,18 @@ export function openSseStream(options: HeldOpenStreamOptions): void {
     closed = true;
     clearInterval(keepalive);
     unsubscribe();
+    unregister();
     if (!response.writableEnded) response.end();
   };
+  unregister = options.register?.(cleanup) ?? unregister;
+  unsubscribe = ticker.subscribe(() => {
+    if (closed) return;
+    try {
+      response.write(sseEvent(event, render()));
+    } catch {
+      cleanup();
+    }
+  });
   request.once("close", cleanup);
   request.once("error", cleanup);
 }

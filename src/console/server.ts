@@ -18,7 +18,12 @@ import {
   setRepositoryTimeout,
   toggleRepository,
 } from "./mutations.js";
-import { openSseStream, SharedChangeTicker } from "./stream.js";
+import {
+  openSseStream,
+  SharedChangeTicker,
+  type StreamEnd,
+  type StreamRegistrar,
+} from "./stream.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 
 export interface ConsoleActions {
@@ -46,6 +51,10 @@ export interface ConsoleOptions {
    */
   agents?: Record<string, AgentDefinition>;
 }
+export interface ConsoleServer extends FastifyInstance {
+  endLiveUpdateStreams(): void;
+  readonly liveUpdateStreamCount: number;
+}
 /** Agent-aware defaults for a repository with no matching definition. */
 function agentOptionsFor(
   agents: Record<string, AgentDefinition> | undefined,
@@ -64,8 +73,21 @@ export function consoleListenOptions(input: { host?: string; port: number }): {
   return { host: input.host ?? "127.0.0.1", port: input.port };
 }
 
-export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
-  const app = Fastify({ logger: false });
+export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
+  const app = Fastify({ logger: false }) as unknown as ConsoleServer;
+  const liveStreams = new Set<StreamEnd>();
+  const registerStream: StreamRegistrar = (end) => {
+    liveStreams.add(end);
+    return () => liveStreams.delete(end);
+  };
+  app.endLiveUpdateStreams = (): void => {
+    for (const end of [...liveStreams]) end();
+  };
+  Object.defineProperty(app, "liveUpdateStreamCount", {
+    configurable: false,
+    enumerable: false,
+    get: () => liveStreams.size,
+  });
   const providerCatalog = options.providerCatalog ?? new ProviderCatalog();
   const queries: ConsoleQueries = createConsoleQueries({
     db: options.db,
@@ -132,11 +154,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       .send(
         layout(
           "Gremlyn dashboard",
-          dashboardView(
-            queries.readDashboard(),
-            providerCatalog.snapshot(),
-            options.agents,
-          ),
+          dashboardView(queries.readDashboard(), providerCatalog.snapshot(), options.agents),
           { stream: "/stream", wide: true },
         ),
       ),
@@ -163,6 +181,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       initial: fragments(),
       render: fragments,
       snapshot: request.query.snapshot === "1",
+      register: registerStream,
     });
   });
   app.get<{ Querystring: { snapshot?: string } }>("/dashboard/stream", async (request, reply) => {
@@ -187,6 +206,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       initial: fragments(),
       render: fragments,
       snapshot: request.query.snapshot === "1",
+      register: registerStream,
     });
   });
   app.get<{ Params: { id: string } }>("/jobs/:id", async (request, reply) => {
@@ -222,6 +242,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
         initial: jobRegions(model),
         render: fragments,
         snapshot: request.query.snapshot === "1",
+        register: registerStream,
       });
     },
   );
@@ -396,7 +417,12 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       }
     },
   );
-  app.addHook("onClose", async () => ticker.stop());
+  app.addHook("preClose", async () => {
+    app.endLiveUpdateStreams();
+  });
+  app.addHook("onClose", async () => {
+    ticker.stop();
+  });
   return app;
 }
 function cookie(token: string): string {

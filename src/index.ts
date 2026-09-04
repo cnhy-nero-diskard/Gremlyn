@@ -191,6 +191,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
+    consoleServer.endLiveUpdateStreams();
     await consoleServer.close();
     store.close();
     lock.release();

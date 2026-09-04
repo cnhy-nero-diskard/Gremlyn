@@ -355,10 +355,7 @@ test("the dashboard drives effort tiers and provider semantics from each reposit
   // a Cline card must not present a tier its agent does not support.
   assert.equal((body.match(/<option value="max"/gu) ?? []).length, 1);
   // Only the provider-optional card renders the empty-provider option and flag.
-  assert.equal(
-    (body.match(/None — provider is folded into the model id/gu) ?? []).length,
-    1,
-  );
+  assert.equal((body.match(/None — provider is folded into the model id/gu) ?? []).length, 1);
   assert.equal((body.match(/data-provider-optional/gu) ?? []).length, 1);
   await app.close();
   data.store.close();
@@ -410,9 +407,8 @@ test("the dashboard filters the provider catalog by each repository's agent kind
   // script applies the identical filter when it fetches /model-catalog.
   const catalog = await app.inject({ method: "GET", url: "/model-catalog", headers: AUTH });
   assert.equal(catalog.statusCode, 200);
-  const providers = (
-    catalog.json() as { providers: Array<{ id: string; kinds: string[] }> }
-  ).providers;
+  const providers = (catalog.json() as { providers: Array<{ id: string; kinds: string[] }> })
+    .providers;
   const kindsOf = (id: string) => providers.find((provider) => provider.id === id)?.kinds;
   assert.deepEqual(kindsOf("cline"), ["cline"]);
   assert.deepEqual(kindsOf("cline-pass"), ["cline"]);
@@ -678,6 +674,76 @@ test("ticker lifecycle is shared and held-open SSE emits a second event on one c
   });
   assert.equal(chunks.join("").match(/event: job-update/g)?.length, 2);
   await app.close();
+  data.store.close();
+});
+
+test("console shutdown drains every registered live-update stream", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+
+  const open = (): Promise<import("node:http").IncomingMessage> =>
+    new Promise((resolve, reject) => {
+      const req = httpRequest({
+        host: "127.0.0.1",
+        port: address.port,
+        path: `/jobs/${data.jobId}/stream`,
+        headers: AUTH,
+      });
+      req.once("response", (response) => {
+        response.setEncoding("utf8");
+        response.once("error", reject);
+        response.once("data", () => resolve(response));
+      });
+      req.once("error", reject);
+      req.end();
+    });
+  const [first, second] = await Promise.all([open(), open()]);
+  assert.equal(app.liveUpdateStreamCount, 2);
+  const ended = Promise.all(
+    [first, second].map(
+      (response) => new Promise<void>((resolve) => response.once("end", () => resolve())),
+    ),
+  );
+  app.endLiveUpdateStreams();
+  await ended;
+  assert.equal(app.liveUpdateStreamCount, 0);
+  await app.close();
+  data.store.close();
+});
+
+test("closing the console server resolves while a live-update stream is open", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port: address.port,
+      path: `/jobs/${data.jobId}/stream`,
+      headers: AUTH,
+    });
+    req.once("response", (incoming) => {
+      incoming.setEncoding("utf8");
+      incoming.once("error", reject);
+      incoming.once("data", () => resolve(incoming));
+    });
+    req.once("error", reject);
+    req.end();
+  });
+  const responseEnded = new Promise<void>((resolve) => response.once("end", () => resolve()));
+  await Promise.race([
+    app.close(),
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("console close timed out")), 3_000),
+    ),
+  ]);
+  await responseEnded;
+  assert.equal(response.complete, true);
   data.store.close();
 });
 
