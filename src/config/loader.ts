@@ -42,7 +42,7 @@ const DEFAULT_CREDENTIAL_FILES: Record<string, readonly string[]> = {
 };
 
 /** Kinds whose CLI takes a first-class provider argument distinct from the model id. */
-const KINDS_REQUIRING_PROVIDER = new Set(["cline"]);
+export const KINDS_REQUIRING_PROVIDER = new Set(["cline"]);
 
 export interface RepoConfig {
   owner: string;

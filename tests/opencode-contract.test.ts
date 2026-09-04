@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClineExecutor, extractSessionId } from "../src/agent/cline.js";
 import type { ProcessRunner } from "../src/agent/launcher.js";
+import { OPENCODE_CREDENTIAL_FILES, attemptCredentialPath } from "../src/agent/credentials.js";
 import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "../src/agent/opencode.js";
 import type { AgentRunOptions } from "../src/types.js";
 import { AgentVersionError } from "../src/agent/cline.js";
@@ -166,6 +167,22 @@ test("two attempts get independent OpenCode state directories", () => {
   const second = executor.additionalEnvironment(join("D:", "attempts", "2"));
   assert.notEqual(first.XDG_DATA_HOME, second.XDG_DATA_HOME);
   assert.notEqual(first.XDG_STATE_HOME, second.XDG_STATE_HOME);
+});
+
+test("seeded OpenCode credentials land where the executor's XDG_DATA_HOME exposes them", () => {
+  // The seed layout and the executor's environment cannot drift apart: the
+  // seeded file's attempt-relative path must resolve to
+  // <XDG_DATA_HOME>/opencode/auth.json, where OpenCode 1.18.27 reads auth.
+  const dataDir = join("D:", "attempts", "7");
+  const env = new OpenCodeExecutor().additionalEnvironment(dataDir);
+  for (const file of OPENCODE_CREDENTIAL_FILES) {
+    const seeded = attemptCredentialPath("opencode", file);
+    assert.equal(
+      join(env.XDG_DATA_HOME!, "opencode", file),
+      join(dataDir, seeded),
+      `seeded ${file} must be readable at <XDG_DATA_HOME>/opencode/${file}`,
+    );
+  }
 });
 
 test("OpenCode declares it does not honor the retry allowance itself", () => {

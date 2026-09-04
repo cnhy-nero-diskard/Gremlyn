@@ -439,7 +439,10 @@ export const clientScript = `
     const staticProvider = [...modelSelect.options].some((option) => option.dataset.providerId === providerId);
     const provider = modelCatalog?.find((entry) => entry.id === providerId) ||
       (staticProvider ? { id: providerId, description: '' } : null);
-    providerInput.hidden = Boolean(provider);
+    // An empty provider is a real selection for provider-optional agents, not
+    // an unnamed custom one — keep the free-text provider input hidden then.
+    const noProvider = providerId === '' && root.dataset.providerOptional !== undefined;
+    providerInput.hidden = Boolean(provider) || noProvider;
     modelSelect.hidden = !provider;
     modelInput.hidden = Boolean(provider);
     if (!provider) { modelInput.value = preferredModel || modelInput.value; updateModelDescription(root); return; }
@@ -471,11 +474,15 @@ export const clientScript = `
     const currentProvider = providerFor(root);
     const currentModel = preferredModel || modelFor(root);
     providerSelect.textContent = '';
+    if (root.dataset.providerOptional !== undefined) {
+      const none = document.createElement('option'); none.value = ''; none.textContent = 'None — provider is folded into the model id'; providerSelect.append(none);
+    }
     providers.forEach((provider) => {
       const option = document.createElement('option'); option.value = provider.id; option.textContent = providerLabel(provider); providerSelect.append(option);
     });
     const custom = document.createElement('option'); custom.value = customProvider; custom.textContent = 'Custom provider'; providerSelect.append(custom);
-    const known = providers.some((provider) => provider.id === currentProvider);
+    const known = providers.some((provider) => provider.id === currentProvider) ||
+      (root.dataset.providerOptional !== undefined && currentProvider === '');
     providerSelect.value = known ? currentProvider : customProvider;
     providerInput.value = known ? '' : currentProvider;
     modelSelect.textContent = '';

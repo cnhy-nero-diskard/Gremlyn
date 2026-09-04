@@ -1,6 +1,6 @@
-import { ClineExecutor } from "./cline.js";
+import { ClineExecutor, EXPECTED_CLINE_VERSION } from "./cline.js";
 import type { ProcessRunner } from "./launcher.js";
-import { OpenCodeExecutor } from "./opencode.js";
+import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "./opencode.js";
 import type { AgentExecutor } from "../types.js";
 
 /**
@@ -14,4 +14,14 @@ import type { AgentExecutor } from "../types.js";
 export const EXECUTOR_FACTORIES: Record<string, (binary: string, runner?: ProcessRunner) => AgentExecutor> = {
   cline: (binary, runner) => new ClineExecutor(binary, runner),
   opencode: (binary, runner) => new OpenCodeExecutor(binary, runner),
+};
+
+/**
+ * The pinned release each registered kind runs under, kept beside the
+ * factories so setup's prerequisite messaging reads the same source of truth
+ * the executor's `checkVersion` enforces rather than restating it.
+ */
+export const EXECUTOR_EXPECTED_VERSIONS: Record<string, string> = {
+  cline: EXPECTED_CLINE_VERSION,
+  opencode: EXPECTED_OPENCODE_VERSION,
 };

@@ -12,6 +12,13 @@ export function repositoryExists(db: Database.Database, repoId: number): boolean
   return db.prepare("SELECT 1 FROM repositories WHERE id = ?").get(repoId) !== undefined;
 }
 
+/** The agent id a repository row is bound to, for agent-aware console behavior. */
+export function repositoryAgent(db: Database.Database, repoId: number): string | undefined {
+  const row = db.prepare("SELECT agent FROM repositories WHERE id = ?").get(repoId) as
+    { agent: string } | undefined;
+  return row?.agent;
+}
+
 export type SetRepositoryModelResult =
   { ok: true; model: string } | { ok: false; reason: "not-found" };
 
@@ -42,7 +49,14 @@ export type SetRepositoryModelProviderResult =
         | "effort-not-supported";
     };
 
-/** Atomically update the dashboard's provider/model/effort settings. */
+/**
+ * Atomically update the dashboard's provider/model/effort settings.
+ *
+ * `providerRequired` mirrors the repository's agent kind: a CLI that takes a
+ * first-class provider argument (Cline) still rejects an empty provider here,
+ * while a kind that folds the provider into the model id (OpenCode) accepts
+ * one — a valid OpenCode repository carries `provider === ""`.
+ */
 export function setRepositoryModelProvider(
   db: Database.Database,
   repoId: number,
@@ -50,10 +64,11 @@ export function setRepositoryModelProvider(
   model: string,
   effort: string,
   supportedEfforts: readonly ReasoningEffort[] = REASONING_EFFORTS,
+  providerRequired = true,
 ): SetRepositoryModelProviderResult {
   if (!repositoryExists(db, repoId)) return { ok: false, reason: "not-found" };
   const trimmedProvider = provider.trim();
-  if (!trimmedProvider) return { ok: false, reason: "provider-required" };
+  if (!trimmedProvider && providerRequired) return { ok: false, reason: "provider-required" };
   const trimmedModel = model.trim();
   if (!trimmedModel) return { ok: false, reason: "model-required" };
   const trimmedEffort = effort.trim();
@@ -75,15 +90,19 @@ export function setRepositoryModelProvider(
   };
 }
 
-/** Set a repository's default provider. Providers are opaque ids passed through to the agent CLI. */
+/**
+ * Set a repository's default provider. Providers are opaque ids passed through to the agent CLI.
+ * An empty provider is refused only when the repository's agent requires one (see above).
+ */
 export function setRepositoryProvider(
   db: Database.Database,
   repoId: number,
   provider: string,
+  providerRequired = true,
 ): SetRepositoryProviderResult {
   if (!repositoryExists(db, repoId)) return { ok: false, reason: "not-found" };
   const trimmed = provider.trim();
-  if (!trimmed) return { ok: false, reason: "provider-required" };
+  if (!trimmed && providerRequired) return { ok: false, reason: "provider-required" };
   db.prepare("UPDATE repositories SET provider = ? WHERE id = ?").run(trimmed, repoId);
   return { ok: true, provider: trimmed };
 }

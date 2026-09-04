@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ProviderCatalog } from "../agent/provider-catalog.js";
 import type { OperatorActionStore } from "../store/actions.js";
+import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../config/loader.js";
 import { createConsoleQueries, type ConsoleQueries } from "./queries.js";
 import { stylesheet, clientScript, stylesheetPath, clientScriptPath } from "./assets.js";
 import { authLayout, layout } from "./views/layout.js";
@@ -9,6 +10,7 @@ import { dashboardView, dashboardRegions } from "./views/dashboard.js";
 import { jobView, jobRegions } from "./views/job.js";
 import { commandsView, auditView } from "./views/commands.js";
 import {
+  repositoryAgent,
   repositoryExists,
   setRepositoryModel,
   setRepositoryModelProvider,
@@ -36,7 +38,24 @@ export interface ConsoleOptions {
   /** Where attempt output and activity snapshots live; used for live tailing. */
   dataDir?: string;
   providerCatalog?: ProviderCatalog;
-  effortOptions?: readonly ReasoningEffort[];
+  /**
+   * The configured agent definitions, keyed by the agent id repositories
+   * reference. Provider semantics (whether an empty provider is valid) and
+   * the selectable effort tiers are driven per repository from its agent's
+   * kind and declared tiers, not from one global setting.
+   */
+  agents?: Record<string, AgentDefinition>;
+}
+/** Agent-aware defaults for a repository with no matching definition. */
+function agentOptionsFor(
+  agents: Record<string, AgentDefinition> | undefined,
+  agentId: string | undefined,
+): { efforts: readonly ReasoningEffort[]; providerRequired: boolean } {
+  const definition = agentId === undefined ? undefined : agents?.[agentId];
+  return {
+    efforts: definition?.efforts ?? REASONING_EFFORTS,
+    providerRequired: definition ? KINDS_REQUIRING_PROVIDER.has(definition.kind) : true,
+  };
 }
 export function consoleListenOptions(input: { host?: string; port: number }): {
   host: string;
@@ -116,7 +135,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
           dashboardView(
             queries.readDashboard(),
             providerCatalog.snapshot(),
-            options.effortOptions ?? REASONING_EFFORTS,
+            options.agents,
           ),
           { stream: "/stream", wide: true },
         ),
@@ -127,7 +146,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       const regions = dashboardRegions(
         queries.readDashboard(),
         providerCatalog.snapshot(),
-        options.effortOptions ?? REASONING_EFFORTS,
+        options.agents,
       );
       return {
         "health-region": regions.health,
@@ -151,7 +170,7 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       const regions = dashboardRegions(
         queries.readDashboard(),
         providerCatalog.snapshot(),
-        options.effortOptions ?? REASONING_EFFORTS,
+        options.agents,
       );
       return {
         "health-region": regions.health,
@@ -283,7 +302,8 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
       const id = positiveInteger(request.params.id);
       const provider = request.body?.provider;
       if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
-      const result = setRepositoryProvider(options.db, id, provider);
+      const { providerRequired } = agentOptionsFor(options.agents, repositoryAgent(options.db, id));
+      const result = setRepositoryProvider(options.db, id, provider, providerRequired);
       if (!result.ok) {
         return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
       }
@@ -307,13 +327,19 @@ export function buildConsoleServer(options: ConsoleOptions): FastifyInstance {
     if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
     if (typeof model !== "string") return reply.code(400).send({ error: "model-required" });
     if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
+    // Effort tiers and provider semantics come from this repository's agent.
+    const { efforts, providerRequired } = agentOptionsFor(
+      options.agents,
+      repositoryAgent(options.db, id),
+    );
     const result = setRepositoryModelProvider(
       options.db,
       id,
       provider,
       model,
       effort,
-      options.effortOptions ?? REASONING_EFFORTS,
+      efforts,
+      providerRequired,
     );
     if (!result.ok) {
       return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });

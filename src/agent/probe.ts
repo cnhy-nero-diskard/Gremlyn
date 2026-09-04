@@ -138,7 +138,7 @@ async function runOnce(input: {
   if (input.seedSource) {
     const files = input.seedFiles ?? DEFAULT_SEED_FILES_BY_KIND[input.kind] ?? CREDENTIAL_SEED_FILES;
     try {
-      const copied = seedAgentCredentials(input.seedSource, dataDir, files);
+      const copied = seedAgentCredentials(input.seedSource, dataDir, files, input.kind);
       seeded = copied;
       out(`seeded       ${copied.join(", ")} from ${input.seedSource}`);
       // Verify permissions: report that files are owner-only where possible

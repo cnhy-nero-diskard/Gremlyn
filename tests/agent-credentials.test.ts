@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
   CREDENTIAL_SEED_FILES,
+  OPENCODE_CREDENTIAL_FILES,
   persistRotatedCredentials,
   removeAttemptDataDir,
   seedAgentCredentials,
@@ -138,6 +139,55 @@ test("seeding fails loudly when a declared file is absent", () => {
     () => seedAgentCredentials(source, makeAttemptDir()),
     /credential source file not found/u,
   );
+});
+
+test("OpenCode seeds auth.json into the executor's XDG data layout, not the attempt root", () => {
+  // OpenCodeExecutor points XDG_DATA_HOME at <attempt>/xdg-data, and OpenCode
+  // 1.18.27 reads auth at <XDG_DATA_HOME>/opencode/auth.json — seeding to the
+  // attempt root would leave the agent unauthenticated.
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-occredsrc-"));
+  writeFileSync(join(source, "auth.json"), SECRET, "utf8");
+  const dest = makeAttemptDir();
+  try {
+    const seeded = seedAgentCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+
+    assert.deepEqual(seeded, ["auth.json"]);
+    const seededPath = join(dest, "xdg-data", "opencode", "auth.json");
+    assert.equal(readFileSync(seededPath, "utf8"), SECRET);
+    assert.equal(existsSync(join(dest, "auth.json")), false);
+  } finally {
+    removeAttemptDataDir(dest);
+  }
+});
+
+test("OpenCode rotated credentials are read back from the XDG layout and persisted to the source", () => {
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-occredsrc-"));
+  writeFileSync(join(source, "auth.json"), SECRET, "utf8");
+  const dest = makeAttemptDir();
+  seedAgentCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+  const rotated = '{"opencode":{"accessToken":"rotated-token"}}';
+  writeFileSync(join(dest, "xdg-data", "opencode", "auth.json"), rotated, "utf8");
+  try {
+    const persisted = persistRotatedCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+
+    assert.deepEqual(persisted, ["auth.json"]);
+    assert.equal(readFileSync(join(source, "auth.json"), "utf8"), rotated);
+  } finally {
+    removeAttemptDataDir(dest);
+  }
+});
+
+test("Cline seeding is unchanged: files land at the attempt root", () => {
+  const source = makeSource();
+  const dest = makeAttemptDir();
+  try {
+    const seeded = seedAgentCredentials(source, dest, CREDENTIAL_SEED_FILES, "cline");
+    assert.deepEqual(seeded, [...CREDENTIAL_SEED_FILES]);
+    assert.equal(readFileSync(join(dest, "secrets.json"), "utf8"), SECRET);
+    assert.equal(readFileSync(join(dest, "settings", "providers.json"), "utf8"), OAUTH);
+  } finally {
+    removeAttemptDataDir(dest);
+  }
 });
 
 test("seeding refuses a directory standing in for a credential file", () => {

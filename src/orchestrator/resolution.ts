@@ -416,6 +416,10 @@ export class ResolutionOrchestrator {
             credentialSource,
             attemptDataDir,
             this.options.credentialFiles?.get(repository.agent),
+            // The executor's kind decides where inside the attempt dir each
+            // seeded file must land (OpenCode reads auth under its XDG data
+            // root, not at the attempt root).
+            executor.id,
           );
         } catch (error) {
           throw new StageFailure(
@@ -700,6 +704,8 @@ export class ResolutionOrchestrator {
           credentialSource,
           attemptDataDir,
           this.options.credentialFiles?.get(agent),
+          // Same kind-relative layout the seed used; see seedAgentCredentials.
+          this.options.executors.get(agent)?.id,
         );
         if (rotated.length > 0) {
           this.options.logger.info("credential rotated", {

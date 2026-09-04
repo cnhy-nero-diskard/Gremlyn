@@ -259,6 +259,111 @@ test("an OpenCode repository renders on the dashboard and its settings are confi
   data.store.close();
 });
 
+const CONSOLE_AGENTS = {
+  cline: {
+    id: "cline",
+    kind: "cline",
+    binary: "cline",
+    efforts: ["none", "low", "medium", "high", "xhigh"] as const,
+    credentialSource: "/tmp/cline-data",
+    credentialFiles: ["secrets.json", "settings/providers.json"],
+  },
+  opencode: {
+    id: "opencode",
+    kind: "opencode",
+    binary: "opencode",
+    efforts: ["none", "low", "medium", "high", "xhigh", "max"] as const,
+    credentialSource: "/tmp/opencode-data",
+    credentialFiles: ["auth.json"],
+  },
+};
+
+test("an empty provider is saved for provider-optional agents and refused for Cline", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  const opencodeRepoId = Number(
+    data.store.db
+      .prepare(
+        `INSERT INTO repositories
+           (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      )
+      .run(
+        "acme",
+        "opencode-widgets",
+        "source-2",
+        "workspaces-2",
+        "opencode",
+        "opencode/claude-sonnet-5",
+        "",
+        "high",
+      ).lastInsertRowid,
+  );
+  const app = buildConsoleServer(data.options);
+  // OpenCode folds the provider into the model id, so provider "" is a valid
+  // state and the save must not be rejected as provider-required.
+  const saved = await app.inject({
+    method: "POST",
+    url: `/repos/${opencodeRepoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "", model: "opencode/gpt-5.4", effort: "max" },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(
+    data.store.db
+      .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
+      .get(opencodeRepoId),
+    { provider: "", model: "opencode/gpt-5.4", effort: "max" },
+  );
+  // Cline still requires a provider argument on its argv.
+  const refused = await app.inject({
+    method: "POST",
+    url: `/repos/${data.repoId}/model-provider`,
+    headers: AUTH,
+    payload: { provider: "", model: "gpt-5.6-sol", effort: "high" },
+  });
+  assert.equal(refused.statusCode, 400);
+  assert.deepEqual(refused.json(), { error: "provider-required" });
+  await app.close();
+  data.store.close();
+});
+
+test("the dashboard drives effort tiers and provider semantics from each repository's agent", async () => {
+  const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.store.db
+    .prepare(
+      `INSERT INTO repositories
+         (owner, name, source_path, workspace_root, agent, model, provider, effort, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    )
+    .run(
+      "acme",
+      "opencode-widgets",
+      "source-2",
+      "workspaces-2",
+      "opencode",
+      "opencode/claude-sonnet-5",
+      "",
+      "max",
+    );
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(dashboard.statusCode, 200);
+  const body = dashboard.body;
+  // Only the OpenCode agent declares "max", so exactly one card offers it —
+  // a Cline card must not present a tier its agent does not support.
+  assert.equal((body.match(/<option value="max"/gu) ?? []).length, 1);
+  // Only the provider-optional card renders the empty-provider option and flag.
+  assert.equal(
+    (body.match(/None — provider is folded into the model id/gu) ?? []).length,
+    1,
+  );
+  assert.equal((body.match(/data-provider-optional/gu) ?? []).length, 1);
+  await app.close();
+  data.store.close();
+});
+
 test("job detail separates attempts and shows context, failure, output, validation, commit, and reporting", async () => {
   const data = fixture();
   const app = buildConsoleServer(data.options);
