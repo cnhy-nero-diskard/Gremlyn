@@ -21,6 +21,7 @@ import {
   syncRepositories,
 } from "./runtime/repositories.js";
 import { resetWorkspace } from "./workspace/reset.js";
+import { reclaimWorkspaces } from "./workspace/reclamation.js";
 
 const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const;
 
@@ -116,6 +117,27 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 
     const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
     reportRepositoryProviderMismatches(repositories, config.agents, logger);
+    const operatorActions = new OperatorActionStore(store.db);
+    const reclamationRepositories = repositories.map(({ id, sourcePath, workspaceRoot }) => ({
+      id,
+      sourcePath,
+      workspaceRoot,
+    }));
+    const sweepWorkspaces = async (phase: "startup" | "poll"): Promise<void> => {
+      const report = await reclaimWorkspaces({
+        db: store.db,
+        repositories: reclamationRepositories,
+        minimumAgeMs: config.workspaceReclamation.minimumAgeSec * 1_000,
+        actions: operatorActions,
+      });
+      logger.info("workspace reclamation sweep", {
+        phase,
+        candidates: report.candidates,
+        reclaimed: report.reclaimed,
+        retained: report.retained,
+      });
+    };
+    if (config.workspaceReclamation.enabled) await sweepWorkspaces("startup");
     const registry = createDefaultCommandRegistry();
     const credentialSources = new Map(
       Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
@@ -141,7 +163,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     });
     for (const repository of repositories) orchestrator.registerRepository(repository);
     const eventSource = new PollingEventSource(github, store.db);
-    const operatorActions = new OperatorActionStore(store.db);
     const consoleServer = buildConsoleServer({
       db: store.db,
       token: config.consoleToken,
@@ -233,9 +254,17 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         logger.error("poll failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-      } finally {
-        polling = false;
       }
+      if (config.workspaceReclamation.enabled) {
+        try {
+          await sweepWorkspaces("poll");
+        } catch (error) {
+          logger.warn("workspace reclamation sweep failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      polling = false;
     };
 
     await consoleServer.listen(

@@ -199,6 +199,9 @@ test("CLI help names every setup subcommand and supported flag", () => {
     "--disabled",
     "--example",
     "unlock",
+    "reclaim",
+    "--preview",
+    "--apply",
   ]) {
     assert.ok(HELP.includes(text), `help is missing ${text}`);
   }

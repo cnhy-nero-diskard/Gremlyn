@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import {
   addRepository,
   defaultConfigPath,
+  reclaimConfiguredWorkspaces,
   setup,
   unlockDataDirectory,
   verifyConfig,
@@ -12,7 +13,7 @@ import {
 } from "./flows.js";
 import { createReadlineInput, nonInteractiveInput } from "./input.js";
 
-const COMMANDS = ["setup", "add-repo", "verify", "unlock"] as const;
+const COMMANDS = ["setup", "add-repo", "verify", "unlock", "reclaim"] as const;
 type Command = (typeof COMMANDS)[number];
 
 interface CliValues {
@@ -35,6 +36,8 @@ interface CliValues {
   enabled?: boolean;
   disabled?: boolean;
   example?: string;
+  preview?: boolean;
+  apply?: boolean;
 }
 
 const OPTION_DEFINITIONS = {
@@ -57,6 +60,8 @@ const OPTION_DEFINITIONS = {
   enabled: { type: "boolean" },
   disabled: { type: "boolean" },
   example: { type: "string" },
+  preview: { type: "boolean" },
+  apply: { type: "boolean" },
 } as const;
 
 export const HELP = `Gremlyn guided setup CLI
@@ -66,12 +71,14 @@ Usage:
   npm run add-repo -- <path> [flags]
   npm run verify:config -- [flags]
   npm run setup -- unlock <data-dir> [flags]
+  npm run setup -- reclaim [flags]
 
 Subcommands:
   setup       Bootstrap gremlyn.yaml, report host prerequisites, and optionally register a repository.
   add-repo    Infer, verify, and append one explicit repository entry.
   verify      Verify every configured repository without writing anything.
   unlock      Release a data-directory claim without starting the orchestrator.
+  reclaim     Preview deterministic workspace reclamation; use --apply after enabling it.
 
 Flags:
   -h, --help                    Show this help.
@@ -93,6 +100,8 @@ Flags:
       --enabled                  Write enabled: true (the default).
       --disabled                 Write enabled: false.
       --example <path>           Setup bootstrap source instead of config.example.yaml.
+      --preview                  Report reclamation decisions without removing anything (default).
+      --apply                    Apply reclamation; requires workspace_reclamation.enabled: true.
 
 Every value that can be prompted has an explicit flag. In a non-interactive shell,
 pass --yes to accept derived values or supply the missing flags explicitly.
@@ -138,6 +147,10 @@ async function runWithCommand(command: Command, args: readonly string[]): Promis
     process.stderr.write("Use either --no-validation or --validation-command, not both.\n");
     return 2;
   }
+  if (values.preview === true && values.apply === true) {
+    process.stderr.write("Use only one of --preview or --apply.\n");
+    return 2;
+  }
 
   const input = interactive() ? createReadlineInput() : nonInteractiveInput();
   const io: FlowIO = { input };
@@ -181,6 +194,19 @@ async function runWithCommand(command: Command, args: readonly string[]): Promis
         await unlockDataDirectory({
           dataDir: parsed.positionals[0],
           yes: values.yes,
+          ...io,
+        })
+      ).exitCode;
+    }
+    if (command === "reclaim") {
+      if (parsed.positionals.length > 0) {
+        process.stderr.write("reclaim does not accept positional paths; use --config.\n");
+        return 2;
+      }
+      return (
+        await reclaimConfiguredWorkspaces({
+          configPath,
+          preview: values.apply !== true,
           ...io,
         })
       ).exitCode;

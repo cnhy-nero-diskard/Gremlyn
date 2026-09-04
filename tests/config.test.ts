@@ -57,6 +57,43 @@ test("loads a valid config", () => {
   assert.equal(repo.effort, "xhigh");
   assert.equal(config.agentTimeoutSec, undefined);
   assert.equal(config.consoleTimezone, undefined);
+  assert.deepEqual(config.workspaceReclamation, {
+    enabled: false,
+    minimumAgeSec: 604800,
+  });
+});
+
+test("loads workspace reclamation settings and rejects invalid values", () => {
+  const configured = loadConfig(
+    writeConfig(
+      `${VALID_CONFIG}\nworkspace_reclamation:\n  enabled: true\n  minimum_age_seconds: 3600\n`,
+    ),
+    VALID_ENV,
+  );
+  assert.deepEqual(configured.workspaceReclamation, { enabled: true, minimumAgeSec: 3600 });
+  for (const value of ["1.5", "-1", '"one hour"']) {
+    assert.throws(
+      () =>
+        loadConfig(
+          writeConfig(`${VALID_CONFIG}\nworkspace_reclamation:\n  minimum_age_seconds: ${value}\n`),
+          VALID_ENV,
+        ),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        /workspace_reclamation\.minimum_age_seconds must be a non-negative integer/u.test(
+          error.message,
+        ),
+    );
+  }
+  assert.throws(
+    () =>
+      loadConfig(
+        writeConfig(`${VALID_CONFIG}\nworkspace_reclamation:\n  enabled: yes\n`),
+        VALID_ENV,
+      ),
+    (error: unknown) =>
+      error instanceof ConfigError && /workspace_reclamation\.enabled must be a boolean/u.test(error.message),
+  );
 });
 
 test("loads an optional console timezone and rejects invalid zones", () => {

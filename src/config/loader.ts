@@ -41,6 +41,8 @@ const DEFAULT_CREDENTIAL_FILES: Record<string, readonly string[]> = {
   opencode: OPENCODE_CREDENTIAL_FILES,
 };
 
+const DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC = 7 * 24 * 60 * 60;
+
 /** Kinds whose CLI takes a first-class provider argument distinct from the model id. */
 export const KINDS_REQUIRING_PROVIDER = new Set(["cline"]);
 
@@ -83,6 +85,10 @@ export interface AppConfig {
   consoleTimezone?: string;
   /** Initial per-repository agent timeout; undefined means no limit. */
   agentTimeoutSec?: number;
+  workspaceReclamation: {
+    enabled: boolean;
+    minimumAgeSec: number;
+  };
   agentRetries: number;
   allowedAuthors: string[];
   agents: Record<string, AgentDefinition>;
@@ -111,6 +117,10 @@ interface RawConfig {
   agent_defaults?: {
     timeout_seconds?: unknown;
     retries?: unknown;
+  };
+  workspace_reclamation?: {
+    enabled?: unknown;
+    minimum_age_seconds?: unknown;
   };
   allowed_authors?: unknown;
   agents?: Record<
@@ -355,6 +365,32 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     );
   }
 
+  // Workspace reclamation deletes only deterministic, clean, inactive
+  // workspaces and is deliberately opt-in. The age threshold still validates
+  // while disabled so turning it on later cannot activate malformed settings.
+  const workspaceReclamationEnabled = asBoolean(raw.workspace_reclamation?.enabled) ?? false;
+  if (
+    raw.workspace_reclamation?.enabled !== undefined &&
+    workspaceReclamationEnabled === false &&
+    raw.workspace_reclamation.enabled !== false
+  ) {
+    problems.push("workspace_reclamation.enabled must be a boolean");
+  }
+  const configuredWorkspaceAge = raw.workspace_reclamation?.minimum_age_seconds;
+  const parsedWorkspaceAge = asNumber(configuredWorkspaceAge);
+  const workspaceMinimumAgeSec =
+    parsedWorkspaceAge ?? DEFAULT_WORKSPACE_RECLAMATION_AGE_SEC;
+  if (
+    configuredWorkspaceAge !== undefined &&
+    (parsedWorkspaceAge === undefined ||
+      !Number.isInteger(workspaceMinimumAgeSec) ||
+      workspaceMinimumAgeSec < 0)
+  ) {
+    problems.push(
+      `workspace_reclamation.minimum_age_seconds must be a non-negative integer (got ${String(configuredWorkspaceAge)})`,
+    );
+  }
+
   // Author allowlist. The orchestrator identity must never self-authorize.
   const allowedAuthors = asStringList(raw.allowed_authors) ?? [];
   if (allowedAuthors.length === 0) problems.push("allowed_authors must not be empty");
@@ -439,6 +475,10 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     consoleToken: consoleToken as string,
     ...(consoleTimezone === undefined ? {} : { consoleTimezone }),
     ...(agentTimeoutSec === undefined ? {} : { agentTimeoutSec }),
+    workspaceReclamation: {
+      enabled: workspaceReclamationEnabled,
+      minimumAgeSec: workspaceMinimumAgeSec,
+    },
     agentRetries,
     allowedAuthors,
     agents,

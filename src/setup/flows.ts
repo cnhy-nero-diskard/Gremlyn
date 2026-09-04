@@ -18,6 +18,10 @@ import { probe as runAgentProbe } from "../agent/probe.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import { OctokitGitHubClient } from "../github/octokit.js";
 import { createRedactor } from "../log/redact.js";
+import { reclaimWorkspaces, type WorkspaceReclamationReport } from "../workspace/reclamation.js";
+import { syncRepositories } from "../runtime/repositories.js";
+import { OperatorActionStore } from "../store/actions.js";
+import { Store } from "../store/db.js";
 import {
   inspectDataDirectoryLock,
   removeDataDirectoryLockClaim,
@@ -94,10 +98,19 @@ export interface UnlockOptions extends FlowIO {
   yes?: boolean | undefined;
 }
 
+export interface ReclaimOptions extends FlowIO {
+  configPath: string;
+  preview?: boolean | undefined;
+}
+
 export interface UnlockResult {
   exitCode: number;
   dataDir: string;
   removed: boolean;
+}
+
+export interface ReclaimResult extends FlowResult {
+  report: WorkspaceReclamationReport;
 }
 
 interface RuntimeFlowIO extends Omit<FlowIO, "env" | "out" | "err" | "verificationEnvironment"> {
@@ -194,6 +207,41 @@ export async function unlockDataDirectory(options: UnlockOptions): Promise<Unloc
     removed ? `Released Gremlyn claim for ${options.dataDir}.` : "The claim was already absent.",
   );
   return { exitCode: 0, dataDir: options.dataDir, removed };
+}
+
+/** Preview or apply the configured workspace reclamation sweep from the CLI. */
+export async function reclaimConfiguredWorkspaces(
+  options: ReclaimOptions,
+): Promise<ReclaimResult> {
+  const configPath = resolve(options.configPath);
+  const io = makeIO(options, configPath);
+  const config = readSetupConfig(configPath, io.env);
+  const preview = options.preview !== false;
+  if (!preview && !config.workspaceReclamation.enabled) {
+    throw new SetupFlowError(
+      "workspace reclamation is disabled; set workspace_reclamation.enabled to true before applying it",
+    );
+  }
+  const store = new Store({ dataDir: config.dataDir });
+  try {
+    const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
+    const report = await reclaimWorkspaces({
+      db: store.db,
+      repositories,
+      minimumAgeMs: config.workspaceReclamation.minimumAgeSec * 1_000,
+      actions: new OperatorActionStore(store.db),
+      preview,
+    });
+    io.out(
+      `${preview ? "Workspace reclamation preview" : "Workspace reclamation"}: ${String(report.reclaimed)} ${preview ? "would be reclaimed" : "reclaimed"}, ${String(report.retained)} retained, ${String(report.candidates)} candidates.`,
+    );
+    for (const decision of report.decisions) {
+      io.out(`${decision.outcome.toUpperCase()} ${decision.path}: ${decision.reason}`);
+    }
+    return { exitCode: 0, configPath, report };
+  } finally {
+    store.close();
+  }
 }
 
 /**

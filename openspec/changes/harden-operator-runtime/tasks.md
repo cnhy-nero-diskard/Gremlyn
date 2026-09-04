@@ -40,14 +40,14 @@
 
 ## 5. Workspace reclamation
 
-- [ ] 5.1 Add a reclamation module that enumerates candidates using `workspacePathFor` and `isBeneath` only, so no path the system did not derive is ever a candidate; verify `tests/workspace-safety.test.ts` asserts sibling directories outside the root and unrecognized names inside it are never candidates
-- [ ] 5.2 Implement the eligibility conjunction — derived path, no non-terminal job for that repository and pull request, clean tree via `statusEntries`, older than the configured minimum age — with every predicate failing closed; verify tests cover each predicate refusing individually and an error in each predicate retaining the workspace
-- [ ] 5.3 Implement removal for both shapes: `git worktree remove --force` first, then direct removal with `git worktree prune`; verify tests reclaim a linked worktree and a standalone fallback clone and assert the source repository's worktree registry is consistent afterwards
-- [ ] 5.4 Record every reclamation and refusal through `OperatorActionStore` with its target and reason; verify a test asserts an audit row for a reclaimed workspace and for a refused dirty one
-- [ ] 5.5 Report a dirty workspace instead of removing it; verify a test asserts an eligible-but-dirty workspace is retained, reported as holding uncommitted work, and left byte-for-byte unchanged
-- [ ] 5.6 Add a preview mode that reports what would be reclaimed and why, removing nothing; verify a test asserts the preview lists eligible and retained workspaces with reasons and that no directory was removed
-- [ ] 5.7 Wire a startup sweep beside the existing stale-attempt cleanup and a periodic sweep on the poll timer, both disabled by default; verify a test asserts no sweep runs under default configuration and that both run when enabled
-- [ ] 5.8 Add the reclamation settings to the config loader with documentation in `config.example.yaml` and `README.md`; verify `tests/config.test.ts` and `tests/config-example.test.ts` cover them
+- [x] 5.1 Add a reclamation module that enumerates candidates using `workspacePathFor` and `isBeneath` only, so no path the system did not derive is ever a candidate; verify `tests/workspace-safety.test.ts` asserts sibling directories outside the root and unrecognized names inside it are never candidates
+- [x] 5.2 Implement the eligibility conjunction — derived path, no non-terminal job for that repository and pull request, clean tree via `statusEntries`, older than the configured minimum age — with every predicate failing closed; verify tests cover each predicate refusing individually and an error in each predicate retaining the workspace
+- [x] 5.3 Implement removal for both shapes: `git worktree remove --force` first, then direct removal with `git worktree prune`; verify tests reclaim a linked worktree and a standalone fallback clone and assert the source repository's worktree registry is consistent afterwards
+- [x] 5.4 Record every reclamation and refusal through `OperatorActionStore` with its target and reason; verify a test asserts an audit row for a reclaimed workspace and for a refused dirty one
+- [x] 5.5 Report a dirty workspace instead of removing it; verify a test asserts an eligible-but-dirty workspace is retained, reported as holding uncommitted work, and left byte-for-byte unchanged
+- [x] 5.6 Add a preview mode that reports what would be reclaimed and why, removing nothing; verify a test asserts the preview lists eligible and retained workspaces with reasons and that no directory was removed
+- [x] 5.7 Wire a startup sweep beside the existing stale-attempt cleanup and a periodic sweep on the poll timer, both disabled by default; verify a test asserts no sweep runs under default configuration and that both run when enabled
+- [x] 5.8 Add the reclamation settings to the config loader with documentation in `config.example.yaml` and `README.md`; verify `tests/config.test.ts` and `tests/config-example.test.ts` cover them
 
 ## 6. Artifact retention
 

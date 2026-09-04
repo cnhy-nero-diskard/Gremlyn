@@ -23,4 +23,8 @@ test("config.example.yaml parses successfully with no real credentials", () => {
   assert.equal(config.agents.opencode?.kind, "opencode");
   assert.deepEqual(config.agents.opencode?.credentialFiles, ["auth.json"]);
   assert.equal(config.consoleTimezone, undefined);
+  assert.deepEqual(config.workspaceReclamation, {
+    enabled: false,
+    minimumAgeSec: 604800,
+  });
 });

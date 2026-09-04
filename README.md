@@ -2,6 +2,14 @@
 
 Gremlyn is a local PR-resolution orchestrator. It polls configured GitHub repositories for an authorized `!RESOLVE` reply on an inline review thread, prepares an isolated git checkout, runs Cline, independently validates the result, pushes a normal commit to the existing PR branch, and replies with the outcome. The developer's normal checkout is never modified. Context: I normally use 5.6 SOL HIGH in chat mode to review my PR's since it doesn't incur weekly usage; this is the invariant I try to create gremlyn around. Would I be extending this to the whole implementation pipeline? Maybe, but I treat the ideation (explore and proposal), first run implementation(apply) and the output corrections (PR, feedback and subsequent changes) as 3 separate processes that shouldn't be time locked. 
 
+Automatic workspace reclamation is opt-in. It only considers deterministic `pr-N` directories beneath configured workspace roots, and retains active, recent, dirty, or indeterminate workspaces. Review the decisions without deleting anything before enabling it:
+
+```powershell
+npm run setup -- reclaim --preview --config .\gremlyn.yaml
+```
+
+Set `workspace_reclamation.enabled: true` and adjust `minimum_age_seconds` only after reviewing the preview. Every reclamation and refusal is recorded in the operator audit.
+
 ## Requirements
 
 - Windows 10/11 with PowerShell (WSL is not required)

@@ -16,6 +16,14 @@ poll_interval_seconds: 60
 # Maximum number of agent attempts running simultaneously.
 concurrency: 2
 
+# Automatic cleanup is disabled by default. When enabled, only clean,
+# deterministic pr-N workspaces with no active job and older than this age are
+# removed. Preview the decisions before enabling it with:
+# npm run setup -- reclaim --preview
+workspace_reclamation:
+  enabled: false
+  minimum_age_seconds: 604800
+
 github:
   # Name of the environment variable holding the GitHub token.
   # The token value itself NEVER appears in this file.
