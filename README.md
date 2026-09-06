@@ -223,6 +223,11 @@ change beyond `agent: opencode`:
   executor either way. Bumping the pinned OpenCode version means re-pasting
   that command's output into `OPENCODE_ZEN_MODEL_IDS` and
   `OPENCODE_GO_MODEL_IDS` in `src/agent/provider-catalog.ts`.
+- **Provider/executor pairing**: A Cline repository configured with the
+  `opencode` provider is refused per attempt, before its workspace is prepared.
+  Cline's OpenCode provider runs tools inside a long-lived server whose working
+  directory was fixed when the server started, so merely warning at startup
+  would leave the attempt's workspace unprotected.
 - **Retries**: OpenCode's CLI has no retry flag, so `agent_defaults.retries`
   is enforced by Gremlyn itself, re-running the whole invocation up to that
   many times on failure — see the comment in `config.example.yaml`. This
@@ -286,6 +291,7 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `no production executor is registered for agent "..." (kind "...")`: the agent's `kind` (or its id, when `kind` is omitted) does not match a registered executor — use `cline` or `opencode`.
 - `credential source for agent "cline" not found` or `is not readable`: set `agents.cline.credential_source` to the authenticated `~/.cline/data` directory (e.g. `C:/Users/<you>/.cline/data`) and confirm `secrets.json` exists; startup checks this before accepting jobs. For an OpenCode agent, the equivalent is `auth.json` under its data root (`opencode debug paths`).
 - `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` (or `opencode auth`) and that the credential source still contains its declared files, then retry; this is distinct from `agent-nonzero-exit`.
+- `provider-executor-mismatch`: the provider cannot be driven by the configured agent, so tool execution would leave the attempt's workspace; Gremlyn refuses the attempt before preparing that workspace. Change the provider/agent pairing — re-authenticating will not help. This is distinct from both `agent-auth-failed` and `agent-billing-failed`.
 - `agent-billing-failed`: the credential was accepted but the provider refused the request for lack of credit or a payment method — add a payment method or credit to the account; re-authenticating will not help. Distinct from `agent-auth-failed`.
 - `another Gremlyn instance is already using data directory`: stop the other process before starting a second instance against the same `data_dir`.
 - `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console, except that retrying an interrupted, cancelled, timed-out, or crashed-nonzero-exit agent may resume its own deterministic workspace when its recorded PR head still matches.

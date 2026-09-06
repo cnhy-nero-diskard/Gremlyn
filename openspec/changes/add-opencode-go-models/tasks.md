@@ -12,8 +12,8 @@ rebuilding it — treat a failing check as a defect to fix, not as a spec to sof
 
 ## 2. Close the operator-facing gap the implementation left
 
-- [ ] 2.1 Add a `provider-executor-mismatch` entry to the README troubleshooting list, stating that the provider cannot be driven by the configured agent, that tool execution would leave the attempt's workspace, and that re-authenticating will not help — verify the entry reads alongside `agent-auth-failed` and `agent-billing-failed`, which it must be told apart from. The console renders the raw reason string, so the README is where its meaning lives
-- [ ] 2.2 Note in the README's OpenCode provider section that a Cline repository configured with the `opencode` provider is refused per attempt, not merely warned about at startup — verify the text names the refusal and its cause
+- [x] 2.1 Add a `provider-executor-mismatch` entry to the README troubleshooting list, stating that the provider cannot be driven by the configured agent, that tool execution would leave the attempt's workspace, and that re-authenticating will not help — verify the entry reads alongside `agent-auth-failed` and `agent-billing-failed`, which it must be told apart from. The console renders the raw reason string, so the README is where its meaning lives
+- [x] 2.2 Note in the README's OpenCode provider section that a Cline repository configured with the `opencode` provider is refused per attempt, not merely warned about at startup — verify the text names the refusal and its cause
 
 ## 3. Verify end to end against the real CLI
 
