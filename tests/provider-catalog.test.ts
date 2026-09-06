@@ -37,8 +37,8 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.ok(opencode.models.some((model) => model.id === "opencode/claude-sonnet-5"));
   // The whole `opencode models opencode` surface, not a shortlist: a repo can
   // be pointed at any Zen model without falling back to "Custom provider".
-  assert.equal(opencode.models.length, 64);
-  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 64);
+  assert.equal(opencode.models.length, 69);
+  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 69);
   // Zen's `-free` suffix is the one badge derived from the id.
   assert.ok(
     opencode.models
@@ -61,9 +61,11 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.equal(opencodeGo.models.length, 27);
   assert.equal(new Set(opencodeGo.models.map((model) => model.id)).size, 27);
   // Go's roster is not Zen's: models reachable only through the subscription
-  // are exactly what the Zen-only catalog left unselectable.
+  // are exactly what the Zen-only catalog left unselectable. (glm-5.3 used to
+  // be Go-only; since the 1.18.29 roster Zen serves it too, so it is no longer
+  // in this list.)
   const zenIds = new Set(opencode.models.map((model) => model.id.split("/").at(-1)));
-  for (const goOnly of ["glm-5.3", "longcat-2.0", "hy3", "qwen3.7-max", "qwen3.8-max"]) {
+  for (const goOnly of ["longcat-2.0", "hy3", "qwen3.7-max", "qwen3.8-max"]) {
     assert.ok(
       opencodeGo.models.some((model) => model.id === `opencode-go/${goOnly}`),
       `expected Go to serve ${goOnly}`,

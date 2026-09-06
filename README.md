@@ -187,7 +187,7 @@ attribution.
 
 ### OpenCode
 
-Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.27**),
+Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.29**),
 registered alongside or instead of Cline. Each configured agent declares an
 executor `kind` (`cline` or `opencode`), defaulting to the agent's own key —
 `agents.opencode` resolves to the OpenCode executor with no extra field
@@ -212,8 +212,9 @@ change beyond `agent: opencode`:
   (`opencode-go/<model>`, the Go subscription). The two are genuinely separate
   providers, not billing modes of one: `auth.json` holds a distinct credential
   for each, and their model rosters only partly overlap — Go alone serves
-  `glm-5.3`, `longcat-2.0`, the `hy*` tiers and `qwen3.7`/`3.8`, while Zen
-  alone serves the Anthropic and most GPT tiers. Both are covered by the same
+  `longcat-2.0`, the `hy*` tiers and `qwen3.7`/`3.8`, while Zen
+  alone serves the Anthropic and most GPT tiers (1.18.29 also brought Zen
+  `glm-5.3`/`glm-5.3-flash`, previously Go-only). Both are covered by the same
   seeded `auth.json`, so selecting a Go model needs no configuration beyond
   having run `opencode auth login` for the Go plan. Picking "Custom provider"
   instead (shared with Cline) still works for any other `provider/model`
@@ -281,7 +282,7 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `missing validation-commands` or `pass --yes to accept the proposal`: use `--yes` for inferred values in automation, or provide explicit flags such as `--validation-command` and `--workspace-root`.
 - `github token missing` or `console token missing`: define the named environment variable in the same PowerShell process before starting.
 - `token authenticates as ..., expected ...`: correct `github.orchestrator_login` or use the dedicated account's token.
-- `unsupported Cline version` or `unsupported OpenCode version`: install the pinned release (Cline 3.0.61, OpenCode 1.18.27); startup refuses a drifting CLI surface rather than failing during a job.
+- `unsupported Cline version` or `unsupported OpenCode version`: install the pinned release (Cline 3.0.61, OpenCode 1.18.29); startup refuses a drifting CLI surface rather than failing during a job.
 - `no production executor is registered for agent "..." (kind "...")`: the agent's `kind` (or its id, when `kind` is omitted) does not match a registered executor — use `cline` or `opencode`.
 - `credential source for agent "cline" not found` or `is not readable`: set `agents.cline.credential_source` to the authenticated `~/.cline/data` directory (e.g. `C:/Users/<you>/.cline/data`) and confirm `secrets.json` exists; startup checks this before accepting jobs. For an OpenCode agent, the equivalent is `auth.json` under its data root (`opencode debug paths`).
 - `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` (or `opencode auth`) and that the credential source still contains its declared files, then retry; this is distinct from `agent-nonzero-exit`.

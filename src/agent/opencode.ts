@@ -6,9 +6,14 @@ import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 /**
  * The single OpenCode release whose argv surface design D-opencode was probed
  * against. OpenCode releases often; a bump here should re-run the probe
- * rather than only editing the constant.
+ * rather than only editing the constant. Bumped 1.18.27 -> 1.18.29 after
+ * verifying the 1.18.28/1.18.29 changelogs touch only Copilot headers and
+ * Codex model filtering (no CLI surface change) plus `opencode run --help`,
+ * `opencode debug paths`, and `opencode export --help` still showing the
+ * probed surface (`run --dir -m --format json --auto --thinking [--variant]`,
+ * auth under data, `export [sessionID]`).
  */
-export const EXPECTED_OPENCODE_VERSION = "1.18.27";
+export const EXPECTED_OPENCODE_VERSION = "1.18.29";
 
 /**
  * Real OpenCode CLI executor over the probed non-interactive argv surface:
@@ -35,7 +40,7 @@ export class OpenCodeExecutor implements AgentExecutor {
    * Relocate the state OpenCode's own CLI mutates per attempt — sessions,
    * credentials, and locks — while leaving the operator's shared cache and
    * config (`XDG_CACHE_HOME`, `XDG_CONFIG_HOME`) inherited. `opencode debug
-   * paths` (probed against 1.18.27) put `auth.json` and `opencode.db` under
+   * paths` (probed against 1.18.27, re-verified on 1.18.29) put `auth.json` and `opencode.db` under
    * data and `locks/` under state; missing `locks/` would be the same class
    * of concurrency defect the credential-isolation change already fixed once.
    */

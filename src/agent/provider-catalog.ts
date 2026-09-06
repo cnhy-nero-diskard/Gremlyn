@@ -202,7 +202,7 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
 
 /**
  * The `opencode/<model>` ids OpenCode's pay-as-you-go Zen gateway serves,
- * verbatim from `opencode models` on the pinned 1.18.27 (see
+ * verbatim from `opencode models` on the pinned 1.18.29 (see
  * EXPECTED_OPENCODE_VERSION). OpenCode also accepts other configured
  * providers folded into the same `-m` argument (e.g.
  * `anthropic/claude-opus-5`), but those depend on each installation's own
@@ -230,6 +230,7 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/claude-sonnet-4-6",
   "opencode/claude-sonnet-5",
   "opencode/deepseek-v4-flash",
+  "opencode/deepseek-v4-flash-vision-exp",
   "opencode/deepseek-v4-pro",
   "opencode/gemini-3-flash",
   "opencode/gemini-3.1-pro",
@@ -241,6 +242,8 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/glm-5",
   "opencode/glm-5.1",
   "opencode/glm-5.2",
+  "opencode/glm-5.3",
+  "opencode/glm-5.3-flash",
   "opencode/gpt-5",
   "opencode/gpt-5-codex",
   "opencode/gpt-5-nano",
@@ -261,6 +264,7 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/gpt-5.6-luna",
   "opencode/gpt-5.6-sol",
   "opencode/gpt-5.6-terra",
+  "opencode/gpt-6-astra",
   "opencode/grok-4.5",
   "opencode/grok-4.6",
   "opencode/grok-build-0.1",
@@ -275,6 +279,7 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/minimax-m3",
   "opencode/muse-spark-1.2",
   "opencode/muse-spark-1.2-contributor-free",
+  "opencode/muse-spark-1.3",
   "opencode/muse-spark-1.3-contributor-free",
   "opencode/nemotron-3-ultra-free",
   "opencode/nemotron-3.5-lightning-free",
@@ -284,11 +289,11 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
 
 /**
  * The `opencode-go/<model>` ids the OpenCode Go subscription serves, verbatim
- * from `opencode models` on the pinned 1.18.27.
+ * from `opencode models` on the pinned 1.18.29.
  *
  * Go is its own provider, not a billing mode of Zen: `auth.json` carries a
  * distinct `opencode-go` credential beside the `opencode` one, and the two
- * rosters only partly overlap (Go alone serves glm-5.3, longcat-2.0, the hy*
+ * rosters only partly overlap (Go alone serves longcat-2.0, the hy*
  * and qwen3.7/3.8 tiers; Zen alone serves the Anthropic and most GPT tiers).
  * Enumerating only Zen therefore left every Go model unreachable from the
  * picker, even though the executor passes `-m` through verbatim and the

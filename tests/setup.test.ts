@@ -695,7 +695,7 @@ test("setup prerequisites validate declared credential files and dispatch versio
       (item) => item.id === "agent-version:opencode",
     );
     assert.equal(opencodeVersion?.met, true);
-    assert.match(opencodeVersion?.observed ?? "", /opencode is 1\.18\.27/u);
+    assert.match(opencodeVersion?.observed ?? "", /opencode is 1\.18\.29/u);
   } finally {
     for (const [kind, factory] of originalFactories) {
       if (factory) EXECUTOR_FACTORIES[kind] = factory;
