@@ -4,11 +4,11 @@ The behavior this change specifies landed in commit `465b0a6`, ahead of these
 artifacts. These tasks verify the code satisfies each requirement rather than
 rebuilding it — treat a failing check as a defect to fix, not as a spec to soften.
 
-- [ ] 1.1 Confirm each OpenCode-hosted namespace is its own catalog entry declaring the `opencode` kind, and that both are present in the bundled snapshot and after a live refresh — verify `npm test -- tests/provider-catalog.test.ts` passes, including the refresh case
-- [ ] 1.2 Confirm both id lists match `opencode models` on the pinned release: run `opencode models`, diff its `opencode/` and `opencode-go/` sections against `OPENCODE_ZEN_MODEL_IDS` and `OPENCODE_GO_MODEL_IDS`, and verify the counts the catalog test asserts (64 and 27) still hold
-- [ ] 1.3 Confirm Go's entries badge uniformly as subscription-included and that Zen's `-free` suffix rule still applies within Zen only — verify by the tier assertions in the catalog test
-- [ ] 1.4 Confirm a provider its executor cannot drive is refused before an agent is launched and before a workspace is prepared, and that an undescribed provider still runs — verify `npm test -- tests/resolution-orchestrator.test.ts` passes both mismatch cases
-- [ ] 1.5 Confirm the refusal records a reason distinct from an authentication failure and from a failure of the work, and that a refused attempt leaves no workspace and publishes no branch — verify by the recorded stage, reason, workspace path, and unchanged remote sha asserted in that test
+- [x] 1.1 Confirm each OpenCode-hosted namespace is its own catalog entry declaring the `opencode` kind, and that both are present in the bundled snapshot and after a live refresh — verify `npm test -- tests/provider-catalog.test.ts` passes, including the refresh case
+- [x] 1.2 Confirm both id lists match `opencode models` on the pinned release: run `opencode models`, diff its `opencode/` and `opencode-go/` sections against `OPENCODE_ZEN_MODEL_IDS` and `OPENCODE_GO_MODEL_IDS`, and verify the counts the catalog test asserts (69 and 27) still hold
+- [x] 1.3 Confirm Go's entries badge uniformly as subscription-included and that Zen's `-free` suffix rule still applies within Zen only — verify by the tier assertions in the catalog test
+- [x] 1.4 Confirm a provider its executor cannot drive is refused before an agent is launched and before a workspace is prepared, and that an undescribed provider still runs — verify `npm test -- tests/resolution-orchestrator.test.ts` passes both mismatch cases
+- [x] 1.5 Confirm the refusal records a reason distinct from an authentication failure and from a failure of the work, and that a refused attempt leaves no workspace and publishes no branch — verify by the recorded stage, reason, workspace path, and unchanged remote sha asserted in that test
 
 ## 2. Close the operator-facing gap the implementation left
 
