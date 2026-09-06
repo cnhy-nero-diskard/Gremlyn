@@ -19,7 +19,7 @@ rebuilding it — treat a failing check as a defect to fix, not as a spec to sof
 
 - [x] 3.1 Probe a Go model through the real executor with per-attempt isolation: `npm run probe:agent -- --kind opencode --provider "" --model opencode-go/kimi-k3 --seed-source <data root>` — verify the unseeded run fails, the seeded run exits 0, and a session id is extracted
 - [x] 3.2 Select a Go model for an OpenCode repository from the console picker and verify it persists and is redisplayed as the current selection after a catalog refresh, with no custom free-text entry used
-- [ ] 3.3 Run `npm run build`, `npm run lint`, and `npm test` — verify all pass
+- [x] 3.3 Run `npm run build`, `npm run lint`, and `npm test` — verify all pass
 
 ## 4. Land the specs
 
