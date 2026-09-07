@@ -49,18 +49,24 @@ export class Logger {
       ...sanitized,
     });
     process.stderr.write(line + "\n");
-    this.db
-      ?.prepare(
-        "INSERT INTO log_entries (at, level, event, job_id, attempt_id, fields) VALUES (?, ?, ?, ?, ?, ?)",
-      )
-      .run(
-        at,
-        level,
-        this.redact(event),
-        jobId ?? null,
-        attemptId ?? null,
-        JSON.stringify(sanitized),
-      );
+    try {
+      this.db
+        ?.prepare(
+          "INSERT INTO log_entries (at, level, event, job_id, attempt_id, fields) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          at,
+          level,
+          this.redact(event),
+          jobId ?? null,
+          attemptId ?? null,
+          JSON.stringify(sanitized),
+        );
+    } catch {
+      // Best-effort: a store closed by a racing shutdown must not turn a log
+      // call into a thrown exception, since the stderr line above already
+      // recorded the entry durably.
+    }
   }
 
   debug(event: string, fields: LogFields = {}): void {
