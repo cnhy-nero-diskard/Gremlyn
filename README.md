@@ -297,6 +297,6 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console, except that retrying an interrupted, cancelled, timed-out, or crashed-nonzero-exit agent may resume its own deterministic workspace when its recorded PR head still matches.
 - `pull-request-closed`, `head-changed`, or `push-rejected`: refresh the PR state and retry deliberately. Gremlyn never force-pushes.
 - Console returns `401`: sign in again at `/auth`; every job-data and action route requires the console token.
-- No command is detected: `!RESOLVE` must be a standalone token at the start of a line in an inline review-comment thread, not a top-level PR conversation comment or quoted code.
+- No command is detected: `!RESOLVE` must be at the start of a line (text after it on that line is ignored) in an inline review-comment thread, not a top-level PR conversation comment or quoted code.
 
 Captured agent and validation output is stored beneath `data_dir`; SQLite stores references and structured lifecycle records. Configured secrets are redacted from logs and console views.

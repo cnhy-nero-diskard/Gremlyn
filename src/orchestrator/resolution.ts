@@ -290,7 +290,7 @@ export class ResolutionOrchestrator {
       job.pr_number,
       job.comment_id,
       repository.model,
-      { name: job.command, args: [] },
+      { name: job.command },
       canResumeRetainedWorkspace(priorAttempt, repository.workspaceRoot, job.pr_number)
         ? {
             workspacePath: priorAttempt!.workspace_path!,

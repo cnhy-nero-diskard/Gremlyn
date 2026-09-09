@@ -100,18 +100,6 @@ any argument to a git or agent process other than as opaque prompt content.
 - **THEN** the worktree path is derived from registry configuration and the pull
   request number, not from the branch name
 
-### Requirement: Command arguments are validated against configuration
-
-Where a command accepts arguments, the system SHALL validate each argument against
-values permitted by configuration. Arguments naming an agent, model, or path SHALL
-be rejected unless they match a configured allowed value.
-
-#### Scenario: Model override outside allowlist
-
-- **WHEN** a command supplies a model argument that is not among the repository's
-  configured allowed models
-- **THEN** the command is rejected and no agent is invoked
-
 ### Requirement: Auditability of every command
 
 The system SHALL record, for each command occurrence, the GitHub login, repository,

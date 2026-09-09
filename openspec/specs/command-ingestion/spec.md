@@ -27,14 +27,22 @@ comment body, the pull request number, and the timestamp reported by GitHub.
 ### Requirement: Command detection in comment text
 
 The system SHALL detect commands appearing in normalized event comment bodies. A
-command SHALL be recognized only when it appears as a standalone token at the start
-of a line, and SHALL NOT be recognized inside fenced code blocks, inline code
-spans, or block quotes.
+command SHALL be recognized when a line begins with the command token, and SHALL
+NOT be recognized inside fenced code blocks, inline code spans, or block quotes.
+Any text following the command token on that line SHALL be treated as commentary
+and ignored — the command carries no arguments.
 
 #### Scenario: Command at start of line
 
 - **WHEN** a comment body's first line is `!RESOLVE`
 - **THEN** the `RESOLVE` command is detected
+
+#### Scenario: Command followed by free text on the same line
+
+- **WHEN** a comment body's first line is `!RESOLVE` followed by reviewer
+  commentary on that same line
+- **THEN** the `RESOLVE` command is detected and the trailing text is ignored
+  rather than treated as arguments
 
 #### Scenario: Command quoted in code fence
 

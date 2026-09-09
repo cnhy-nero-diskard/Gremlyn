@@ -57,7 +57,7 @@ function setup(overrides: Partial<AuthorizeCommandOptions> = {}) {
     prNumber: 42,
     observedAt: "2026-01-01T10:00:00Z",
   };
-  const command: ParsedCommand = { name: "RESOLVE", args: [] };
+  const command: ParsedCommand = { name: "RESOLVE" };
   const github = new FixtureGitHubClient({ login: "gremlyn-bot", prs: [PR] });
   const options: AuthorizeCommandOptions = {
     event,
@@ -136,7 +136,7 @@ test("authorization preconditions fail independently with specific reasons", asy
     },
     {
       reason: "command-unregistered",
-      mutate: (f) => (f.options.command = { name: "UNKNOWN", args: [] }),
+      mutate: (f) => (f.options.command = { name: "UNKNOWN" }),
     },
     {
       reason: "command-placement",
@@ -171,27 +171,12 @@ test("fork PR is rejected with guidance and the required reason", async () => {
   }
 });
 
-test("model arguments are accepted without an allowed_models restriction", async () => {
+test("authorized commands always use the repository's default model", async () => {
   const fixture = setup();
-  fixture.options.command = { name: "RESOLVE", args: ["unapproved-model"] };
   try {
-    assert.equal((await authorizeCommand(fixture.options)).kind, "authorized");
-  } finally {
-    fixture.store.close();
-  }
-});
-
-test("invalid command arguments are rejected with review-thread guidance", async () => {
-  const fixture = setup();
-  fixture.options.command = { name: "RESOLVE", args: ["fix", "this"] };
-  try {
-    assert.deepEqual(await authorizeCommand(fixture.options), {
-      kind: "rejected",
-      reason: "invalid-command-arguments",
-    });
-    assert.equal(countJobs(fixture.store), 0);
-    assert.equal(fixture.github.replies.length, 1);
-    assert.match(fixture.github.replies[0]!.body, /expected at most one model argument/u);
+    const result = await authorizeCommand(fixture.options);
+    assert.equal(result.kind, "authorized");
+    assert.equal(result.kind === "authorized" ? result.model : null, "model-a");
   } finally {
     fixture.store.close();
   }
