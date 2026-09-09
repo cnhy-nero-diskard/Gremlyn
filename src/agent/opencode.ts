@@ -12,8 +12,9 @@ import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
  * `opencode debug paths`, and `opencode export --help` still showing the
  * probed surface (`run --dir -m --format json --auto --thinking [--variant]`,
  * auth under data, `export [sessionID]`).
+ * @pin-sync 1.18.29 -> 1.18.30 on 2026-09-09; surface verified via opencode run --help, opencode debug paths, opencode export --help.
  */
-export const EXPECTED_OPENCODE_VERSION = "1.18.29";
+export const EXPECTED_OPENCODE_VERSION = "1.18.30";
 
 /**
  * Real OpenCode CLI executor over the probed non-interactive argv surface:

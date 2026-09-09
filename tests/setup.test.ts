@@ -39,7 +39,7 @@ import {
 } from "../src/setup/verify.js";
 import { HELP, runCli } from "../src/setup/cli.js";
 import { FakeExecutor } from "../src/agent/fake.js";
-import { EXECUTOR_FACTORIES } from "../src/agent/registry.js";
+import { EXECUTOR_EXPECTED_VERSIONS, EXECUTOR_FACTORIES } from "../src/agent/registry.js";
 import { createTempRepo } from "./helpers/gitrepo.js";
 import { git } from "../src/workspace/gitops.js";
 import { DataDirectoryLock } from "../src/orchestrator/instance-lock.js";
@@ -690,12 +690,12 @@ test("setup prerequisites validate declared credential files and dispatch versio
     assert.deepEqual(versionChecked, ["cline", "opencode"]);
     const clineVersion = report.prerequisites.find((item) => item.id === "agent-version:cline");
     assert.equal(clineVersion?.met, true);
-    assert.match(clineVersion?.observed ?? "", /cline is 3\.0\.61/u);
+    assert.equal(clineVersion?.observed, `cline is ${EXECUTOR_EXPECTED_VERSIONS.cline}`);
     const opencodeVersion = report.prerequisites.find(
       (item) => item.id === "agent-version:opencode",
     );
     assert.equal(opencodeVersion?.met, true);
-    assert.match(opencodeVersion?.observed ?? "", /opencode is 1\.18\.29/u);
+    assert.equal(opencodeVersion?.observed, `opencode is ${EXECUTOR_EXPECTED_VERSIONS.opencode}`);
   } finally {
     for (const [kind, factory] of originalFactories) {
       if (factory) EXECUTOR_FACTORIES[kind] = factory;

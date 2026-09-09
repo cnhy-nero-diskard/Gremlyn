@@ -27,6 +27,8 @@ left untouched and cloned instead. Adopted attempts are marked in the console.
 - Node.js 22 or newer and npm 10 or newer
 - Git 2.x
 - Cline CLI 3.0.61, already authenticated with the provider used by your configured model
+  (both agent CLIs are version-pinned; `npm start` keeps the pins current — see
+  [Keeping the agent CLI pins current](#keeping-the-agent-cli-pins-current))
 - A dedicated GitHub account and token for Gremlyn
 
 The GitHub token should have only the repository permissions needed to read pull
@@ -187,7 +189,7 @@ attribution.
 
 ### OpenCode
 
-Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.29**),
+Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.30**),
 registered alongside or instead of Cline. Each configured agent declares an
 executor `kind` (`cline` or `opencode`), defaulting to the agent's own key —
 `agents.opencode` resolves to the OpenCode executor with no extra field
@@ -266,6 +268,46 @@ Then add `!RESOLVE` as a reply in an inline PR review thread authored by an allo
 
 Stop with `Ctrl+C`. Gremlyn marks jobs left in transient states as interrupted on the next startup; it does not silently rerun them. Retrying that interrupted job may resume its retained PR workspace when the recorded head and deterministic path still match; unrelated dirty workspaces remain blocked.
 
+### Keeping the agent CLI pins current
+
+Both agent CLIs are pinned to one release (`EXPECTED_CLINE_VERSION`,
+`EXPECTED_OPENCODE_VERSION`) and startup refuses anything else, because each
+executor builds argv against a surface that was probed by hand. OpenCode ships
+patch releases several times a week and updates itself, so that gate would
+otherwise stop a working installation over a release that changed nothing
+Gremlyn passes.
+
+`npm start` therefore runs the pin sync first (`prestart`). It compares each
+installed CLI against its pin and, when they differ, re-probes the surface the
+executor actually depends on before doing anything:
+
+- **in sync** — silent; startup proceeds.
+- **newer, surface intact** — the pin and its documented mentions are rewritten,
+  and startup proceeds. The rewrite is a real source change: commit it.
+- **surface moved** — nothing is written and the pin stays put. Startup then
+  refuses with the usual `unsupported ... version`, which is the correct
+  outcome: a flag the executor passes has been renamed or dropped.
+
+The surface checks are the same commands the pin's own bump note names —
+`opencode run --help`, `opencode debug paths`, `opencode export --help`, and
+`cline --help` — asserting each flag the executor passes (`--dir`, `-m`,
+`--format json`, `--auto`, `--thinking`, `--variant`, the `sessionID`
+positional, and Cline's `--data-dir`/`--auto-approve`/`--retries`/`-t`). It also
+reports when `opencode models` no longer matches the bundled picker roster,
+which never blocks a run but does leave the console's model list stale.
+
+```powershell
+npm run pin:sync    # sync now, writing any verified bump
+npm run pin:check   # report only; exits non-zero when a pin is behind (CI)
+npm run pin:sync -- --kind opencode
+```
+
+A bump made this way is verified against the CLI's help surface, not against a
+real invocation. Before trusting one for a long run, re-probe with a live
+credential: `npm run probe:agent -- --kind opencode --provider <id> --model <id>`.
+`start:built` runs compiled output and has no `prestart`; there, run
+`npm run pin:sync; npm run build` first.
+
 ## Development
 
 ```powershell
@@ -287,7 +329,7 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `missing validation-commands` or `pass --yes to accept the proposal`: use `--yes` for inferred values in automation, or provide explicit flags such as `--validation-command` and `--workspace-root`.
 - `github token missing` or `console token missing`: define the named environment variable in the same PowerShell process before starting.
 - `token authenticates as ..., expected ...`: correct `github.orchestrator_login` or use the dedicated account's token.
-- `unsupported Cline version` or `unsupported OpenCode version`: install the pinned release (Cline 3.0.61, OpenCode 1.18.29); startup refuses a drifting CLI surface rather than failing during a job.
+- `unsupported Cline version` or `unsupported OpenCode version`: run `npm run pin:sync` — when the newer CLI still exposes the probed surface it bumps the pin for you, and `npm start` does this automatically. Seeing this error after a sync means the surface really moved: reinstall the pinned release (Cline 3.0.61, OpenCode 1.18.30) with `npm install -g opencode-ai@1.18.30`, then re-probe before pinning forward. Startup refuses a drifting CLI surface rather than failing during a job.
 - `no production executor is registered for agent "..." (kind "...")`: the agent's `kind` (or its id, when `kind` is omitted) does not match a registered executor — use `cline` or `opencode`.
 - `credential source for agent "cline" not found` or `is not readable`: set `agents.cline.credential_source` to the authenticated `~/.cline/data` directory (e.g. `C:/Users/<you>/.cline/data`) and confirm `secrets.json` exists; startup checks this before accepting jobs. For an OpenCode agent, the equivalent is `auth.json` under its data root (`opencode debug paths`).
 - `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` (or `opencode auth`) and that the credential source still contains its declared files, then retry; this is distinct from `agent-nonzero-exit`.

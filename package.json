@@ -17,6 +17,9 @@
     "setup": "node --import tsx src/setup/cli.ts setup",
     "add-repo": "node --import tsx src/setup/cli.ts add-repo",
     "verify:config": "node --import tsx src/setup/cli.ts verify",
+    "pin:sync": "node --import tsx src/agent/pin.ts",
+    "pin:check": "node --import tsx src/agent/pin.ts --check",
+    "prestart": "node --import tsx src/agent/pin.ts --auto",
     "start": "node --import tsx src/index.ts",
     "start:built": "node dist/index.js"
   },
