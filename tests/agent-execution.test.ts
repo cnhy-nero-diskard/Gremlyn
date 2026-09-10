@@ -11,6 +11,8 @@ import {
   buildResolutionPrompt,
   CONTEXT_END,
   CONTEXT_START,
+  INHERITED_FAILURE_END,
+  INHERITED_FAILURE_START,
   ORCHESTRATOR_STATUS_MARKER,
   RESOLUTION_INSTRUCTIONS,
   RESOLUTION_PREAMBLE,
@@ -279,4 +281,64 @@ test("Cline version mismatch fails as a startup configuration error", async () =
     });
   const executor = new ClineExecutor("cline", runner);
   await assert.rejects(() => executor.checkVersion({}), AgentVersionError);
+});
+
+test("an inherited validation failure is delimited as data outside the review context", async () => {
+  const context = await reconstructReviewContext(fixture(), {
+    owner: "acme",
+    repo: "widgets",
+    prNumber: 12,
+    triggeringCommentId: 101,
+  });
+  const prompt = buildResolutionPrompt(context, "gremlyn-bot", {
+    command: ["npm", "run", "check"],
+    exitCode: 2,
+    output: "AssertionError: expected 1 to equal 2",
+  });
+
+  assert.match(prompt, /npm run check/);
+  assert.match(prompt, /exit code 2/);
+  assert.match(prompt, /AssertionError: expected 1 to equal 2/);
+  // Build output is data, not instruction, and not GitHub text either: it gets
+  // its own delimiters after the review context closes.
+  const start = prompt.indexOf(INHERITED_FAILURE_START);
+  assert.ok(start > prompt.indexOf(CONTEXT_END), "the section must follow the review context");
+  assert.ok(prompt.indexOf(INHERITED_FAILURE_END) > start);
+  assert.ok(
+    prompt.indexOf(RESOLUTION_INSTRUCTIONS) > prompt.indexOf(INHERITED_FAILURE_END),
+    "the fixed instructions stay last",
+  );
+});
+
+test("inherited validation output is truncated from the head, keeping the failing tail", async () => {
+  const context = await reconstructReviewContext(fixture(), {
+    owner: "acme",
+    repo: "widgets",
+    prNumber: 12,
+    triggeringCommentId: 101,
+  });
+  // A Gradle run's worth of up-to-date task lines, with the failure at the end
+  // where it always is.
+  const output = `${"> Task :app:someTask UP-TO-DATE\n".repeat(2000)}FAILURE: 2 tests failed`;
+  const prompt = buildResolutionPrompt(context, "gremlyn-bot", {
+    command: ["gradlew.bat", "test"],
+    exitCode: 1,
+    output,
+  });
+
+  assert.match(prompt, /FAILURE: 2 tests failed/, "the tail is the part that says what broke");
+  assert.match(prompt, /earlier characters omitted/, "the elision is stated, not silent");
+  assert.ok(prompt.length < output.length, "the whole log is not carried");
+});
+
+test("no inherited-failure section is emitted when nothing was inherited", async () => {
+  const context = await reconstructReviewContext(fixture(), {
+    owner: "acme",
+    repo: "widgets",
+    prNumber: 12,
+    triggeringCommentId: 101,
+  });
+  const prompt = buildResolutionPrompt(context, "gremlyn-bot");
+  assert.ok(!prompt.includes(INHERITED_FAILURE_START));
+  assert.doesNotMatch(prompt, /already contains uncommitted edits/);
 });

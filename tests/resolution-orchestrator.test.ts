@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FakeExecutor, type FakeOutcome } from "../src/agent/fake.js";
+import { CONTEXT_END, INHERITED_FAILURE_START } from "../src/agent/prompt.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
 import { Logger, type LogFields } from "../src/log/logger.js";
@@ -455,13 +456,7 @@ test("retrying an attempt cancelled with an unpushed commit reuses that commit",
     cancelled.commit_sha,
   );
   const subjects = (
-    await git([
-      "--git-dir",
-      data.gitRepo.remotePath,
-      "log",
-      "--pretty=%s",
-      data.gitRepo.headBranch,
-    ])
+    await git(["--git-dir", data.gitRepo.remotePath, "log", "--pretty=%s", data.gitRepo.headBranch])
   ).stdout;
   assert.deepEqual(
     subjects.split(/\r?\n/u).filter((line) => line.startsWith("Resolve review feedback")),
@@ -660,5 +655,159 @@ test("ingestion returns as soon as a job is queued, never waiting for the run", 
 
   assert.equal(data.orchestrator.cancel(job.jobId), true);
   assert.equal((await job.completed).kind, "cancelled");
+  data.store.close();
+});
+
+/**
+ * Put a completed attempt into the shape a validation failure leaves behind:
+ * the agent's edits uncommitted in the workspace, the attempt blocked at
+ * `publishing`, and one nonzero validation run recorded with its captured
+ * output on disk.
+ */
+function recordValidationFailure(
+  data: Fixture,
+  attemptId: number,
+  opts: { output?: string; writeArtifact?: boolean } = {},
+): string {
+  data.store.db
+    .prepare(
+      `UPDATE attempts
+       SET outcome = 'failed', failure_stage = 'publishing', failure_reason = 'validation-failed',
+           has_uncommitted_changes = 1
+       WHERE id = ?`,
+    )
+    .run(attemptId);
+  const outputRef = join(mkdtempSync(join(tmpdir(), "gremlyn-validation-")), "run.json");
+  if (opts.writeArtifact !== false) {
+    writeFileSync(
+      outputRef,
+      JSON.stringify({
+        command: ["npm", "test"],
+        stdout: opts.output ?? "FAIL tests/widget.test.ts\n1 failing",
+        stderr: "",
+        exitCode: 1,
+        durationMs: 12,
+      }),
+      "utf8",
+    );
+  }
+  data.store.db
+    .prepare(
+      `INSERT INTO validation_runs (attempt_id, seq, command, exit_code, duration_ms, output_ref)
+       VALUES (?, 1, ?, 1, 12, ?)`,
+    )
+    .run(attemptId, JSON.stringify(["npm", "test"]), outputRef);
+  return outputRef;
+}
+
+test("retry resumes edits from an attempt blocked by a failing validation command", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+  };
+  const retained = join(attempt.workspace_path, "agent-progress.txt");
+  writeFileSync(retained, "retain this\n", "utf8");
+  recordValidationFailure(data, attempt.id);
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(data.executor.runs.length, 2, "retry reached the agent instead of failing as dirty");
+  assert.equal(readFileSync(retained, "utf8"), "retain this\n");
+
+  // The agent has to know what it inherited and what rejected it.
+  const prompt = data.executor.runs[1]?.options.prompt ?? "";
+  assert.match(prompt, /already contains uncommitted edits from a previous attempt/);
+  assert.match(prompt, /npm test/);
+  assert.match(prompt, /FAIL tests\/widget\.test\.ts/);
+  assert.ok(
+    prompt.indexOf(INHERITED_FAILURE_START) > prompt.indexOf(CONTEXT_END),
+    "validation output must sit outside the untrusted review context, not inside it",
+  );
+  data.store.close();
+});
+
+test("a fresh attempt is never told it inherited a validation failure", async () => {
+  const data = await setup("files-modified");
+  assert.equal((await resolveEvent(data)).kind, "completed");
+  const prompt = data.executor.runs[0]?.options.prompt ?? "";
+  assert.doesNotMatch(prompt, /already contains uncommitted edits/);
+  assert.ok(!prompt.includes(INHERITED_FAILURE_START));
+  data.store.close();
+});
+
+test("a resumed retry survives a validation artifact that has been reclaimed", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+  };
+  writeFileSync(join(attempt.workspace_path, "agent-progress.txt"), "retain this\n", "utf8");
+  recordValidationFailure(data, attempt.id, { writeArtifact: false });
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(data.executor.runs.length, 2, "a missing artifact must not fail the attempt");
+  const prompt = data.executor.runs[1]?.options.prompt ?? "";
+  assert.match(prompt, /npm test/, "the failing command is known even when its output is not");
+  assert.match(prompt, /output no longer available/);
+  data.store.close();
+});
+
+test("a publishing failure other than validation does not admit a resume", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+  };
+  const manual = join(attempt.workspace_path, "manual-edit.txt");
+  writeFileSync(manual, "do not inherit\n", "utf8");
+  data.store.db
+    .prepare(
+      `UPDATE attempts
+       SET outcome = 'failed', failure_stage = 'publishing', failure_reason = 'workspace-conflicted',
+           has_uncommitted_changes = 1
+       WHERE id = ?`,
+    )
+    .run(attempt.id);
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(data.executor.runs.length, 1, "only a validation failure is admitted");
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT failure_reason FROM attempts WHERE attempt_number = 2")
+        .get() as { failure_reason: string }
+    ).failure_reason,
+    "workspace-dirty",
+  );
+  assert.equal(readFileSync(manual, "utf8"), "do not inherit\n");
+  data.store.close();
+});
+
+test("a validation failure whose recorded head has moved is not resumed", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+  };
+  writeFileSync(join(attempt.workspace_path, "agent-progress.txt"), "retain this\n", "utf8");
+  recordValidationFailure(data, attempt.id);
+  // A force-push between the attempts: the edits were made against a base the
+  // pull request no longer has.
+  data.store.db
+    .prepare(
+      "UPDATE attempts SET head_sha_at_prepare = 'f'||substr(head_sha_at_prepare, 2) WHERE id = ?",
+    )
+    .run(attempt.id);
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(data.executor.runs.length, 1, "a moved head must close the resume off");
   data.store.close();
 });
