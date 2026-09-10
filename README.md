@@ -208,23 +208,39 @@ change beyond `agent: opencode`:
 - **Provider**: OpenCode has no separate provider argument — it is folded into
   the model id as `<namespace>/<model>` (`opencode models` lists every id the
   installation can reach). A repository naming an OpenCode agent does not need
-  a `provider` field at all. The console's repository settings offer two
-  entries in the Provider picker, one per OpenCode-hosted namespace:
-  **OpenCode Zen** (`opencode/<model>`, pay-as-you-go) and **OpenCode Go**
-  (`opencode-go/<model>`, the Go subscription). The two are genuinely separate
+  a `provider` field at all. The console's repository settings offer three
+  entries in the Provider picker, one per namespace `opencode auth login` can
+  authenticate: **OpenCode Zen** (`opencode/<model>`, pay-as-you-go),
+  **OpenCode Go** (`opencode-go/<model>`, the Go subscription), and **OpenAI**
+  (`openai/<model>`, your own OpenAI account). They are genuinely separate
   providers, not billing modes of one: `auth.json` holds a distinct credential
   for each, and their model rosters only partly overlap — Go alone serves
   `longcat-2.0`, the `hy*` tiers and `qwen3.7`/`3.8`, while Zen
   alone serves the Anthropic and most GPT tiers (1.18.29 also brought Zen
-  `glm-5.3`/`glm-5.3-flash`, previously Go-only). Both are covered by the same
-  seeded `auth.json`, so selecting a Go model needs no configuration beyond
-  having run `opencode auth login` for the Go plan. Picking "Custom provider"
+  `glm-5.3`/`glm-5.3-flash`, previously Go-only). OpenAI is the one namespace
+  OpenCode does not host: OpenCode logs into OpenAI directly — its login menu
+  offers "OpenAI (ChatGPT Plus/Pro or API key)" — and those models bill to
+  whichever of the two you authenticated, which is also why the picker shows
+  them without a subscription badge. Note this is _not_ the same route as
+  Cline's **OpenAI Codex** provider, which is Cline's own
+  ChatGPT-subscription OAuth driven by the Cline binary; neither executor can
+  use the other's credential, so each is offered only to repositories running
+  its own agent. All three are covered by the same seeded `auth.json`, so
+  selecting a Go or OpenAI model needs no configuration beyond having run
+  `opencode auth login` for that plan. Picking "Custom provider"
   instead (shared with Cline) still works for any other `provider/model`
   OpenCode understands — an installation-specific one you authenticated
   yourself, say — and whatever is typed there is accepted and ignored by the
   executor either way. Bumping the pinned OpenCode version means re-pasting
-  that command's output into `OPENCODE_ZEN_MODEL_IDS` and
-  `OPENCODE_GO_MODEL_IDS` in `src/agent/provider-catalog.ts`.
+  that command's output into `OPENCODE_ZEN_MODEL_IDS`,
+  `OPENCODE_GO_MODEL_IDS`, and `OPENCODE_OPENAI_MODEL_IDS` in
+  `src/agent/provider-catalog.ts`, then setting `OPENCODE_ROSTER_VERSION`
+  there to the new pin. `pin:sync` bumps the pin on its own but cannot refresh
+  a hand-pasted roster, so that constant is what a test compares against
+  `EXPECTED_OPENCODE_VERSION` — a bump stays red until the lists are
+  refreshed. Note the rosters are served dynamically, so ids also come and go
+  between releases; re-paste, do not assume the previous list is still
+  current.
 - **Provider/executor pairing**: A Cline repository configured with the
   `opencode` provider is refused per attempt, before its workspace is prepared.
   Cline's OpenCode provider runs tools inside a long-lived server whose working

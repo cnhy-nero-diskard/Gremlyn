@@ -152,11 +152,13 @@ repositories:
     # No `provider` field: OpenCode folds the provider into the model id
     # (`provider/model`) instead of taking it as a separate argument, so it
     # is not required here — unlike the Cline entry above. In the console's
-    # repository settings, the Provider picker carries one entry per
-    # OpenCode-hosted namespace — "OpenCode Zen" (`opencode/<model>`,
-    # pay-as-you-go) and "OpenCode Go" (`opencode-go/<model>`, the Go
-    # subscription) — each listing that namespace's own models
-    # (`opencode models`). The same seeded auth.json authenticates both.
+    # repository settings, the Provider picker carries one entry per namespace
+    # `opencode auth login` can authenticate — "OpenCode Zen"
+    # (`opencode/<model>`, pay-as-you-go), "OpenCode Go"
+    # (`opencode-go/<model>`, the Go subscription), and "OpenAI"
+    # (`openai/<model>`, your own ChatGPT Plus/Pro or API-key account) — each
+    # listing that namespace's own models (`opencode models`). The same seeded
+    # auth.json authenticates all three.
     # "Custom provider" (shared with Cline) still works for any other
     # provider/model OpenCode understands. Either way, whatever is typed
     # there is accepted but ignored.
