@@ -182,6 +182,29 @@ without a manual page reload.
 - **WHEN** an operator views the dashboard while queued jobs start and complete
 - **THEN** those transitions appear without a manual page reload
 
+#### Scenario: Elapsed time advances while nothing else changes
+
+- **WHEN** an operator watches a running job and no new status, output, or log
+  activity is recorded
+- **THEN** the job's elapsed duration and relative timestamps continue to advance
+
+#### Scenario: Polling stops without any other activity
+
+- **WHEN** repository polling stops producing results and no other activity is
+  recorded
+- **THEN** the console reports the orchestrator as stale without a manual reload
+
+#### Scenario: Repository configuration changed elsewhere
+
+- **WHEN** a repository's provider, model, reasoning effort, or timeout is changed
+- **THEN** an open console reflects the new values without a manual reload
+
+#### Scenario: Ingestion and audit views stay current
+
+- **WHEN** a command is ingested or an operator action is recorded
+- **THEN** the command ingestion view and the operator audit view show it without
+  a manual reload
+
 ### Requirement: Operator actions
 
 The console SHALL offer retrying a failed, cancelled, or interrupted job;

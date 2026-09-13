@@ -27,7 +27,7 @@ admitted. A blocked publication that retained nothing, whose recorded head no
 longer matches, or that found the workspace inconsistent SHALL continue to halt
 the retry.
 
-#### Scenario: Leftover modifications without an admitted retry
+#### Scenario: Leftover modifications without an abrupt-run retry
 
 - **WHEN** preparation finds uncommitted modifications in the workspace without a
   retry admitted by the conditions above

@@ -62,6 +62,13 @@ argument or via a non-shell channel.
 The system SHALL only invoke non-interactive agent operations, and SHALL NOT invoke
 agent subcommands that require a terminal.
 
+The system SHALL launch a configured agent CLI correctly regardless of how that CLI
+is packaged on the host, including when it is installed as a launcher script that
+delegates to a separate program. Where the host imposes a command-line length limit
+smaller than the prompt the system generates, the system SHALL launch the agent by a
+route not subject to that limit. The system SHALL NOT interpret a program as a
+script for the host runtime unless it is one.
+
 #### Scenario: Prompt containing shell syntax
 
 - **WHEN** the reconstructed context contains quotes, newlines, or shell
@@ -73,25 +80,39 @@ agent subcommands that require a terminal.
 - **WHEN** the agent is invoked with no terminal attached
 - **THEN** execution proceeds without prompting and terminates on its own
 
+#### Scenario: CLI packaged as a native executable
+
+- **WHEN** the configured agent CLI is installed through a launcher script that
+  delegates to a native executable rather than to a script for the host runtime
+- **THEN** the agent process starts and runs normally, and the executable is not
+  handed to the host runtime to be parsed as source
+
+#### Scenario: Long prompt survives a host command-line limit
+
+- **WHEN** an agent is launched with a resolution prompt longer than the host's
+  command-line limit for launcher scripts
+- **THEN** the agent receives the whole prompt and the launch is not rejected for
+  argument length
+
 ### Requirement: Orchestrator owns the working directory
 
 The system SHALL pass the workspace path prepared for the job as the agent's
 working directory, and SHALL NOT delegate workspace or checkout selection to the
 agent, including through agent features that create their own worktrees.
 
-Passing the workspace path is not by itself sufficient. Some providers execute the
-agent's tools somewhere other than the process the system launched — for example in
-a separate long-lived service whose working directory was fixed before the attempt
-existed — so the path the system passes is ignored and the agent's edits land in an
-unrelated checkout. The system SHALL determine, before launching an agent, whether
-the repository's provider can be driven by its configured executor, and SHALL refuse
-the attempt when it cannot, rather than running an agent whose writes would fall
-outside the prepared workspace.
+Passing the workspace path is not by itself sufficient. Some providers execute
+the agent's tools somewhere other than the process the system launched — for
+example in a separate long-lived service whose working directory was fixed before
+the attempt existed — so the path the system passes is ignored and the agent's
+edits land in an unrelated checkout. The system SHALL determine, before launching
+an agent, whether the repository's provider can be driven by its configured
+executor, and SHALL refuse the attempt when it cannot, rather than running an
+agent whose writes would fall outside the prepared workspace.
 
 The refusal SHALL occur per attempt and before a workspace is prepared. Reporting
-such a pairing at startup does not satisfy this requirement: the failure is silent
-at run time, and an attempt that proceeds reports success while its own workspace
-stays untouched.
+such a pairing at startup does not satisfy this requirement: the failure is
+silent at run time, and an attempt that proceeds reports success while its own
+workspace stays untouched.
 
 A provider the system holds no pairing information about SHALL remain usable. An
 operator may configure a provider the system does not describe, and refusing one
@@ -197,6 +218,19 @@ invent a change.
 
 Repository-specific instructions from the registry SHALL be appended when present.
 
+When an attempt resumes a workspace whose retained edits were left by a previous
+attempt that failed validation, the prompt SHALL state that the workspace already
+carries those uncommitted edits and SHALL include the failing command together
+with its captured output. The output SHALL be delimited as data and identified as
+orchestrator-authored, distinct from the review context, so that text originating
+in build output cannot be read as instruction. The output MAY be truncated; when
+it is, the tail SHALL be the part retained, because that is where a failure is
+reported, and the elision SHALL be marked.
+
+This section SHALL be present only when the attempt actually resumed such a
+workspace. An attempt that prepared a clean checkout SHALL NOT be told it
+inherited edits, whatever the previous attempt's outcome was.
+
 #### Scenario: Prompt discourages unrelated change
 
 - **WHEN** a resolution prompt is generated
@@ -207,6 +241,19 @@ Repository-specific instructions from the registry SHALL be appended when presen
 
 - **WHEN** the agent determines the feedback should not be implemented
 - **THEN** its explanation is captured and the attempt does not publish a change
+
+#### Scenario: Resumed retry is told what validation rejected
+
+- **WHEN** a retry resumes the retained edits of an attempt that failed validation
+- **THEN** the prompt names the failing command, carries its captured output as
+  delimited orchestrator-authored data, and states that the edits are already
+  present in the workspace
+
+#### Scenario: A fresh attempt inherits no failure section
+
+- **WHEN** an attempt prepares a clean workspace
+- **THEN** the prompt contains no inherited-validation-failure section, including
+  when an earlier attempt of the same job failed validation
 
 ### Requirement: Secrets are withheld from the agent
 
