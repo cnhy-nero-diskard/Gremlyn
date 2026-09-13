@@ -67,8 +67,6 @@ export interface NormalizedEvent {
 export interface ParsedCommand {
   /** Command name without the leading `!`, e.g. `RESOLVE`. */
   name: string;
-  /** Whitespace-separated arguments following the command token. */
-  args: string[];
 }
 
 export interface ReviewThreadComment {

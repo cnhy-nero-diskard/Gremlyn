@@ -23,8 +23,7 @@ export type AuthorizationReason =
   | "fork-pull-request"
   | "command-unregistered"
   | "command-placement"
-  | "duplicate-command"
-  | "invalid-command-arguments";
+  | "duplicate-command";
 
 export type AuthorizationResult =
   | { kind: "authorized"; pullRequest: PullRequestInfo; model: string }
@@ -104,19 +103,7 @@ export async function authorizeCommand(
     );
     return reject("rejected", "fork-pull-request");
   }
-  if (command.args.length > 1) {
-    const result = reject("rejected", "invalid-command-arguments");
-    await options.github.postReviewReply(
-      event.owner,
-      event.repo,
-      event.prNumber,
-      event.commentId,
-      `Gremlyn rejected !${command.name}: expected at most one model argument, but received ${String(command.args.length)}.`,
-    );
-    return result;
-  }
-  const model = command.args[0] ?? repository.defaultModel;
-  return { kind: "authorized", pullRequest, model };
+  return { kind: "authorized", pullRequest, model: repository.defaultModel };
 }
 
 function sameLogin(left: string, right: string): boolean {

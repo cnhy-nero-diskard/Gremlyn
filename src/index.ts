@@ -29,6 +29,8 @@ export interface ShutdownHandlerOptions {
   closeConsole: () => Promise<void>;
   closeStore: () => void;
   release: () => void;
+  /** Resolves once any poll cycle already in flight when shutdown began has finished. */
+  awaitInFlightPoll?: () => Promise<unknown>;
   exit?: (code: number) => void;
   onComplete?: () => void;
   onError?: (error: unknown) => void;
@@ -49,6 +51,9 @@ export function createShutdownHandler(options: ShutdownHandlerOptions): () => Pr
     stopping = true;
     try {
       options.clearTimer();
+      // A poll cycle already running when shutdown began must finish before
+      // the store closes underneath it, or its next query throws.
+      await options.awaitInFlightPoll?.().catch(() => undefined);
       options.endStreams();
       await options.closeConsole();
       options.closeStore();
@@ -301,8 +306,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       port: config.consolePort,
       repositories: repositories.length,
     });
-    await poll();
-    const timer = setInterval(() => void poll(), config.pollIntervalSec * 1_000);
+    let inFlightPoll: Promise<void> = poll();
+    await inFlightPoll;
+    const timer = setInterval(() => {
+      inFlightPoll = poll();
+    }, config.pollIntervalSec * 1_000);
 
     let resolveStopped!: () => void;
     let rejectStopped!: (error: unknown) => void;
@@ -316,6 +324,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       closeConsole: () => consoleServer.close(),
       closeStore,
       release: () => lock.release(),
+      awaitInFlightPoll: () => inFlightPoll,
       onComplete: resolveStopped,
       onError: rejectStopped,
     });

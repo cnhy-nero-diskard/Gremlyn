@@ -79,6 +79,7 @@ test("command parser handles start-of-line, fences, inline code, quotes, and unk
     ["!RESOLVE", 1],
     ["   !RESOLVE", 1],
     ["context\n!RESOLVE model-a", 1],
+    ["!RESOLVE this changes the sort order because of the spec, please take a look", 1],
     ["```\n!RESOLVE\n```", 0],
     ["Use `!RESOLVE` here", 0],
     ["> !RESOLVE", 0],
@@ -86,9 +87,8 @@ test("command parser handles start-of-line, fences, inline code, quotes, and unk
     ["prefix !RESOLVE", 0],
   ];
   for (const [body, count] of cases) assert.equal(registry.detect(body).length, count, body);
-  assert.deepEqual(registry.detect("!RESOLVE model-a")[0], {
+  assert.deepEqual(registry.detect("!RESOLVE this explains why not")[0], {
     name: "RESOLVE",
-    args: ["model-a"],
   });
 });
 
@@ -123,5 +123,5 @@ test("a second command is registered without changes to ingestion or orchestrati
   const registry = new CommandRegistry();
   registry.register({ name: "RESOLVE", eligibleKinds: ["review-comment"] });
   registry.register({ name: "TEST", eligibleKinds: ["review-comment", "issue-comment"] });
-  assert.deepEqual(registry.detect("!TEST unit"), [{ name: "TEST", args: ["unit"] }]);
+  assert.deepEqual(registry.detect("!TEST unit"), [{ name: "TEST" }]);
 });

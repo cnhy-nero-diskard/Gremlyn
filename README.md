@@ -27,6 +27,8 @@ left untouched and cloned instead. Adopted attempts are marked in the console.
 - Node.js 22 or newer and npm 10 or newer
 - Git 2.x
 - Cline CLI 3.0.61, already authenticated with the provider used by your configured model
+  (both agent CLIs are version-pinned; `npm start` keeps the pins current — see
+  [Keeping the agent CLI pins current](#keeping-the-agent-cli-pins-current))
 - A dedicated GitHub account and token for Gremlyn
 
 The GitHub token should have only the repository permissions needed to read pull
@@ -187,7 +189,7 @@ attribution.
 
 ### OpenCode
 
-Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.29**),
+Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.30**),
 registered alongside or instead of Cline. Each configured agent declares an
 executor `kind` (`cline` or `opencode`), defaulting to the agent's own key —
 `agents.opencode` resolves to the OpenCode executor with no extra field
@@ -206,23 +208,44 @@ change beyond `agent: opencode`:
 - **Provider**: OpenCode has no separate provider argument — it is folded into
   the model id as `<namespace>/<model>` (`opencode models` lists every id the
   installation can reach). A repository naming an OpenCode agent does not need
-  a `provider` field at all. The console's repository settings offer two
-  entries in the Provider picker, one per OpenCode-hosted namespace:
-  **OpenCode Zen** (`opencode/<model>`, pay-as-you-go) and **OpenCode Go**
-  (`opencode-go/<model>`, the Go subscription). The two are genuinely separate
+  a `provider` field at all. The console's repository settings offer three
+  entries in the Provider picker, one per namespace `opencode auth login` can
+  authenticate: **OpenCode Zen** (`opencode/<model>`, pay-as-you-go),
+  **OpenCode Go** (`opencode-go/<model>`, the Go subscription), and **OpenAI**
+  (`openai/<model>`, your own OpenAI account). They are genuinely separate
   providers, not billing modes of one: `auth.json` holds a distinct credential
   for each, and their model rosters only partly overlap — Go alone serves
   `longcat-2.0`, the `hy*` tiers and `qwen3.7`/`3.8`, while Zen
   alone serves the Anthropic and most GPT tiers (1.18.29 also brought Zen
-  `glm-5.3`/`glm-5.3-flash`, previously Go-only). Both are covered by the same
-  seeded `auth.json`, so selecting a Go model needs no configuration beyond
-  having run `opencode auth login` for the Go plan. Picking "Custom provider"
+  `glm-5.3`/`glm-5.3-flash`, previously Go-only). OpenAI is the one namespace
+  OpenCode does not host: OpenCode logs into OpenAI directly — its login menu
+  offers "OpenAI (ChatGPT Plus/Pro or API key)" — and those models bill to
+  whichever of the two you authenticated, which is also why the picker shows
+  them without a subscription badge. Note this is _not_ the same route as
+  Cline's **OpenAI Codex** provider, which is Cline's own
+  ChatGPT-subscription OAuth driven by the Cline binary; neither executor can
+  use the other's credential, so each is offered only to repositories running
+  its own agent. All three are covered by the same seeded `auth.json`, so
+  selecting a Go or OpenAI model needs no configuration beyond having run
+  `opencode auth login` for that plan. Picking "Custom provider"
   instead (shared with Cline) still works for any other `provider/model`
   OpenCode understands — an installation-specific one you authenticated
   yourself, say — and whatever is typed there is accepted and ignored by the
   executor either way. Bumping the pinned OpenCode version means re-pasting
-  that command's output into `OPENCODE_ZEN_MODEL_IDS` and
-  `OPENCODE_GO_MODEL_IDS` in `src/agent/provider-catalog.ts`.
+  that command's output into `OPENCODE_ZEN_MODEL_IDS`,
+  `OPENCODE_GO_MODEL_IDS`, and `OPENCODE_OPENAI_MODEL_IDS` in
+  `src/agent/provider-catalog.ts`, then setting `OPENCODE_ROSTER_VERSION`
+  there to the new pin. `pin:sync` bumps the pin on its own but cannot refresh
+  a hand-pasted roster, so that constant is what a test compares against
+  `EXPECTED_OPENCODE_VERSION` — a bump stays red until the lists are
+  refreshed. Note the rosters are served dynamically, so ids also come and go
+  between releases; re-paste, do not assume the previous list is still
+  current.
+- **Provider/executor pairing**: A Cline repository configured with the
+  `opencode` provider is refused per attempt, before its workspace is prepared.
+  Cline's OpenCode provider runs tools inside a long-lived server whose working
+  directory was fixed when the server started, so merely warning at startup
+  would leave the attempt's workspace unprotected.
 - **Retries**: OpenCode's CLI has no retry flag, so `agent_defaults.retries`
   is enforced by Gremlyn itself, re-running the whole invocation up to that
   many times on failure — see the comment in `config.example.yaml`. This
@@ -261,6 +284,46 @@ Then add `!RESOLVE` as a reply in an inline PR review thread authored by an allo
 
 Stop with `Ctrl+C`. Gremlyn marks jobs left in transient states as interrupted on the next startup; it does not silently rerun them. Retrying that interrupted job may resume its retained PR workspace when the recorded head and deterministic path still match; unrelated dirty workspaces remain blocked.
 
+### Keeping the agent CLI pins current
+
+Both agent CLIs are pinned to one release (`EXPECTED_CLINE_VERSION`,
+`EXPECTED_OPENCODE_VERSION`) and startup refuses anything else, because each
+executor builds argv against a surface that was probed by hand. OpenCode ships
+patch releases several times a week and updates itself, so that gate would
+otherwise stop a working installation over a release that changed nothing
+Gremlyn passes.
+
+`npm start` therefore runs the pin sync first (`prestart`). It compares each
+installed CLI against its pin and, when they differ, re-probes the surface the
+executor actually depends on before doing anything:
+
+- **in sync** — silent; startup proceeds.
+- **newer, surface intact** — the pin and its documented mentions are rewritten,
+  and startup proceeds. The rewrite is a real source change: commit it.
+- **surface moved** — nothing is written and the pin stays put. Startup then
+  refuses with the usual `unsupported ... version`, which is the correct
+  outcome: a flag the executor passes has been renamed or dropped.
+
+The surface checks are the same commands the pin's own bump note names —
+`opencode run --help`, `opencode debug paths`, `opencode export --help`, and
+`cline --help` — asserting each flag the executor passes (`--dir`, `-m`,
+`--format json`, `--auto`, `--thinking`, `--variant`, the `sessionID`
+positional, and Cline's `--data-dir`/`--auto-approve`/`--retries`/`-t`). It also
+reports when `opencode models` no longer matches the bundled picker roster,
+which never blocks a run but does leave the console's model list stale.
+
+```powershell
+npm run pin:sync    # sync now, writing any verified bump
+npm run pin:check   # report only; exits non-zero when a pin is behind (CI)
+npm run pin:sync -- --kind opencode
+```
+
+A bump made this way is verified against the CLI's help surface, not against a
+real invocation. Before trusting one for a long run, re-probe with a live
+credential: `npm run probe:agent -- --kind opencode --provider <id> --model <id>`.
+`start:built` runs compiled output and has no `prestart`; there, run
+`npm run pin:sync; npm run build` first.
+
 ## Development
 
 ```powershell
@@ -282,15 +345,16 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `missing validation-commands` or `pass --yes to accept the proposal`: use `--yes` for inferred values in automation, or provide explicit flags such as `--validation-command` and `--workspace-root`.
 - `github token missing` or `console token missing`: define the named environment variable in the same PowerShell process before starting.
 - `token authenticates as ..., expected ...`: correct `github.orchestrator_login` or use the dedicated account's token.
-- `unsupported Cline version` or `unsupported OpenCode version`: install the pinned release (Cline 3.0.61, OpenCode 1.18.29); startup refuses a drifting CLI surface rather than failing during a job.
+- `unsupported Cline version` or `unsupported OpenCode version`: run `npm run pin:sync` — when the newer CLI still exposes the probed surface it bumps the pin for you, and `npm start` does this automatically. Seeing this error after a sync means the surface really moved: reinstall the pinned release (Cline 3.0.61, OpenCode 1.18.30) with `npm install -g opencode-ai@1.18.30`, then re-probe before pinning forward. Startup refuses a drifting CLI surface rather than failing during a job.
 - `no production executor is registered for agent "..." (kind "...")`: the agent's `kind` (or its id, when `kind` is omitted) does not match a registered executor — use `cline` or `opencode`.
 - `credential source for agent "cline" not found` or `is not readable`: set `agents.cline.credential_source` to the authenticated `~/.cline/data` directory (e.g. `C:/Users/<you>/.cline/data`) and confirm `secrets.json` exists; startup checks this before accepting jobs. For an OpenCode agent, the equivalent is `auth.json` under its data root (`opencode debug paths`).
 - `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` (or `opencode auth`) and that the credential source still contains its declared files, then retry; this is distinct from `agent-nonzero-exit`.
+- `provider-executor-mismatch`: the provider cannot be driven by the configured agent, so tool execution would leave the attempt's workspace; Gremlyn refuses the attempt before preparing that workspace. Change the provider/agent pairing — re-authenticating will not help. This is distinct from both `agent-auth-failed` and `agent-billing-failed`.
 - `agent-billing-failed`: the credential was accepted but the provider refused the request for lack of credit or a payment method — add a payment method or credit to the account; re-authenticating will not help. Distinct from `agent-auth-failed`.
 - `another Gremlyn instance is already using data directory`: stop the other process before starting a second instance against the same `data_dir`.
-- `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console, except that retrying an interrupted, cancelled, timed-out, or crashed-nonzero-exit agent may resume its own deterministic workspace when its recorded PR head still matches.
+- `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console, except that a retry may resume the attempt's own deterministic workspace when its recorded PR head still matches. That applies to an interrupted, cancelled, timed-out, or crashed-nonzero-exit agent, and to an attempt blocked at publication by a failing validation command — a retry of that last case resumes the edits and tells the agent which command rejected them, so there is no need to clean the workspace by hand first. Every other publication block (`no-changes`, `head-changed`, `pull-request-closed`, a conflicted or invalid workspace) still requires the manual route.
 - `pull-request-closed`, `head-changed`, or `push-rejected`: refresh the PR state and retry deliberately. Gremlyn never force-pushes.
 - Console returns `401`: sign in again at `/auth`; every job-data and action route requires the console token.
-- No command is detected: `!RESOLVE` must be a standalone token at the start of a line in an inline review-comment thread, not a top-level PR conversation comment or quoted code.
+- No command is detected: `!RESOLVE` must be at the start of a line (text after it on that line is ignored) in an inline review-comment thread, not a top-level PR conversation comment or quoted code.
 
 Captured agent and validation output is stored beneath `data_dir`; SQLite stores references and structured lifecycle records. Configured secrets are redacted from logs and console views.

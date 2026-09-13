@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
@@ -16,7 +16,7 @@ import {
   type ProviderCatalogSnapshot,
 } from "../agent/provider-catalog.js";
 import { writeAgentOutput } from "../agent/output.js";
-import { buildResolutionPrompt } from "../agent/prompt.js";
+import { buildResolutionPrompt, type InheritedValidationFailure } from "../agent/prompt.js";
 import { reconstructReviewContext } from "../context/review.js";
 import { authorizeCommand } from "../gate/authorize.js";
 import type { GitHubClient } from "../github/client.js";
@@ -65,12 +65,31 @@ function samePath(left: string, right: string): boolean {
 }
 
 /**
- * A retry may inherit edits only from a run that stopped abruptly rather than
- * completing its own cleanup — interrupted, cancelled, timed out, or the agent
- * process itself exiting nonzero mid-run. The deterministic path and recorded
- * head are checked again after GitHub context reconstruction, so a force-push
- * or a manually supplied path cannot turn this into a general dirty-workspace
- * bypass.
+ * A retry may inherit edits whose provenance is this job's own agent: made by a
+ * previous attempt, in this workspace, against this recorded head. That is the
+ * admission criterion, not how badly the previous attempt went — the rule the
+ * carve-out sits inside exists to stop the orchestrator discarding uncommitted
+ * work it cannot vouch for, and work it *can* vouch for is exactly what these
+ * cases are.
+ *
+ * Two shapes qualify. A run that stopped abruptly rather than completing its own
+ * cleanup — interrupted, cancelled, timed out, or the agent process exiting
+ * nonzero mid-run. And a run that finished cleanly but was blocked at publication
+ * because its validation commands failed: its edits are intact and fixing them is
+ * precisely what the retry is for. Without that second case every retry of a
+ * validation failure dies at `workspace-dirty` before an agent launches, and the
+ * only way forward is to throw the work away by hand.
+ *
+ * No other publication block is admitted. `no-changes` retained nothing;
+ * `head-changed` fails the head guard below anyway and its edits were made
+ * against a base that has moved; `workspace-conflicted` and `workspace-invalid`
+ * are the states the rule protects; `pull-request-closed` has nowhere to publish
+ * to. They are excluded by enumerating the one admitted reason, so a reason added
+ * later must be admitted deliberately.
+ *
+ * The deterministic path and recorded head are checked again after GitHub context
+ * reconstruction, so a force-push or a manually supplied path cannot turn this
+ * into a general dirty-workspace bypass.
  *
  * This is about *uncommitted* edits, which is why an attempt cancelled between
  * its commit and its push is not a case here: it leaves a clean workspace whose
@@ -89,11 +108,24 @@ function canResumeRetainedWorkspace(
   if (attempt.outcome === "interrupted") return true;
   if (attempt.has_uncommitted_changes !== 1) return false;
   if (attempt.outcome === "cancelled") return true;
-  return (
-    attempt.outcome === "failed" &&
-    attempt.failure_stage === "running" &&
-    (attempt.failure_reason === "agent-timeout" || attempt.failure_reason === "agent-nonzero-exit")
-  );
+  if (attempt.outcome !== "failed") return false;
+  if (attempt.failure_stage === "running") {
+    return (
+      attempt.failure_reason === "agent-timeout" || attempt.failure_reason === "agent-nonzero-exit"
+    );
+  }
+  return attempt.failure_stage === "publishing" && attempt.failure_reason === "validation-failed";
+}
+
+/**
+ * The workspace a retry is permitted to inherit, and the attempt that left it.
+ * `attemptId` is carried so a resumed retry can read that attempt's failing
+ * validation run: the agent has to be told what its predecessor's edits failed.
+ */
+interface RetainedWorkspace {
+  attemptId: number;
+  workspacePath: string;
+  headSha: string;
 }
 
 /**
@@ -290,14 +322,64 @@ export class ResolutionOrchestrator {
       job.pr_number,
       job.comment_id,
       repository.model,
-      { name: job.command, args: [] },
+      { name: job.command },
       canResumeRetainedWorkspace(priorAttempt, repository.workspaceRoot, job.pr_number)
         ? {
+            attemptId: priorAttempt!.id,
             workspacePath: priorAttempt!.workspace_path!,
             headSha: priorAttempt!.head_sha_at_prepare!,
           }
         : undefined,
     );
+  }
+
+  /**
+   * The validation command that blocked a previous attempt, with its captured
+   * output, for a retry resuming that attempt's edits.
+   *
+   * The runner stops at the first failure and records at most one nonzero row,
+   * so the newest one is the command the retry has to make pass. Output was
+   * redacted when it was captured; nothing here reads a raw stream.
+   *
+   * Every failure to reconstruct it is swallowed. Retained artifacts are
+   * reclaimed on a schedule, so an output file that has aged out is an ordinary
+   * state, not a fault — the attempt runs with a thinner prompt rather than
+   * failing over a file the agent only needed for context.
+   */
+  private inheritedValidationFailure(attemptId: number): InheritedValidationFailure | undefined {
+    const row = this.options.db
+      .prepare(
+        `SELECT command, exit_code, output_ref FROM validation_runs
+           WHERE attempt_id = ? AND exit_code != 0
+           ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(attemptId) as { command: string; exit_code: number; output_ref: string } | undefined;
+    if (row === undefined) return undefined;
+    let command: string[];
+    try {
+      const parsed: unknown = JSON.parse(row.command);
+      if (!Array.isArray(parsed)) return undefined;
+      command = parsed.map(String);
+    } catch {
+      return undefined;
+    }
+    let output = "";
+    try {
+      const captured = JSON.parse(readFileSync(row.output_ref, "utf8")) as {
+        stdout?: string;
+        stderr?: string;
+      };
+      output = [captured.stdout ?? "", captured.stderr ?? ""]
+        .filter((part) => part.length > 0)
+        .join("\n");
+    } catch (error) {
+      this.options.logger.debug("inherited validation output unavailable", {
+        attemptId,
+        outputRef: row.output_ref,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return { command, exitCode: row.exit_code, output };
   }
 
   private enqueueAttempt(
@@ -308,7 +390,7 @@ export class ResolutionOrchestrator {
     commentId: number,
     model: string,
     command: ParsedCommand,
-    retainedWorkspace?: { workspacePath: string; headSha: string },
+    retainedWorkspace?: RetainedWorkspace,
   ): QueuedJob {
     const completed = this.queue.enqueue({
       jobId,
@@ -375,7 +457,7 @@ export class ResolutionOrchestrator {
     commentId: number;
     model: string;
     command: ParsedCommand;
-    retainedWorkspace?: { workspacePath: string; headSha: string };
+    retainedWorkspace?: RetainedWorkspace;
     signal: AbortSignal;
   }): Promise<{ commitSha?: string }> {
     const { jobId, attemptId, repository, prNumber, commentId, signal } = input;
@@ -427,6 +509,16 @@ export class ResolutionOrchestrator {
           : { agentInstructions: repository.agentInstructions }),
       });
       this.jobs.setReviewContext(jobId, context);
+      // Re-checked here rather than trusted from the retry: the recorded head is
+      // reconciled against the pull request only now, so a force-push between the
+      // two attempts must still close the resume off.
+      const resumeRetained =
+        input.retainedWorkspace !== undefined &&
+        samePath(
+          input.retainedWorkspace.workspacePath,
+          workspacePathFor(repository.workspaceRoot, prNumber),
+        ) &&
+        input.retainedWorkspace.headSha === context.headSha;
       const workspace = await prepareWorkspace({
         sourcePath: repository.sourcePath,
         workspaceRoot: repository.workspaceRoot,
@@ -434,13 +526,7 @@ export class ResolutionOrchestrator {
         headBranch: context.headBranch,
         headSha: context.headSha,
         seedFiles: repository.workspaceSeedFiles,
-        resumeDirtyWorkspace:
-          input.retainedWorkspace !== undefined &&
-          samePath(
-            input.retainedWorkspace.workspacePath,
-            workspacePathFor(repository.workspaceRoot, prNumber),
-          ) &&
-          input.retainedWorkspace.headSha === context.headSha,
+        resumeDirtyWorkspace: resumeRetained,
         adoptExistingCheckout: repository.adoptWorktree,
         attemptId,
         ...(this.options.operatorActions === undefined
@@ -456,6 +542,23 @@ export class ResolutionOrchestrator {
         path: workspace.path,
         adopted: workspace.adopted,
       });
+
+      // Only a workspace that actually still holds edits carries an inherited
+      // failure. A resume was *permitted* above; whether anything was resumed is
+      // a question about the working tree, and telling an agent it inherited
+      // edits that are not there would describe code it cannot find.
+      const inheritedFailure =
+        resumeRetained && (await statusEntries(workspace.path)).length > 0
+          ? this.inheritedValidationFailure(input.retainedWorkspace!.attemptId)
+          : undefined;
+      if (inheritedFailure !== undefined) {
+        this.options.logger.info("resuming retained edits after validation failure", {
+          jobId,
+          attemptId,
+          priorAttemptId: input.retainedWorkspace!.attemptId,
+          command: inheritedFailure.command.join(" "),
+        });
+      }
 
       stage = "running";
       this.jobs.setStatus(jobId, stage, attemptId);
@@ -520,7 +623,7 @@ export class ResolutionOrchestrator {
           model: input.model,
           provider: repository.provider,
           effort: repository.effort,
-          prompt: buildResolutionPrompt(context, this.options.orchestratorLogin),
+          prompt: buildResolutionPrompt(context, this.options.orchestratorLogin, inheritedFailure),
           env: buildAgentEnvironment(process.env, executor.additionalEnvironment(attemptDataDir!)),
           ...((repository.timeoutSec ?? this.options.timeoutSec) === undefined
             ? {}

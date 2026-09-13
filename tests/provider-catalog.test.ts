@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   bundledProviderCatalog,
   catalogFromFeaturedFeed,
+  OPENCODE_ROSTER_VERSION,
   ProviderCatalog,
 } from "../src/agent/provider-catalog.js";
+import { EXPECTED_OPENCODE_VERSION } from "../src/agent/opencode.js";
 
 test("bundled provider catalog exposes current Cline, Codex, and OpenCode choices", () => {
   const catalog = bundledProviderCatalog();
@@ -13,11 +15,13 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   const codex = catalog.providers.find((provider) => provider.id === "openai-codex");
   const opencode = catalog.providers.find((provider) => provider.id === "opencode");
   const opencodeGo = catalog.providers.find((provider) => provider.id === "opencode-go");
+  const openai = catalog.providers.find((provider) => provider.id === "openai");
   assert.ok(cline);
   assert.ok(pass);
   assert.ok(codex);
   assert.ok(opencode);
   assert.ok(opencodeGo);
+  assert.ok(openai);
   assert.ok(cline.models.some((model) => model.id === "moonshotai/kimi-k3"));
   assert.ok(pass.models.some((model) => model.id === "cline-pass/kimi-k3"));
   assert.deepEqual(
@@ -76,9 +80,27 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   // rather than derived from Zen's `-free` suffix (which Go never uses).
   assert.ok(opencodeGo.models.every((model) => model.tier === "subscribed"));
   assert.ok(!opencodeGo.models.some((model) => model.id.endsWith("-free")));
+  // OpenCode logs into the operator's own OpenAI account as a third namespace
+  // on the same executor and the same seeded auth.json, so it shares the kind
+  // for the same reason Go does.
+  assert.deepEqual(openai.kinds, ["opencode"]);
+  assert.equal(openai.defaultModelId, "openai/gpt-5.6-sol");
+  assert.ok(openai.models.every((model) => model.id.startsWith("openai/")));
+  assert.equal(openai.models.length, 15);
+  assert.equal(new Set(openai.models.map((model) => model.id)).size, 15);
+  // One namespace serves both ChatGPT-subscription and API-key installations,
+  // so no tier may be asserted for either: Go's uniform "subscribed" badge
+  // would misdescribe a key, and Zen's `-free` rule has nothing to match.
+  assert.ok(openai.models.every((model) => model.tier === undefined));
+  // Cline's Codex entry is a different route to OpenAI, driven by a different
+  // binary against a credential this one cannot use. They must stay distinct
+  // entries on distinct kinds, or the picker would offer each to the wrong
+  // repository.
+  assert.notEqual(openai.id, codex.id);
+  assert.deepEqual(codex.kinds, ["cline"]);
 });
 
-test("OpenCode Go survives a live Cline feed refresh", async () => {
+test("OpenCode namespaces survive a live Cline feed refresh", async () => {
   // The Cline feed rebuilds the whole snapshot, so a namespace that exists
   // only in the bundled fallback would vanish the moment the console
   // refreshed — leaving the Go models selectable offline and nowhere else.
@@ -95,6 +117,9 @@ test("OpenCode Go survives a live Cline feed refresh", async () => {
   const go = snapshot.providers.find((provider) => provider.id === "opencode-go");
   assert.ok(go);
   assert.equal(go.models.length, 27);
+  const openai = snapshot.providers.find((provider) => provider.id === "openai");
+  assert.ok(openai);
+  assert.equal(openai.models.length, 15);
 });
 
 test("model names humanize dashed version suffixes and known initialisms", () => {
@@ -120,6 +145,42 @@ test("OpenCode Go model names humanize the same way", () => {
   assert.equal(nameOf("opencode-go/kimi-k3"), "Kimi K3");
   assert.equal(nameOf("opencode-go/qwen3.8-max"), "Qwen3.8 Max");
   assert.equal(nameOf("opencode-go/hy4-preview"), "Hy4 Preview");
+});
+
+test("OpenAI model names humanize the same way, including the -fast variants", () => {
+  const openai = bundledProviderCatalog().providers.find((provider) => provider.id === "openai");
+  assert.ok(openai);
+  const nameOf = (id: string) => openai.models.find((model) => model.id === id)?.name;
+  assert.equal(nameOf("openai/gpt-5.6-sol"), "GPT 5.6 Sol");
+  assert.equal(nameOf("openai/gpt-5.6-sol-fast"), "GPT 5.6 Sol Fast");
+  assert.equal(nameOf("openai/gpt-5.4-mini-fast"), "GPT 5.4 Mini Fast");
+  assert.equal(nameOf("openai/gpt-6-astra"), "GPT 6 Astra");
+  assert.equal(nameOf("openai/gpt-5.3-codex-spark"), "GPT 5.3 Codex Spark");
+});
+
+/**
+ * `pin:sync` bumps EXPECTED_OPENCODE_VERSION on its own across the patch
+ * releases OpenCode ships weekly, but the rosters below it are hand-pasted and
+ * it cannot refresh those. That is not hypothetical: the 1.18.30 bump left
+ * `opencode-go/deepseek-flash` out of the picker, and nothing noticed, because
+ * every layer beneath the catalog passes `-m` through verbatim — the model was
+ * simply unreachable except by typing it into the custom path.
+ *
+ * So the marker is human-owned and this test is the gate: a pin bump goes red
+ * until someone re-pastes `opencode models` and re-dates the roster. It is
+ * deliberately not a diff against the live command, which would fail on
+ * OpenCode's release schedule rather than on a change to this repository —
+ * these rosters are served dynamically, and `opencode-go/omen-alpha` was
+ * withdrawn upstream within an hour of the current paste.
+ */
+test("the OpenCode rosters were pasted for the pinned release", () => {
+  assert.equal(
+    OPENCODE_ROSTER_VERSION,
+    EXPECTED_OPENCODE_VERSION,
+    `the OpenCode rosters were pasted for ${OPENCODE_ROSTER_VERSION} but the pin is now ` +
+      `${EXPECTED_OPENCODE_VERSION}: re-run \`opencode models\`, re-paste the OPENCODE_* id ` +
+      `lists in src/agent/provider-catalog.ts, and set OPENCODE_ROSTER_VERSION to match`,
+  );
 });
 
 test("provider catalog refreshes from the Cline featured-model feed", async () => {

@@ -15,6 +15,7 @@ import { Store } from "../src/store/db.js";
 import { JOB_LOG_TAIL, readHealth, readJobDetail } from "../src/console/queries.js";
 import { SharedChangeTicker } from "../src/console/stream.js";
 import { jobRegions } from "../src/console/views/job.js";
+import { ProviderCatalog } from "../src/agent/provider-catalog.js";
 import {
   assetHash,
   clientScript,
@@ -230,11 +231,18 @@ test("dashboard shows repositories plus running, queued, success and failure sec
 });
 
 test("an OpenCode repository renders on the dashboard and its settings are configurable through the console", async () => {
-  // OpenCode has no ProviderCatalog entries (design D-opencode's non-goal), so
-  // its repository must be configurable purely through the existing
-  // agent-agnostic "Custom provider" free-text path — the same route used
-  // above for Cline — with no console-side change.
+  // The picker offers both OpenCode-hosted namespaces, so this exercises the
+  // Go subscription through the catalog rather than the custom free-text path.
   const data = fixture();
+  data.options.agents = CONSOLE_AGENTS;
+  data.options.providerCatalog = new ProviderCatalog({
+    fetcher: async () =>
+      new Response(
+        JSON.stringify({ recommended: [{ id: "example/new-model" }], free: [], clinePass: [] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    now: () => 1,
+  });
   const opencodeRepoId = Number(
     data.store.db
       .prepare(
@@ -258,20 +266,40 @@ test("an OpenCode repository renders on the dashboard and its settings are confi
   assert.equal(dashboard.statusCode, 200);
   assert.match(dashboard.body, /acme\/opencode-widgets/);
   assert.match(dashboard.body, /opencode\/claude-sonnet-5/);
+  assert.match(dashboard.body, /<option value="opencode-go">/);
+  assert.match(dashboard.body, /opencode-go\/kimi-k3/);
 
   const updated = await app.inject({
     method: "POST",
     url: `/repos/${opencodeRepoId}/model-provider`,
     headers: AUTH,
-    payload: { provider: "opencode", model: "opencode/gpt-5.4", effort: "xhigh" },
+    payload: { provider: "opencode-go", model: "opencode-go/kimi-k3", effort: "xhigh" },
   });
   assert.equal(updated.statusCode, 200);
   assert.deepEqual(
     data.store.db
       .prepare("SELECT provider, model, effort FROM repositories WHERE id = ?")
       .get(opencodeRepoId),
-    { provider: "opencode", model: "opencode/gpt-5.4", effort: "xhigh" },
+    { provider: "opencode-go", model: "opencode-go/kimi-k3", effort: "xhigh" },
   );
+  const refreshed = await app.inject({ method: "GET", url: "/model-catalog", headers: AUTH });
+  assert.equal(refreshed.statusCode, 200);
+  const refreshedCatalog = refreshed.json() as {
+    source: string;
+    providers: Array<{ id: string; models: Array<{ id: string }> }>;
+  };
+  assert.equal(refreshedCatalog.source, "cline-api");
+  const go = refreshedCatalog.providers.find((provider) => provider.id === "opencode-go");
+  assert.ok(go);
+  assert.ok(go.models.some((model) => model.id === "opencode-go/kimi-k3"));
+  const afterRefresh = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  assert.equal(afterRefresh.statusCode, 200);
+  assert.match(afterRefresh.body, /data-catalog-source="cline-api"/);
+  assert.match(afterRefresh.body, /data-saved-provider="opencode-go"/);
+  assert.match(afterRefresh.body, /data-saved-model="opencode-go\/kimi-k3"/);
+  assert.match(afterRefresh.body, /<option value="opencode-go" selected>/);
+  assert.match(afterRefresh.body, /<option value="opencode-go\/kimi-k3"[^>]* selected>/);
+  assert.match(afterRefresh.body, /data-repo-provider-input[^>]* hidden/);
   await app.close();
   data.store.close();
 });

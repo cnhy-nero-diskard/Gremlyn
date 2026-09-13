@@ -36,15 +36,11 @@ export class CommandRegistry {
         continue;
       }
       if (trimmed.startsWith(">")) continue;
-      const match = /^!([A-Za-z][A-Za-z0-9-]*)(?:\s+(.*?))?\s*$/u.exec(trimmed);
+      const match = /^!([A-Za-z][A-Za-z0-9-]*)(?:\s|$)/u.exec(trimmed);
       if (!match) continue;
       const definition = this.get(match[1]!);
       if (!definition) continue;
-      const rawArgs = match[2]?.trim();
-      found.push({
-        name: definition.name,
-        args: rawArgs ? rawArgs.split(/\s+/u) : [],
-      });
+      found.push({ name: definition.name });
     }
     return found;
   }
