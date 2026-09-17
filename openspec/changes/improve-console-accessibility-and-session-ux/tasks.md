@@ -22,11 +22,11 @@
 
 ## 4. Stable Live Reconciliation
 
-- [ ] 4.1 Add unique stable live keys and focus-fallback anchors to dashboard repositories/jobs, Commands, Audit, job attempts, validation rows, and shared live panels; verify server-render tests assert key uniqueness and deterministic identity from persisted ids.
-- [ ] 4.2 Implement the dependency-free keyed fragment reconciler that reuses unchanged nodes and updates/inserts/removes keyed content in server order; verify a browser fixture proves an unchanged record and landmark keep object identity while a sibling changes.
-- [ ] 4.3 Preserve focused controls, selection ranges, form/confirmation text, details state, and scroll anchors across keyed updates; verify browser scenarios cover job controls, reset confirmation, table details, log filters, and repository fields without focus jumps or lost input.
-- [ ] 4.4 Add removal fallback behavior that focuses the next logical record or region heading only when the focused record disappears; verify the fixture removes a focused row, observes one contextual announcement, and confirms unrelated updates never move focus.
-- [ ] 4.5 Expose reconciliation hooks for repository baseline/draft/latest state, contextual action feedback, and keyed job-safety steps; verify compatibility fixtures preserve a settings draft/conflict, local recovery message, and virtual-cursor context while related fragments update.
+- [x] 4.1 Add unique stable live keys and focus-fallback anchors to dashboard repositories/jobs, Commands, Audit, job attempts, validation rows, and shared live panels; verify server-render tests assert key uniqueness and deterministic identity from persisted ids.
+- [x] 4.2 Implement the dependency-free keyed fragment reconciler that reuses unchanged nodes and updates/inserts/removes keyed content in server order; verify a browser fixture proves an unchanged record and landmark keep object identity while a sibling changes.
+- [x] 4.3 Preserve focused controls, selection ranges, form/confirmation text, details state, and scroll anchors across keyed updates; verify browser scenarios cover job controls, reset confirmation, table details, log filters, and repository fields without focus jumps or lost input.
+- [x] 4.4 Add removal fallback behavior that focuses the next logical record or region heading only when the focused record disappears; verify the fixture removes a focused row, observes one contextual announcement, and confirms unrelated updates never move focus.
+- [x] 4.5 Expose reconciliation hooks for repository baseline/draft/latest state, contextual action feedback, and keyed job-safety steps; verify compatibility fixtures preserve a settings draft/conflict, local recovery message, and virtual-cursor context while related fragments update.
 
 ## 5. Scoped Status and Announcement Channels
 

@@ -429,7 +429,8 @@ test("the dashboard filters the provider catalog by each repository's agent kind
   const app = buildConsoleServer(data.options);
   const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
   assert.equal(dashboard.statusCode, 200);
-  const cards = dashboard.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/gu) ?? [];
+  const cards =
+    dashboard.body.match(/<article class="card repo-card"[^>]*>[\s\S]*?<\/article>/gu) ?? [];
   assert.equal(cards.length, 2);
   const clineCard = cards.find((card) => card.includes('data-agent-kind="cline"'));
   const opencodeCard = cards.find((card) => card.includes('data-agent-kind="opencode"'));
@@ -475,9 +476,9 @@ test("a persisted provider mismatch stays visible and is not demoted to custom",
   const app = buildConsoleServer(data.options);
   const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
   assert.equal(response.statusCode, 200);
-  const card = (response.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/u) ?? [
-    "",
-  ])[0];
+  const card = (response.body.match(
+    /<article class="card repo-card"[^>]*>[\s\S]*?<\/article>/u,
+  ) ?? [""])[0];
   assert.match(card, /data-provider-mismatch/);
   assert.match(card, /Provider mismatch/);
   assert.match(card, /Current provider: opencode/);
@@ -1315,6 +1316,26 @@ test("scrollable panels and keyed details survive a live region swap", () => {
   // Reasoning is collapsed behind a <details>; narration is not.
   assert.match(html, /<details[^>]*>.*Thinking/su);
   assert.match(html, /activity-open/u, "an unfinished block says it is still writing");
+});
+
+test("live console records expose stable identity and the client uses keyed reconciliation", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  const job = await app.inject({ method: "GET", url: `/jobs/${data.jobId}`, headers: AUTH });
+  assert.match(
+    dashboard.body,
+    new RegExp(`data-live-key="repository-${String(data.repoId)}"`, "u"),
+  );
+  assert.match(dashboard.body, new RegExp(`data-live-key="job-${String(data.jobId)}"`, "u"));
+  assert.match(job.body, /data-live-key="attempt-/u);
+  assert.match(job.body, /data-live-key="validation-/u);
+  assert.match(job.body, /data-live-key="log-/u);
+  assert.match(clientScript, /reconcileFragment/u);
+  assert.match(clientScript, /registerRepositoryState/u);
+  assert.doesNotMatch(clientScript, /root\.innerHTML\s*=/u);
+  await app.close();
+  data.store.close();
 });
 
 test("an attempt card never presents an unpushed commit as published work", () => {

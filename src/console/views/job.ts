@@ -144,9 +144,9 @@ function jobHeader(model: JobDetail): string {
   const { owner, name, pr_number: pr, comment_id: comment } = model.job;
   const repo = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
   const prUrl = `https://github.com/${repo}/pull/${String(pr)}`;
-  const title = `<div class="job-title"><h1>${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span><span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
+  const title = `<div class="job-title"><h1 data-focus-fallback tabindex="-1">${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span><span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
   const links = `<p class="job-links"><a href="${prUrl}">Pull request #${String(pr)} ↗</a><a href="${prUrl}#discussion_r${String(comment)}">Triggering comment discussion_r${String(comment)} ↗</a></p>`;
-  return `<header class="page-head"><nav class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></nav>${title}${links}${statStrip(model)}<p class="sr-status" data-live-status role="status"></p></header>`;
+  return `<header class="page-head"><div class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></div>${title}${links}${statStrip(model)}</header>`;
 }
 
 /**
@@ -206,7 +206,7 @@ export function jobRegions(
   const logControls = `<div class="actions log-controls"><label class="log-search">Search <input data-log-filter placeholder="Filter entries"></label><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div>`;
   return {
     "job-detail-region": `${jobHeader(model)}${activityPanel(model, timeZone)}${jobAside(model, timeZone)}`,
-    "job-log-region": `<section class="panel" id="log-viewer" data-resizable="log"><h2>Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs, timeZone)}</div></section>`,
+    "job-log-region": `<section class="panel" id="log-viewer" data-resizable="log"><h2 data-focus-fallback tabindex="-1">Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs, timeZone)}</div></section>`,
   };
 }
 

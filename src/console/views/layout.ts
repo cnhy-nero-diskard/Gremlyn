@@ -22,10 +22,13 @@ export function layout(
   const navigation = authenticated
     ? `<nav aria-label="Primary"><a href="/"${current("dashboard")}>Dashboard</a><a href="/commands"${current("commands")}>Commands</a><a href="/audit"${current("audit")}>Audit</a><form method="post" action="/auth/sign-out"><button type="submit">Sign out</button></form></nav>`
     : "";
+  const liveChannels = authenticated
+    ? `<p class="console-status" data-connection-status role="status" aria-live="polite" aria-atomic="true">Live updates are ready.</p><div class="sr-only" data-operation-announcer role="status" aria-live="polite" aria-atomic="true"></div>`
+    : "";
   // The job page runs two live panels side by side and needs the room; the
   // list pages read better held to a comfortable measure.
   const shell = options.wide ? "shell shell-wide" : "shell";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${stylesheetPath}"></head><body><div class="${shell}"><header class="site-header"><strong>Gremlyn operator console</strong>${navigation}</header><main>${body}</main>${stream}</div><script src="${clientScriptPath}" defer></script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${stylesheetPath}"></head><body><div class="${shell}"><header class="site-header"><strong>Gremlyn operator console</strong>${navigation}</header>${liveChannels}<main>${body}</main>${stream}</div><script src="${clientScriptPath}" defer></script></body></html>`;
 }
 
 export function authLayout(reason?: SignInReason): string {

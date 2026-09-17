@@ -39,7 +39,7 @@ export function commandsView(commands: ProcessedCommandModel[], timeZone?: strin
       ],
     })),
   });
-  return `<h1>Command ingestion</h1><p>Observed commands, including requests that were refused or produced no job.</p><section class="panel">${table}</section>`;
+  return `<h1 data-focus-fallback tabindex="-1">Command ingestion</h1><p>Observed commands, including requests that were refused or produced no job.</p><section class="panel">${table}</section>`;
 }
 
 const auditColumns = [
@@ -69,5 +69,5 @@ export function auditView(actions: OperatorActionModel[], timeZone?: string): st
       ],
     })),
   });
-  return `<h1>Operator audit</h1><p>Every manual action is recorded with its target and effect.</p><section class="panel">${table}</section>`;
+  return `<h1 data-focus-fallback tabindex="-1">Operator audit</h1><p>Every manual action is recorded with its target and effect.</p><section class="panel">${table}</section>`;
 }

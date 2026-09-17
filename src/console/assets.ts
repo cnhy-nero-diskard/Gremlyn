@@ -140,6 +140,10 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .muted { color: var(--muted); }
 .sr-status { min-height: 1.5rem; color: var(--muted); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.console-status { margin: 0 0 1rem; padding: .45rem .7rem; border: 1px solid var(--border);
+  border-radius: .4rem; color: var(--muted); font-size: .85rem; }
 .signin { max-width: 34rem; margin: 10vh auto; }
 
 /* Job page ------------------------------------------------------------------
@@ -671,9 +675,94 @@ export const clientScript = `
       document.querySelectorAll('[data-repo-picker]').forEach((root) => { if (!pickerBusy(root)) renderLivePicker(root); });
     } catch { /* The server-rendered bundled catalog remains usable offline. */ }
   };
-  // Any scrollable panel inside a swapped region loses its position, because
-  // the region's innerHTML is replaced wholesale. Key by name, not index, so a
-  // panel appearing or disappearing between ticks cannot shift the mapping.
+  const surfaceHooks = new Map();
+  const announcementKeys = new Set();
+  const escapeSelector = (value) => typeof CSS !== 'undefined' && CSS.escape
+    ? CSS.escape(value)
+    : String(value).replace(/[^a-zA-Z0-9_-]/gu, '\\$&');
+  const isElement = (node) => Boolean(node && node.nodeType === 1);
+  const directKey = (node) => isElement(node) ? (node.dataset.liveKey || '') : '';
+  const keyedSelector = (key) => '[data-live-key="' + escapeSelector(key) + '"]';
+  const describeNode = (node) => {
+    const text = node?.textContent?.replace(/\\s+/gu, ' ').trim() || 'record';
+    return text.slice(0, 80);
+  };
+  const announce = (channel, eventKey, message, priority = 'polite') => {
+    const key = channel + '|' + eventKey + '|' + message;
+    if (announcementKeys.has(key)) return false;
+    announcementKeys.add(key);
+    const selector = channel === 'connection'
+      ? '[data-connection-status]'
+      : channel === 'action'
+        ? '[data-action-announcement]'
+        : '[data-operation-announcer]';
+    const node = document.querySelector(selector);
+    if (!node) return false;
+    node.setAttribute('aria-live', priority);
+    node.textContent = message;
+    return true;
+  };
+  const registerSurface = (name, hook) => {
+    surfaceHooks.set(name, hook);
+    return () => surfaceHooks.delete(name);
+  };
+  const registerRepositoryState = (hook) => registerSurface('repository-settings', hook);
+  const registerActionFeedback = (scope, hook) => registerSurface('action:' + scope, hook);
+  const registerJobSafetySteps = (hook) => registerSurface('job-safety-rail', hook);
+  const pathFrom = (ancestor, node) => {
+    const path = [];
+    let current = node;
+    while (current && current !== ancestor) {
+      const parent = current.parentNode;
+      if (!parent) break;
+      path.unshift(Array.prototype.indexOf.call(parent.childNodes, current));
+      current = parent;
+    }
+    return current === ancestor ? path : [];
+  };
+  const nodeAtPath = (ancestor, path) => {
+    let current = ancestor;
+    for (const index of path || []) {
+      current = current?.childNodes?.[index];
+      if (!current) return null;
+    }
+    return current;
+  };
+  const keyedOwner = (root, node) => {
+    let owner = isElement(node) && node.closest ? node.closest('[data-live-key]') : null;
+    if (!owner || !root.contains(owner)) owner = root;
+    return owner;
+  };
+  const nextKeyFor = (owner) => {
+    if (!owner || owner === owner.parentNode) return '';
+    let sibling = owner.nextElementSibling;
+    while (sibling) {
+      const key = directKey(sibling);
+      if (key) return key;
+      sibling = sibling.nextElementSibling;
+    }
+    return '';
+  };
+  const focusSnapshot = (root) => {
+    const active = document.activeElement;
+    if (!active || !root.contains(active)) return null;
+    const owner = keyedOwner(root, active);
+    const selector = active.id
+      ? { kind: 'id', value: active.id }
+      : active.name
+        ? { kind: 'name', value: active.name }
+        : null;
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      ownerLabel: owner === root ? '' : describeNode(owner),
+      nextKey: owner === root ? '' : nextKeyFor(owner),
+      path: pathFrom(owner, active),
+      selector,
+      selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+      selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+      selectionDirection: active.selectionDirection || 'none',
+    };
+  };
   const scrollState = (root) => {
     const state = {};
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
@@ -688,30 +777,71 @@ export const clientScript = `
     const follow = root.querySelector('[data-activity-follow]');
     return follow ? { follow: follow.checked } : null;
   };
+  const fieldSnapshot = (root) => [...root.querySelectorAll('input, select, textarea')].map((field) => {
+    const owner = keyedOwner(root, field);
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      path: pathFrom(owner, field),
+      id: field.id || '',
+      name: field.name || '',
+      value: field.value,
+      checked: typeof field.checked === 'boolean' ? field.checked : null,
+      selectionStart: typeof field.selectionStart === 'number' ? field.selectionStart : null,
+      selectionEnd: typeof field.selectionEnd === 'number' ? field.selectionEnd : null,
+      selectionDirection: field.selectionDirection || 'none',
+    };
+  });
+  const detailsSnapshot = (root) => [...root.querySelectorAll('details')].map((detail) => {
+    const owner = keyedOwner(root, detail);
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      path: pathFrom(owner, detail),
+      key: detail.dataset.detailsKey || '',
+      open: detail.open,
+    };
+  });
   const remember = (root) => ({
-    // A dragged panel height lives in an inline style on an element the swap
-    // destroys, so it has to be carried across like any other operator input.
+    focus: focusSnapshot(root),
+    // A dragged panel height lives in an inline style on an element the keyed
+    // reconciler retains, but the value is carried explicitly for new nodes.
     sizes: Object.fromEntries([...root.querySelectorAll('[data-resizable]')].map((el) => [el.dataset.resizable, el.style.height])),
     activity: activityState(root),
-    // Keyed where a stable identity exists: a live transcript appends blocks,
-    // and index-based restore would reopen whichever element slid into the slot.
-    details: [...root.querySelectorAll('details')].map((d) => d.open),
-    detailKeys: Object.fromEntries([...root.querySelectorAll('details[data-details-key]')].map((d) => [d.dataset.detailsKey, d.open])),
-    inputs: [...root.querySelectorAll('input, select')].filter((i) => !i.closest('[data-repo-picker]')).map((i) => ({ name: i.name, value: i.value })),
+    details: detailsSnapshot(root),
+    inputs: fieldSnapshot(root),
     log: logState(root),
     scrolls: scrollState(root),
+    surfaces: Object.fromEntries([...surfaceHooks.entries()].flatMap(([name, hook]) => {
+      try { return [[name, hook.capture?.(root)]]]; } catch { return []; }
+    })),
   });
+  const restoreField = (root, saved) => {
+    const owner = saved.ownerKey ? root.querySelector(keyedSelector(saved.ownerKey)) : root;
+    if (!owner) return null;
+    let field = saved.id ? owner.querySelector('#' + escapeSelector(saved.id)) : null;
+    if (!field && saved.name) field = owner.querySelector('[name="' + escapeSelector(saved.name) + '"]');
+    if (!field) field = nodeAtPath(owner, saved.path);
+    if (!field) return null;
+    if (typeof saved.value === 'string' && 'value' in field) field.value = saved.value;
+    if (typeof saved.checked === 'boolean' && 'checked' in field) field.checked = saved.checked;
+    if (saved.selectionStart !== null && typeof field.setSelectionRange === 'function') {
+      try { field.setSelectionRange(saved.selectionStart, saved.selectionEnd, saved.selectionDirection); } catch { /* field type has no selection */ }
+    }
+    return field;
+  };
   const restore = (root, state) => {
     root.querySelectorAll('[data-resizable]').forEach((el) => {
       const saved = state.sizes && state.sizes[el.dataset.resizable];
       if (saved) el.style.height = saved;
     });
-    [...root.querySelectorAll('details')].forEach((d, i) => {
-      const key = d.dataset.detailsKey;
-      if (key && state.detailKeys && state.detailKeys[key] !== undefined) { d.open = state.detailKeys[key]; return; }
-      if (!key && state.details[i] !== undefined) d.open = state.details[i];
+    state.details.forEach((saved) => {
+      const owner = saved.ownerKey ? root.querySelector(keyedSelector(saved.ownerKey)) : root;
+      if (!owner) return;
+      const detail = saved.key
+        ? owner.querySelector('[data-details-key="' + escapeSelector(saved.key) + '"]')
+        : nodeAtPath(owner, saved.path);
+      if (detail) detail.open = saved.open;
     });
-    state.inputs.forEach((saved) => { if (!saved.name) return; const input = root.querySelector('[name="' + CSS.escape(saved.name) + '"]'); if (input && document.activeElement !== input) input.value = saved.value; });
+    state.inputs.forEach((saved) => restoreField(root, saved));
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
       const saved = state.scrolls[el.dataset.scrollKeep];
       if (!saved) return;
@@ -746,18 +876,116 @@ export const clientScript = `
       const pr = root.querySelector('input[name="reset-pr"]');
       reset.dataset.body = JSON.stringify({ confirm: 'RESET', prNumber: Number(pr?.value) });
     }
+    Object.entries(state.surfaces || {}).forEach(([name, saved]) => {
+      try { surfaceHooks.get(name)?.restore?.(root, saved); } catch { /* a surface may have gone away */ }
+    });
+    const focus = state.focus;
+    if (!focus) return;
+    const owner = focus.ownerKey ? root.querySelector(keyedSelector(focus.ownerKey)) : root;
+    const focused = owner ? nodeAtPath(owner, focus.path) : null;
+    if (focused && typeof focused.focus === 'function') {
+      focused.focus({ preventScroll: true });
+      if (focus.selectionStart !== null && typeof focused.setSelectionRange === 'function') {
+        try { focused.setSelectionRange(focus.selectionStart, focus.selectionEnd, focus.selectionDirection); } catch { /* field type has no selection */ }
+      }
+      return;
+    }
+    if (focus.ownerKey) {
+      const next = focus.nextKey ? root.querySelector(keyedSelector(focus.nextKey)) : null;
+      const target = next?.querySelector('a, button, input, select, textarea, [tabindex]:not([tabindex="-1"])') || next;
+      const fallback = root.querySelector('[data-focus-fallback]');
+      if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+      else if (fallback && typeof fallback.focus === 'function') fallback.focus({ preventScroll: true });
+      announce('operational', 'removed:' + focus.ownerKey, (focus.ownerLabel || 'The focused record') + ' was removed.', 'polite');
+    }
+  };
+  const sameKind = (left, right) => left?.nodeType === right?.nodeType && (!isElement(left) || !isElement(right) || left.tagName === right.tagName);
+  const syncAttributes = (current, incoming) => {
+    [...current.attributes].forEach((attribute) => {
+      if (!incoming.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    });
+    [...incoming.attributes].forEach((attribute) => {
+      if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    });
+  };
+  const reconcileChildren = (parent, incomingParent) => {
+    const previous = [...parent.childNodes];
+    const keyed = new Map();
+    previous.forEach((node) => {
+      const key = directKey(node);
+      if (key) keyed.set(key, node);
+    });
+    const used = new Set();
+    const incomingKeys = new Set();
+    const desired = [...incomingParent.childNodes].map((incoming, index) => {
+      const key = directKey(incoming);
+      if (key && incomingKeys.has(key)) throw new Error('duplicate live key');
+      if (key) incomingKeys.add(key);
+      if (key && keyed.has(key) && used.has(keyed.get(key))) throw new Error('duplicate live key');
+      let current = key ? keyed.get(key) : previous[index];
+      if (current && (used.has(current) || !sameKind(current, incoming))) current = null;
+      if (!current && !key) current = previous.find((node) => !used.has(node) && !directKey(node) && sameKind(node, incoming));
+      if (current) {
+        used.add(current);
+        return reconcileNode(current, incoming);
+      }
+      return incoming.cloneNode(true);
+    });
+    desired.forEach((node, index) => {
+      const at = parent.childNodes[index] || null;
+      if (at !== node) parent.insertBefore(node, at);
+    });
+    previous.forEach((node) => { if (!used.has(node) && node.parentNode === parent) parent.removeChild(node); });
+  };
+  const reconcileNode = (current, incoming) => {
+    if (!sameKind(current, incoming)) return incoming.cloneNode(true);
+    if (!isElement(current)) {
+      if (current.textContent !== incoming.textContent) current.textContent = incoming.textContent;
+      return current;
+    }
+    syncAttributes(current, incoming);
+    reconcileChildren(current, incoming);
+    return current;
+  };
+  const reconcileFragment = (root, html) => {
+    const state = remember(root);
+    const template = document.createElement('template');
+    template.innerHTML = String(html || '');
+    try {
+      reconcileChildren(root, template.content);
+    } catch {
+      root.replaceChildren(...[...template.content.childNodes].map((node) => node.cloneNode(true)));
+    }
+    restore(root, state);
+    return root;
   };
   const swap = (fragments) => {
     Object.entries(fragments || {}).forEach(([id, html]) => {
       const root = document.getElementById(id); if (!root) return;
-      if (id === 'repositories' && pickerBusy(root)) return;
       const atBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 24;
-      const state = remember(root); root.innerHTML = html; restore(root, state);
-      root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
+      const busy = pickerBusy(root);
+      reconcileFragment(root, html);
+      if (!busy) root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
       if (atBottom) root.scrollTop = root.scrollHeight;
+      updateTableOverflow(root);
     });
     refreshTimes();
   };
+  if (typeof window !== 'undefined') {
+    window.gremlynConsole = {
+      announce,
+      registerSurface,
+      registerRepositoryState,
+      registerActionFeedback,
+      registerJobSafetySteps,
+      reconcileFragment,
+      reconcile: (id, html) => {
+        const root = document.getElementById(id);
+        return root ? reconcileFragment(root, html) : null;
+      },
+      swap,
+    };
+  }
   const eventSource = document.querySelector('[data-stream]');
   if (eventSource && window.EventSource) {
     const stream = new EventSource(eventSource.dataset.stream);

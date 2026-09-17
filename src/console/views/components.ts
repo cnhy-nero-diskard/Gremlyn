@@ -153,7 +153,7 @@ export function timelineStepper(
       .map((entry, index) => {
         const next = entries[index + 1];
         // The date repeats on every row; the clock is the part that varies.
-        return `<li>${statusPill(entry.status)}${timeElement(entry.at, "clock", clockTime(entry.at, timeZone), { timeZone })}<span class="muted">${elapsedTimeElement(entry.at, next?.at ?? finishedAt)}</span></li>`;
+        return `<li data-live-key="timeline-${String(entry.id)}">${statusPill(entry.status)}${timeElement(entry.at, "clock", clockTime(entry.at, timeZone), { timeZone })}<span class="muted">${elapsedTimeElement(entry.at, next?.at ?? finishedAt)}</span></li>`;
       })
       .join("") || '<li class="muted">No status events recorded.</li>'
   }</ol>`;
@@ -325,7 +325,7 @@ export function attemptCard(
       ? ""
       : `<details class="activity-fold"><summary>Agent transcript</summary>${agentActivity(attempt.activity, "", options.timeZone)}</details>`;
   const output = `<details><summary>Raw agent output</summary>${artifactOutput("Captured agent output", attempt.output_ref, attempt.outputRetained, attempt.output)}</details>`;
-  return `<article class="attempt">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
+  return `<article class="attempt" data-live-key="attempt-${String(attempt.id)}">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
 }
 
 /** Render one field value compactly; objects and arrays stay on a single line. */
@@ -430,7 +430,7 @@ export function agentActivity(
         timeElement(block.at, "clock", clockTime(block.at, timeZone), { timeZone }) +
         pending;
       const shell = (inner: string): string =>
-        `<li class="activity-block activity-${escapeHtml(block.kind)}${open}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;
+        `<li class="activity-block activity-${escapeHtml(block.kind)}${open}" data-live-key="activity-${String(block.seq)}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;
 
       if (block.kind === "tool") {
         const { name, input } = toolParts(block.text);
@@ -459,7 +459,7 @@ export function logEntries(logs: LogRow[], timeZone?: string): string {
     logs
       .map((log) => {
         const level = log.level.toLowerCase();
-        return `<article class="log-line log-${escapeHtml(level.replace(/[^a-z]/gu, ""))}" data-log-entry data-level="${escapeHtml(log.level)}">${timeElement(log.at, "clock", logClock(log.at, timeZone), { timeZone })}<span class="log-level">${escapeHtml(level)}</span><span class="log-body"><span class="log-event">${escapeHtml(log.event)}</span>${logFields(log.fields)}</span></article>`;
+        return `<article class="log-line log-${escapeHtml(level.replace(/[^a-z]/gu, ""))}" data-live-key="log-${String(log.id)}" data-log-entry data-level="${escapeHtml(log.level)}">${timeElement(log.at, "clock", logClock(log.at, timeZone), { timeZone })}<span class="log-level">${escapeHtml(level)}</span><span class="log-body"><span class="log-event">${escapeHtml(log.event)}</span>${logFields(log.fields)}</span></article>`;
       })
       .join("") || '<p class="muted">No structured log entries.</p>'
   );
