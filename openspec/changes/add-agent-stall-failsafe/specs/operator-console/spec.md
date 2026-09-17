@@ -8,6 +8,14 @@ configuring its agent timeout, including no limit; configuring its inactivity
 bound, which SHALL NOT offer no limit; and navigating to the pull request and the
 triggering comment on GitHub.
 
+Every such action SHALL be invocable from the console's own interface. A control
+presented for an action SHALL either invoke that action or state why it is
+unavailable; the console SHALL NOT present a control that does nothing.
+
+Each action SHALL be offered only where it applies to the target's current state,
+and the console SHALL reflect the outcome of an invoked action without requiring
+the operator to navigate elsewhere to discover whether it took effect.
+
 Every operator action SHALL be recorded with its time and effect.
 
 #### Scenario: Retry from the console
@@ -19,6 +27,23 @@ Every operator action SHALL be recorded with its time and effect.
 
 - **WHEN** an operator disables a repository
 - **THEN** subsequent commands for it produce no jobs
+
+#### Scenario: Every offered control works
+
+- **WHEN** an operator views the controls offered for a job or a repository
+- **THEN** each control either performs its action when used or states why it is
+  unavailable
+
+#### Scenario: Reaching the pull request and the comment
+
+- **WHEN** an operator views a job
+- **THEN** the console links both to the pull request and to the triggering review
+  comment on GitHub
+
+#### Scenario: An action that cannot be performed
+
+- **WHEN** an operator invokes an action the orchestrator cannot perform
+- **THEN** the console reports the refusal in the view rather than failing silently
 
 #### Scenario: The inactivity bound offers no way to disable it
 
