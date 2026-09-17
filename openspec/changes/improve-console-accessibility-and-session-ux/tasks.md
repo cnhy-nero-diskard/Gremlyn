@@ -15,10 +15,10 @@
 
 ## 3. Accessible Responsive Data Tables
 
-- [ ] 3.1 Add a shared responsive table/container convention with visible captions, `scope="col"`, stable row keys, matching cell `data-label` values, and labelled overflow behavior; verify render-helper tests reject missing/duplicate labels or keys.
-- [ ] 3.2 Apply the convention to Commands and Operator Audit, including empty states and long reason/detail values; verify console tests assert complete field coverage, correct header associations, and unchanged links/status text.
-- [ ] 3.3 Apply the convention to validation results without breaking output `<details>`, exit-code text, command display, or redaction; verify validation-table tests cover empty, passed, failed, retained-output, missing-output, and secret-redacted rows.
-- [ ] 3.4 Add narrow-card and overflow containment CSS with safe wrapping and conditional keyboard focus for actual overflow; verify browser checks at 320 CSS pixels and 400 percent zoom show no page-level horizontal scroll, clipped controls, ambiguous labels, or duplicated assistive content on all three tables.
+- [x] 3.1 Add a shared responsive table/container convention with visible captions, `scope="col"`, stable row keys, matching cell `data-label` values, and labelled overflow behavior; verify render-helper tests reject missing/duplicate labels or keys.
+- [x] 3.2 Apply the convention to Commands and Operator Audit, including empty states and long reason/detail values; verify console tests assert complete field coverage, correct header associations, and unchanged links/status text.
+- [x] 3.3 Apply the convention to validation results without breaking output `<details>`, exit-code text, command display, or redaction; verify validation-table tests cover empty, passed, failed, retained-output, missing-output, and secret-redacted rows.
+- [x] 3.4 Add narrow-card and overflow containment CSS with safe wrapping and conditional keyboard focus for actual overflow; verify browser checks at 320 CSS pixels and 400 percent zoom show no page-level horizontal scroll, clipped controls, ambiguous labels, or duplicated assistive content on all three tables.
 
 ## 4. Stable Live Reconciliation
 

@@ -18,7 +18,7 @@ export const stylesheet = `
     --success-bg: #123c2c; --failure-bg: #4a201f; --cancelled-bg: #493516; --interrupted-bg: #30245b; }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; }
+body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; overflow-x: hidden; }
 a { color: var(--accent); }
 a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .shell { max-width: 1240px; margin: 0 auto; padding: 1rem; }
@@ -48,9 +48,16 @@ section.panel > h3 { font-size: .8rem; font-weight: 700; text-transform: upperca
 .page-summary { font-size: .9rem; }
 .stale { border-color: var(--failure); color: var(--failure); }
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
 th { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
-.table-scroll { overflow-x: auto; }
+.table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.responsive-table-wrap { position: relative; }
+.responsive-table-wrap:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.responsive-table caption { caption-side: top; text-align: left; padding: 0 0 .6rem; font-weight: 700; color: var(--text); }
+.responsive-table code, .responsive-table a { overflow-wrap: anywhere; }
+.responsive-table details { min-width: 0; }
+.validation-output { max-height: 14rem; overflow: auto; white-space: pre-wrap; }
+.table-empty { padding: 1rem .55rem; }
 td.num { font-variant-numeric: tabular-nums; }
 /* Let the command column absorb the slack; the rest are fixed-width facts, so
    a two-row table does not stretch four columns across the whole panel. */
@@ -58,6 +65,20 @@ td.num { font-variant-numeric: tabular-nums; }
 .validation-table th:nth-child(3), .validation-table td:nth-child(3) { width: 8rem; }
 .validation-table th:nth-child(4), .validation-table td:nth-child(4) { width: 30%; }
 .validation-table summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+@media (max-width: 720px) {
+  .responsive-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .responsive-table, .responsive-table tbody, .responsive-table tr, .responsive-table td { display: block; }
+  .responsive-table tbody { display: grid; gap: .7rem; }
+  .responsive-table tr { border: 1px solid var(--border); border-radius: .45rem; padding: .35rem .7rem; background: var(--surface-muted); }
+  .responsive-table td { display: grid; grid-template-columns: minmax(7rem, 36%) minmax(0, 1fr); gap: .6rem;
+    align-items: start; padding: .55rem 0; border-bottom: 1px solid var(--border); }
+  .responsive-table td:last-child { border-bottom: 0; }
+  .responsive-table td::before { content: attr(data-label); color: var(--muted); font-size: .74rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .responsive-table td.table-empty { display: block; }
+  .responsive-table td.table-empty::before { content: none; }
+}
 .exit { display: inline-block; min-width: 1.7rem; text-align: center; border-radius: .3rem;
   padding: .05rem .35rem; font-weight: 700; font-size: .82rem; font-variant-numeric: tabular-nums; }
 .exit-ok { color: var(--success); background: var(--success-bg); }
@@ -389,6 +410,13 @@ export const clientScript = `
   });
   refreshTimes();
   setInterval(refreshTimes, 1000);
+  const updateTableOverflow = (root = document) => root.querySelectorAll('[data-table-overflow]').forEach((node) => {
+    const overflow = node.scrollWidth > node.clientWidth + 1;
+    node.dataset.overflow = overflow ? 'true' : 'false';
+    node.tabIndex = overflow ? 0 : -1;
+  });
+  updateTableOverflow();
+  if (typeof window !== 'undefined') window.addEventListener('resize', () => updateTableOverflow());
   // The log region is replaced wholesale on every stream tick, so anything the
   // operator set by hand — filter text, level, follow, scroll position — has to
   // be carried across the swap or it resets several times a second.

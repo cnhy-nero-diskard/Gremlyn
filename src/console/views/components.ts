@@ -159,6 +159,60 @@ export function timelineStepper(
   }</ol>`;
 }
 
+export interface ResponsiveTableColumn {
+  readonly label: string;
+}
+
+export interface ResponsiveTableRow {
+  readonly key: string;
+  readonly cells: readonly string[];
+}
+
+export interface ResponsiveTableOptions {
+  readonly caption: string;
+  readonly columns: readonly ResponsiveTableColumn[];
+  readonly rows: readonly ResponsiveTableRow[];
+  readonly className?: string;
+  readonly emptyMessage: string;
+}
+
+/**
+ * Render one semantic table DOM that can become labelled record cards at a
+ * narrow width. The runtime checks keep live keys and visible data labels
+ * deterministic instead of allowing a new view to silently weaken them.
+ */
+export function responsiveTable(options: ResponsiveTableOptions): string {
+  const caption = options.caption.trim();
+  if (!caption) throw new Error("responsive tables require a visible caption");
+  if (options.columns.length === 0) throw new Error("responsive tables require columns");
+  const labels = options.columns.map((column) => column.label.trim());
+  if (labels.some((label) => label.length === 0)) {
+    throw new Error("responsive table column labels must not be empty");
+  }
+  if (new Set(labels).size !== labels.length) {
+    throw new Error("responsive table column labels must be unique");
+  }
+  const keys = new Set<string>();
+  const rows = options.rows
+    .map((row) => {
+      const key = row.key.trim();
+      if (!key || keys.has(key)) throw new Error("responsive table row keys must be unique");
+      if (row.cells.length !== labels.length) {
+        throw new Error("responsive table rows must cover every column");
+      }
+      keys.add(key);
+      return `<tr data-live-key="${escapeHtml(key)}">${row.cells
+        .map((cell, index) => `<td data-label="${escapeHtml(labels[index] ?? "")}">${cell}</td>`)
+        .join("")}</tr>`;
+    })
+    .join("");
+  const body =
+    rows ||
+    `<tr><td colspan="${String(labels.length)}" class="muted table-empty">${escapeHtml(options.emptyMessage)}</td></tr>`;
+  const className = options.className ? ` ${escapeHtml(options.className)}` : "";
+  return `<div class="table-scroll responsive-table-wrap" data-table-overflow role="region" aria-label="${escapeHtml(caption)}" tabindex="-1"><table class="responsive-table${className}"><caption>${escapeHtml(caption)}</caption><thead><tr>${labels.map((label) => `<th scope="col">${escapeHtml(label)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 /** A zero and a one look alike in a column of numbers; say which one passed. */
 function exitCode(code: number | null): string {
   if (code === null) return '<span class="muted">—</span>';
@@ -166,14 +220,26 @@ function exitCode(code: number | null): string {
 }
 
 export function validationTable(runs: ValidationRun[]): string {
-  const rows =
-    runs
-      .map(
-        (run) =>
-          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details></td></tr>`,
-      )
-      .join("") || '<tr><td colspan="4" class="muted">No validation runs recorded.</td></tr>';
-  return `<table class="validation-table"><thead><tr><th>Command</th><th>Exit code</th><th>Duration</th><th>Output</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return responsiveTable({
+    caption: "Validation results",
+    className: "validation-table",
+    columns: [
+      { label: "Command" },
+      { label: "Exit code" },
+      { label: "Duration" },
+      { label: "Output" },
+    ],
+    rows: runs.map((run) => ({
+      key: `validation-${String(run.id)}`,
+      cells: [
+        `<code>${escapeHtml(displayCommand(run.command))}</code>`,
+        exitCode(run.exit_code),
+        `<span class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</span>`,
+        `<details data-details-key="validation-output-${String(run.id)}"><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details>`,
+      ],
+    })),
+    emptyMessage: "No validation runs recorded.",
+  });
 }
 
 function displayCommand(command: string): string {
@@ -199,7 +265,7 @@ function artifactOutput(
   if (reference === null) {
     return `<p class="artifact-not-retained muted">No ${escapeHtml(label.toLowerCase())} was captured.</p>`;
   }
-  return `<pre>${escapeHtml(output)}</pre>`;
+  return `<pre class="validation-output">${escapeHtml(output)}</pre>`;
 }
 
 /**

@@ -192,11 +192,14 @@ function jobAside(model: JobDetail, timeZone?: string): string {
   const timeline = `<section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at, timeZone)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
   const review = `<section class="panel span-all"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
   const attemptPanel = `<section class="panel span-all"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
-  const validation = `<section class="panel span-2"><h2>Validation results</h2><div class="table-scroll">${validationTable(model.validation)}</div></section>`;
+  const validation = `<section class="panel span-2">${validationTable(model.validation)}</section>`;
   return `<div class="job-aside">${timeline}${validation}${review}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
-export function jobRegions(model: JobDetail, timeZone?: string): {
+export function jobRegions(
+  model: JobDetail,
+  timeZone?: string,
+): {
   "job-detail-region": string;
   "job-log-region": string;
 } {

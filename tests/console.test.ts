@@ -33,6 +33,7 @@ import {
   logClock,
   logEntries,
   relativeTimestamp,
+  responsiveTable,
   statusPill,
   timeElement,
 } from "../src/console/views/components.js";
@@ -813,7 +814,7 @@ test("command and audit streams deliver newly recorded rows", async () => {
       .run(data.repoId, "2026-08-27T00:00:01.000Z");
   });
   assert.equal(command.kind, "change");
-  assert.match(command.fragments["commands-region"] ?? "", /<td>999<\/td>/);
+  assert.match(command.fragments["commands-region"] ?? "", /data-label="Comment">999<\/td>/);
   const audit = await readChange("/audit/stream", () => {
     data.options.operatorActions.record({
       action: "stream-test",
@@ -1132,6 +1133,29 @@ test("pure view helpers escape values and render absent values safely", () => {
   assert.match(keyValueTable({ "<unsafe>": null, value: "<script>" }), /&lt;script&gt;/);
   assert.match(dangerZone(1, 12), /data-reset-submit/);
   assert.match(dangerZone(1, 12), /disabled/);
+});
+
+test("responsive table helper enforces labelled, keyed records", () => {
+  const html = responsiveTable({
+    caption: "Example records",
+    columns: [{ label: "Name" }, { label: "State" }],
+    rows: [{ key: "record-1", cells: ["alpha", statusPill("ready")] }],
+    emptyMessage: "No records.",
+  });
+  assert.match(html, /<caption>Example records<\/caption>/u);
+  assert.match(html, /<th scope="col">Name<\/th>/u);
+  assert.match(html, /data-live-key="record-1"/u);
+  assert.match(html, /data-label="Name">alpha<\/td>/u);
+  assert.throws(
+    () =>
+      responsiveTable({
+        caption: "Bad records",
+        columns: [{ label: "Name" }, { label: "Name" }],
+        rows: [],
+        emptyMessage: "Empty",
+      }),
+    /unique/u,
+  );
 });
 
 test("wall-clock helpers use the requested local timezone and retain the UTC instant", () => {
