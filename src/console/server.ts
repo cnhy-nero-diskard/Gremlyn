@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { ProviderCatalog } from "../agent/provider-catalog.js";
 import type { OperatorActionStore } from "../store/actions.js";
 import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../config/loader.js";
@@ -27,6 +27,7 @@ import {
   type StreamChange,
 } from "./stream.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
+import { CONSOLE_SESSION_COOKIE, ConsoleSessionStore, constantTimeEqual } from "./session.js";
 
 export interface ConsoleActions {
   retry?: (jobId: number) => Promise<unknown> | unknown;
@@ -46,6 +47,10 @@ export interface ConsoleOptions {
   dataDir?: string;
   /** Optional IANA timezone used for server-rendered wall-clock values. */
   timezone?: string | undefined;
+  /** Injectable process-local session store and clock/randomness for tests. */
+  sessionStore?: ConsoleSessionStore;
+  now?: () => number;
+  randomBytes?: (size: number) => Uint8Array;
   providerCatalog?: ProviderCatalog;
   /**
    * The configured agent definitions, keyed by the agent id repositories
@@ -58,6 +63,7 @@ export interface ConsoleOptions {
 export interface ConsoleServer extends FastifyInstance {
   endLiveUpdateStreams(): void;
   readonly liveUpdateStreamCount: number;
+  sessionStore: ConsoleSessionStore;
 }
 /** Agent-aware defaults for a repository with no matching definition. */
 function agentOptionsFor(
@@ -79,6 +85,13 @@ export function consoleListenOptions(input: { host?: string; port: number }): {
 
 export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   const app = Fastify({ logger: false }) as unknown as ConsoleServer;
+  const sessionStore =
+    options.sessionStore ??
+    new ConsoleSessionStore({
+      ...(options.now ? { now: options.now } : {}),
+      ...(options.randomBytes ? { randomBytes: options.randomBytes } : {}),
+    });
+  app.sessionStore = sessionStore;
   const liveStreams = new Set<StreamEnd>();
   const registerStream: StreamRegistrar = (end) => {
     liveStreams.add(end);
@@ -107,24 +120,84 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
     stylesheetPath,
     clientScriptPath,
   ]);
+  const publicPaths = new Set([
+    "/auth",
+    "/auth/sign-out",
+    "/sign-out",
+    "/session-status",
+    ...publicAssetPaths,
+  ]);
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string" },
+    (_request, body, done) => {
+      const params = new URLSearchParams(String(body));
+      done(null, Object.fromEntries(params.entries()));
+    },
+  );
   app.addHook("onRequest", async (request, reply) => {
     const requestPath = request.url.split("?", 1)[0] ?? "";
-    if (requestPath === "/auth" || publicAssetPaths.has(requestPath)) return;
+    if (publicPaths.has(requestPath)) return;
     const authorization = request.headers.authorization;
-    const cookieToken = readCookie(request.headers.cookie, "gremlyn_console_token");
-    if (authorization !== `Bearer ${options.token}` && cookieToken !== options.token) {
-      await reply.code(401).send({ error: "unauthorized" });
+    const bearer = authorization?.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length)
+      : undefined;
+    const bearerValid = bearer !== undefined && constantTimeEqual(bearer, options.token);
+    const sessionHandle = readCookie(request.headers.cookie, CONSOLE_SESSION_COOKIE);
+    const sessionState = sessionStore.lookup(sessionHandle);
+    if (!bearerValid && sessionState !== "active") {
+      if (sessionHandle !== undefined && isDocumentNavigation(request)) {
+        await reply
+          .code(303)
+          .header("location", "/auth?reason=expired")
+          .header("set-cookie", expiredCookie(isHttpsRequest(request)))
+          .send();
+        return;
+      }
+      await reply
+        .code(401)
+        .send({ error: sessionHandle === undefined ? "unauthorized" : "session-expired" });
       return;
     }
-    if (authorization === `Bearer ${options.token}`)
-      reply.header("set-cookie", cookie(options.token));
   });
-  app.get("/auth", async (_request, reply) => reply.type("text/html").send(authLayout()));
-  app.post<{ Body: { token?: string } }>("/auth", async (request, reply) =>
-    request.body?.token !== options.token
-      ? reply.code(401).send({ error: "unauthorized" })
-      : reply.header("set-cookie", cookie(options.token)).send({ ok: true }),
+  app.get<{ Querystring: { reason?: string } }>("/auth", async (request, reply) =>
+    reply.type("text/html").send(authLayout(authReason(request.query.reason))),
   );
+  app.post("/auth", async (request, reply) => {
+    const submitted = submittedToken(request.body);
+    if (submitted === undefined || !constantTimeEqual(submitted, options.token)) {
+      if (prefersHtmlAuth(request)) {
+        return reply.code(401).type("text/html").send(authLayout("invalid"));
+      }
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const session = sessionStore.create();
+    const setCookie = sessionCookie(session.handle, isHttpsRequest(request));
+    if (prefersHtmlAuth(request)) {
+      return reply.code(303).header("location", "/").header("set-cookie", setCookie).send();
+    }
+    return reply.header("set-cookie", setCookie).send({ ok: true });
+  });
+  const signOut = async (request: FastifyRequest, reply: FastifyReply) => {
+    sessionStore.revoke(readCookie(request.headers.cookie, CONSOLE_SESSION_COOKIE));
+    const setCookie = expiredCookie(isHttpsRequest(request));
+    if (prefersHtmlAuth(request)) {
+      return reply
+        .code(303)
+        .header("location", "/auth?reason=signed-out")
+        .header("set-cookie", setCookie)
+        .send();
+    }
+    return reply.header("set-cookie", setCookie).send({ ok: true });
+  };
+  app.post("/auth/sign-out", signOut);
+  app.post("/sign-out", signOut);
+  app.get("/session-status", async (request, reply) => {
+    const handle = readCookie(request.headers.cookie, CONSOLE_SESSION_COOKIE);
+    const status = sessionStore.lookup(handle);
+    if (status === "expired") reply.header("set-cookie", expiredCookie(isHttpsRequest(request)));
+    return reply.send({ status });
+  });
   app.get("/assets/app.css", async (_request, reply) =>
     reply
       .type("text/css")
@@ -164,7 +237,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
             options.agents,
             options.timezone,
           ),
-          { stream: "/stream", wide: true },
+          { stream: "/stream", wide: true, authenticated: true, section: "dashboard" },
         ),
       ),
   );
@@ -232,7 +305,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         layout(
           `Job ${id} · ${model.job.owner}/${model.job.name} PR #${String(model.job.pr_number)}`,
           jobView(model, options.timezone),
-          { stream: `/jobs/${id}/stream`, wide: true },
+          { stream: `/jobs/${id}/stream`, wide: true, authenticated: true, section: "dashboard" },
         ),
       );
   });
@@ -270,30 +343,27 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         layout(
           "Command ingestion",
           `<div id="commands-region">${commandsView(queries.readProcessedCommands(), options.timezone)}</div>`,
-          { stream: "/commands/stream" },
+          { stream: "/commands/stream", authenticated: true, section: "commands" },
         ),
       ),
   );
-  app.get<{ Querystring: { snapshot?: string } }>(
-    "/commands/stream",
-    async (request, reply) => {
-      const render = (change: StreamChange) =>
-        change.kind === "heartbeat"
-          ? {}
-          : { "commands-region": commandsView(queries.readProcessedCommands(), options.timezone) };
-      reply.hijack();
-      openSseStream({
-        request: request.raw,
-        response: reply.raw,
-        ticker,
-        event: "commands-update",
-        initial: render({ sequence: 0, kind: "change" }),
-        render,
-        snapshot: request.query.snapshot === "1",
-        register: registerStream,
-      });
-    },
-  );
+  app.get<{ Querystring: { snapshot?: string } }>("/commands/stream", async (request, reply) => {
+    const render = (change: StreamChange) =>
+      change.kind === "heartbeat"
+        ? {}
+        : { "commands-region": commandsView(queries.readProcessedCommands(), options.timezone) };
+    reply.hijack();
+    openSseStream({
+      request: request.raw,
+      response: reply.raw,
+      ticker,
+      event: "commands-update",
+      initial: render({ sequence: 0, kind: "change" }),
+      render,
+      snapshot: request.query.snapshot === "1",
+      register: registerStream,
+    });
+  });
   app.get("/audit", async (_request, reply) =>
     reply
       .type("text/html")
@@ -301,7 +371,7 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         layout(
           "Operator audit",
           `<div id="audit-region">${auditView(queries.readOperatorActions(), options.timezone)}</div>`,
-          { stream: "/audit/stream" },
+          { stream: "/audit/stream", authenticated: true, section: "audit" },
         ),
       ),
   );
@@ -505,19 +575,65 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   });
   app.addHook("onClose", async () => {
     ticker.stop();
+    sessionStore.clear();
   });
   return app;
 }
-function cookie(token: string): string {
-  return `gremlyn_console_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/`;
+function sessionCookie(handle: string, secure: boolean): string {
+  return `${CONSOLE_SESSION_COOKIE}=${encodeURIComponent(handle)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${String(8 * 60 * 60)}${secure ? "; Secure" : ""}`;
+}
+function expiredCookie(secure: boolean): string {
+  return `${CONSOLE_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure ? "; Secure" : ""}`;
 }
 function readCookie(header: string | undefined, name: string): string | undefined {
   if (!header) return undefined;
   for (const part of header.split(";")) {
     const [key, ...value] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(value.join("="));
+    if (key === name) {
+      try {
+        return decodeURIComponent(value.join("="));
+      } catch {
+        return undefined;
+      }
+    }
   }
   return undefined;
+}
+function submittedToken(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const token = (body as { token?: unknown }).token;
+  return typeof token === "string" ? token : undefined;
+}
+function authReason(reason: string | undefined): "invalid" | "expired" | "signed-out" | undefined {
+  return reason === "invalid" || reason === "expired" || reason === "signed-out"
+    ? reason
+    : undefined;
+}
+function prefersHtmlAuth(request: FastifyRequest): boolean {
+  const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim();
+  return (
+    contentType === "application/x-www-form-urlencoded" ||
+    request.headers.accept?.includes("text/html") === true
+  );
+}
+function isHttpsRequest(request: FastifyRequest): boolean {
+  const forwarded = request.headers["x-forwarded-proto"];
+  return (
+    (request.raw.socket as { encrypted?: boolean }).encrypted === true ||
+    forwarded === "https" ||
+    (Array.isArray(forwarded) && forwarded.includes("https"))
+  );
+}
+function isDocumentNavigation(request: FastifyRequest): boolean {
+  if (request.method !== "GET") return false;
+  const path = request.url.split("?", 1)[0] ?? "";
+  return (
+    request.headers.accept?.includes("text/html") === true ||
+    path === "/" ||
+    path === "/commands" ||
+    path === "/audit" ||
+    /^\/jobs\/\d+$/u.test(path)
+  );
 }
 function positiveInteger(value: string): number {
   const parsed = Number(value);

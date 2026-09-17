@@ -225,7 +225,7 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.ok(
     response.body.indexOf('class="health-summary"') > response.body.indexOf('id="health-region"'),
   );
-  assert.match(response.headers["set-cookie"] as string, /HttpOnly/);
+  assert.equal(response.headers["set-cookie"], undefined);
   await app.close();
   data.store.close();
 });
