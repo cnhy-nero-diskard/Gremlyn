@@ -30,15 +30,15 @@
 
 ## 5. Scoped Status and Announcement Channels
 
-- [ ] 5.1 Replace the shared mutation/heartbeat status node with persistent connection, local action/settings, and hidden operational announcement channels; verify markup tests assert correct roles, labels, and absence of nested or competing live regions.
-- [ ] 5.2 Add deduplication keyed by semantic event and transition so connected/reconnecting/disconnected, action outcomes, validation failures, and newly actionable states announce once; verify unit tests cover repeated payloads and changed event keys.
-- [ ] 5.3 Suppress announcements for heartbeats, elapsed-time refreshes, transcript appends, unchanged fragments, and repeated recovery recommendations; verify negative tests leave announcement text/event counts unchanged while persistent visible state remains accurate.
-- [ ] 5.4 Route expired-session responses to sign-in before local action feedback and keep all other redacted failures beside their originating control; verify settings, toggle, retry, cancel, reset, and session-expiry scenarios do not overwrite connection status or one another.
+- [x] 5.1 Replace the shared mutation/heartbeat status node with persistent connection, local action/settings, and hidden operational announcement channels; verify markup tests assert correct roles, labels, and absence of nested or competing live regions.
+- [x] 5.2 Add deduplication keyed by semantic event and transition so connected/reconnecting/disconnected, action outcomes, validation failures, and newly actionable states announce once; verify unit tests cover repeated payloads and changed event keys.
+- [x] 5.3 Suppress announcements for heartbeats, elapsed-time refreshes, transcript appends, unchanged fragments, and repeated recovery recommendations; verify negative tests leave announcement text/event counts unchanged while persistent visible state remains accurate.
+- [x] 5.4 Route expired-session responses to sign-in before local action feedback and keep all other redacted failures beside their originating control; verify settings, toggle, retry, cancel, reset, and session-expiry scenarios do not overwrite connection status or one another.
 
 ## 6. AA-Oriented Acceptance and Regression
 
-- [ ] 6.1 Add automated structural and color-token contrast checks for accessible names, one current navigation item, visible focus, 4.5:1 normal text, 3:1 large text/non-text/focus boundaries, text-bearing statuses, and reduced-motion overrides; verify the focused accessibility tests pass in light and dark themes.
-- [ ] 6.2 Exercise keyboard-only sign-in, primary navigation, Commands/Audit records, validation details, repository editing, job actions, typed reset confirmation, and sign-out; verify every control is reachable, visibly focused, operable without a trap, and retains focus through representative SSE updates.
-- [ ] 6.3 Exercise 320-pixel/400-percent reflow, reduced-motion emulation, session expiry, reconnect, action failure, and live-update removal in a real browser; record checked routes/states and describe results as AA-oriented acceptance rather than certification.
+- [x] 6.1 Add automated structural and color-token contrast checks for accessible names, one current navigation item, visible focus, 4.5:1 normal text, 3:1 large text/non-text/focus boundaries, text-bearing statuses, and reduced-motion overrides; verify the focused accessibility tests pass in light and dark themes.
+- [x] 6.2 Exercise keyboard-only sign-in, primary navigation, Commands/Audit records, validation details, repository editing, job actions, typed reset confirmation, and sign-out; verify every control is reachable, visibly focused, operable without a trap, and retains focus through representative SSE updates.
+- [x] 6.3 Exercise 320-pixel/400-percent reflow, reduced-motion emulation, session expiry, reconnect, action failure, and live-update removal in a real browser; record checked routes/states and describe results as AA-oriented acceptance rather than certification.
 - [ ] 6.4 Run `node --import tsx --test tests/console.test.ts tests/provider-catalog.test.ts`, `npm run build`, `npm run lint`, `npm run format:check`, and `npm test`; verify all commands pass without adding a client framework, bundler, or runtime dependency.
-- [ ] 6.5 Run `openspec validate improve-console-accessibility-and-session-ux --strict` and `git diff --check`; verify the change remains spec-valid and whitespace-clean after implementation.
+- [x] 6.5 Run `openspec validate improve-console-accessibility-and-session-ux --strict` and `git diff --check`; verify the change remains spec-valid and whitespace-clean after implementation.

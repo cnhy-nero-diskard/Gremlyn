@@ -129,7 +129,7 @@ function actionControls(model: JobDetail): string {
       : "",
   ].join("");
   const none = `<span class="muted">A ${escapeHtml(status)} job can be neither retried nor cancelled.</span>`;
-  return `<div class="job-actions">${buttons || none}</div>`;
+  return `<div class="job-actions" data-action-scope="job-${String(model.job.id)}">${buttons || none}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></div>`;
 }
 
 /**

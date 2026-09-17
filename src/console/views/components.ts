@@ -13,7 +13,7 @@ export function escapeHtml(value: unknown): string {
 export function statusPill(status: string): string {
   const safe = escapeHtml(status);
   const className = status.replace(/[^a-z0-9_-]/gi, "-");
-  return `<span class="status-pill status-${className}" aria-label="Status: ${safe}">${safe}</span>`;
+  return `<span class="status-pill status-${className}" data-status-value="${safe}" aria-label="Status: ${safe}">${safe}</span>`;
 }
 
 export function duration(
@@ -140,7 +140,7 @@ export function keyValueTable(
 
 export function dangerZone(repoId: number, defaultPr: number): string {
   const controls = `<div class="actions danger-controls"><label>Pull request <input name="reset-pr" type="number" min="1" value="${defaultPr}"></label><label>Confirmation <input data-reset-confirm name="reset-confirm" autocomplete="off" placeholder="RESET"></label><button class="danger" data-action="reset" data-reset-submit data-url="/workspaces/${repoId}/reset" data-body="{&quot;confirm&quot;:&quot;RESET&quot;,&quot;prNumber&quot;:${defaultPr}}" disabled>Reset workspace</button></div>`;
-  return `<section class="panel danger-zone span-all" id="danger-zone"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}</section>`;
+  return `<section class="panel danger-zone span-all" id="danger-zone" data-action-scope="reset-${String(repoId)}"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></section>`;
 }
 
 export function timelineStepper(
@@ -233,7 +233,7 @@ export function validationTable(runs: ValidationRun[]): string {
       key: `validation-${String(run.id)}`,
       cells: [
         `<code>${escapeHtml(displayCommand(run.command))}</code>`,
-        exitCode(run.exit_code),
+        `<span data-status-value="${run.exit_code === null ? "not-run" : run.exit_code === 0 ? "passed" : "failed"}">${exitCode(run.exit_code)}</span>`,
         `<span class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</span>`,
         `<details data-details-key="validation-output-${String(run.id)}"><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details>`,
       ],

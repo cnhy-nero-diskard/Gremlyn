@@ -46,7 +46,7 @@ function authOptions(now: () => number, sessionStore?: ConsoleSessionStore): Con
 }
 
 test("browser auth uses an opaque cookie, form POST, status probing, and sign-out", async () => {
-  let now = 100;
+  const now = 100;
   const sessionStore = new ConsoleSessionStore({
     now: () => now,
     randomBytes: (size) => new Uint8Array(size).fill(7),

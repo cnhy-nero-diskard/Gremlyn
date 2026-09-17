@@ -41,8 +41,8 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.ok(opencode.models.some((model) => model.id === "opencode/claude-sonnet-5"));
   // The whole `opencode models opencode` surface, not a shortlist: a repo can
   // be pointed at any Zen model without falling back to "Custom provider".
-  assert.equal(opencode.models.length, 69);
-  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 69);
+  assert.equal(opencode.models.length, 70);
+  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 70);
   // Zen's `-free` suffix is the one badge derived from the id.
   assert.ok(
     opencode.models
@@ -62,8 +62,8 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   // The whole `opencode models` Go surface, on the pinned release.
   assert.equal(opencodeGo.defaultModelId, "opencode-go/kimi-k3");
   assert.ok(opencodeGo.models.every((model) => model.id.startsWith("opencode-go/")));
-  assert.equal(opencodeGo.models.length, 27);
-  assert.equal(new Set(opencodeGo.models.map((model) => model.id)).size, 27);
+  assert.equal(opencodeGo.models.length, 28);
+  assert.equal(new Set(opencodeGo.models.map((model) => model.id)).size, 28);
   // Go's roster is not Zen's: models reachable only through the subscription
   // are exactly what the Zen-only catalog left unselectable. (glm-5.3 used to
   // be Go-only; since the 1.18.29 roster Zen serves it too, so it is no longer
@@ -116,7 +116,7 @@ test("OpenCode namespaces survive a live Cline feed refresh", async () => {
   assert.equal(snapshot.source, "cline-api");
   const go = snapshot.providers.find((provider) => provider.id === "opencode-go");
   assert.ok(go);
-  assert.equal(go.models.length, 27);
+  assert.equal(go.models.length, 28);
   const openai = snapshot.providers.find((provider) => provider.id === "openai");
   assert.ok(openai);
   assert.equal(openai.models.length, 15);

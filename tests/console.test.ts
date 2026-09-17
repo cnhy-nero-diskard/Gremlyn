@@ -223,6 +223,13 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /Running/);
   assert.match(response.body, /Queued/);
   assert.match(response.body, /Recent successes and failures/);
+  assert.equal((response.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(response.body, /aria-label="Primary"/u);
+  assert.match(response.body, /data-connection-status/gu);
+  assert.match(response.body, /data-operation-announcer/gu);
+  assert.doesNotMatch(response.body, /data-live-status/gu);
+  assert.match(response.body, /data-action-scope="settings-/u);
+  assert.match(response.body, /data-action-feedback data-action-announcement/gu);
   assert.ok(
     response.body.indexOf('class="health-summary"') > response.body.indexOf('id="health-region"'),
   );
@@ -534,6 +541,10 @@ test("job detail separates attempts and shows context, failure, output, validati
   ]) {
     assert.ok(response.body.includes(expected), expected);
   }
+  assert.equal((response.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(response.body, /<a href="\/" aria-current="page">Dashboard<\/a>/u);
+  assert.match(response.body, /data-action-scope="job-/u);
+  assert.match(response.body, /data-action-feedback data-action-announcement/gu);
   assert.equal(response.body.includes(SECRET), false);
   assert.match(response.body, /&lt;script&gt;\[redacted\]&lt;\/script&gt;/);
   await app.close();
@@ -671,7 +682,23 @@ test("presentation assets and sign-in are available without a token while data r
   }
   assert.match(stylesheetPath, new RegExp(`app\\.${assetHash}\\.css`));
   assert.match(clientScriptPath, new RegExp(`app\\.${assetHash}\\.js`));
-  assert.match((await app.inject({ method: "GET", url: "/auth" })).body, /stylesheet/);
+  const authPage = await app.inject({ method: "GET", url: "/auth" });
+  assert.match(authPage.body, /stylesheet/);
+  assert.match(authPage.body, /<form method="post" action="\/auth"/u);
+  assert.match(authPage.body, /autofocus/gu);
+  assert.match(authPage.body, /autocomplete="off"/u);
+  assert.doesNotMatch(authPage.body, /Dashboard|Commands|Audit|Sign out/gu);
+  assert.doesNotMatch(authPage.body, /data-connection-status|data-operation-announcer/gu);
+  const invalidForm = await app.inject({
+    method: "POST",
+    url: "/auth",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "text/html" },
+    payload: "token=wrong-secret",
+  });
+  assert.equal(invalidForm.statusCode, 401);
+  assert.match(invalidForm.body, /aria-invalid="true"/u);
+  assert.match(invalidForm.body, /aria-describedby="auth-error"/u);
+  assert.equal(invalidForm.body.includes("wrong-secret"), false);
   assert.equal((await app.inject({ method: "GET", url: "/commands" })).statusCode, 401);
   assert.equal(
     (await app.inject({ method: "POST", url: "/auth", payload: { token: "wrong" } })).statusCode,
@@ -749,6 +776,10 @@ test("commands and audit views expose outcomes and redacted action details", asy
   assert.match(commands.body, new RegExp(`/jobs/${data.jobId}`));
   assert.match(audit.body, /workspace-reset/);
   assert.match(audit.body, /recreated/);
+  assert.equal((commands.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(commands.body, /<a href="\/commands" aria-current="page">Commands<\/a>/u);
+  assert.equal((audit.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(audit.body, /<a href="\/audit" aria-current="page">Audit<\/a>/u);
   assert.equal(commands.body.includes(SECRET), false);
   assert.equal(audit.body.includes(SECRET), false);
   await app.close();
@@ -1333,6 +1364,10 @@ test("live console records expose stable identity and the client uses keyed reco
   assert.match(job.body, /data-live-key="log-/u);
   assert.match(clientScript, /reconcileFragment/u);
   assert.match(clientScript, /registerRepositoryState/u);
+  assert.match(clientScript, /semanticSnapshot/u);
+  assert.match(clientScript, /routeSessionExpiry/u);
+  assert.match(clientScript, /payload\.kind === 'heartbeat'[\s\S]*?return;/u);
+  assert.doesNotMatch(clientScript, /status\(payload\.kind === 'heartbeat'/u);
   assert.doesNotMatch(clientScript, /root\.innerHTML\s*=/u);
   await app.close();
   data.store.close();

@@ -58,7 +58,7 @@ export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/
  * command, which would fail on OpenCode's schedule rather than on a change to
  * this repository.
  */
-export const OPENCODE_ROSTER_VERSION = "1.18.30";
+export const OPENCODE_ROSTER_VERSION = "1.18.31";
 
 export interface ProviderModelOption {
   id: string;
@@ -237,7 +237,7 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
 
 /**
  * The `opencode/<model>` ids OpenCode's pay-as-you-go Zen gateway serves,
- * verbatim from `opencode models` on the pinned 1.18.30 (see
+ * verbatim from `opencode models` on the pinned 1.18.31 (see
  * EXPECTED_OPENCODE_VERSION). OpenCode also accepts other configured
  * providers folded into the same `-m` argument (e.g.
  * `anthropic/claude-opus-5`), but those depend on each installation's own
@@ -320,11 +320,12 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/nemotron-3.5-lightning-free",
   "opencode/qwen3.5-plus",
   "opencode/qwen3.6-plus",
+  "opencode/union-alpha",
 ];
 
 /**
  * The `opencode-go/<model>` ids the OpenCode Go subscription serves, verbatim
- * from `opencode models` on the pinned 1.18.30.
+ * from `opencode models` on the pinned 1.18.31.
  *
  * Go is its own provider, not a billing mode of Zen: `auth.json` carries a
  * distinct `opencode-go` credential beside the `opencode` one, and the two
@@ -335,10 +336,10 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
  * seeded `auth.json` already authenticates both.
  */
 const OPENCODE_GO_MODEL_IDS: readonly string[] = [
-  "opencode-go/deepseek-flash",
   "opencode-go/deepseek-v4-flash",
   "opencode-go/deepseek-v4-flash-vision-exp",
   "opencode-go/deepseek-v4-pro",
+  "opencode-go/deepseek-v4.1-flash",
   "opencode-go/glm-5.1",
   "opencode-go/glm-5.2",
   "opencode-go/glm-5.3",
@@ -362,11 +363,12 @@ const OPENCODE_GO_MODEL_IDS: readonly string[] = [
   "opencode-go/qwen3.7-plus",
   "opencode-go/qwen3.8-flash",
   "opencode-go/qwen3.8-max",
+  "opencode-go/union-alpha",
 ];
 
 /**
  * The `openai/<model>` ids OpenCode serves from the operator's own OpenAI
- * account, verbatim from `opencode models` on the pinned 1.18.30.
+ * account, verbatim from `opencode models` on the pinned 1.18.31.
  *
  * Unlike Zen and Go, this namespace is not an OpenCode gateway: OpenCode logs
  * into OpenAI directly ("OpenAI (ChatGPT Plus/Pro or API key)" in its login
