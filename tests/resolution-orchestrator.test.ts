@@ -832,6 +832,62 @@ test("a validation failure whose recorded head has moved quarantines and refresh
   data.store.close();
 });
 
+test("retry preserves a dirty workspace that moved beyond the prior recorded head", async () => {
+  const data = await setup("failure");
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const attempt = data.store.db.prepare("SELECT * FROM attempts").get() as {
+    id: number;
+    workspace_path: string;
+    head_sha_at_prepare: string;
+  };
+  const workspacePath = attempt.workspace_path;
+  const dirtyPath = join(workspacePath, "operator-dirty.txt");
+  recordValidationFailure(data, attempt.id);
+
+  const movedHead = await pushCommit(
+    data.gitRepo.sourcePath,
+    data.gitRepo.headBranch,
+    "next.txt",
+    "next\n",
+    "advance remote head",
+  );
+  const pr = await data.github.getPullRequest("acme", "widgets", 27);
+  data.github.addPullRequest({ ...pr, headSha: movedHead });
+
+  writeFileSync(join(workspacePath, "operator-commit.txt"), "committed elsewhere\n", "utf8");
+  await git(["add", "-A"], { cwd: workspacePath });
+  await git(
+    ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "operator move"],
+    { cwd: workspacePath },
+  );
+  const thirdHead = await headSha(workspacePath);
+  writeFileSync(dirtyPath, "unrelated dirty edit\n", "utf8");
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(data.executor.runs.length, 1, "a diverged dirty workspace must not run the agent");
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT failure_reason FROM attempts WHERE attempt_number = 2")
+        .get() as { failure_reason: string }
+    ).failure_reason,
+    "workspace-dirty",
+  );
+  assert.equal(await headSha(workspacePath), thirdHead, "the moved workspace head is preserved");
+  assert.equal(readFileSync(dirtyPath, "utf8"), "unrelated dirty edit\n");
+  assert.deepEqual(
+    (
+      await data.store.db
+        .prepare("SELECT action FROM operator_actions WHERE action = 'workspace-quarantine'")
+        .all()
+    ),
+    [],
+    "a diverged workspace must not be quarantined",
+  );
+  data.store.close();
+});
+
 test("retry after head-changed quarantines stranded work and refreshes to the moved head", async () => {
   const data = await setup("files-modified");
   // Race the first attempt: the agent's edits land, then the pull request head

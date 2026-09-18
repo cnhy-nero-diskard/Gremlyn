@@ -528,7 +528,9 @@ export class ResolutionOrchestrator {
     } catch {
       return undefined;
     }
-    if (workspaceHead === input.expectedSha) return undefined;
+    if (workspaceHead === input.expectedSha || workspaceHead !== prior.head_sha_at_prepare) {
+      return undefined;
+    }
 
     // Pull remote state first (inside the collector), then preserve the
     // stranded work non-destructively before anything is reset.
