@@ -486,6 +486,9 @@ nav a[aria-current="page"] { color: var(--interactive); background: var(--intera
 nav form { margin: 0; }
 .grid, .lanes, .job-aside { gap: var(--space-5); }
 .dash-page, .job-page { gap: var(--space-6); }
+.grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+.lanes { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.attempt-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 23rem), 1fr)); }
 
 .card, article, section.panel { background: var(--surface-panel); border: var(--border-thin) solid var(--divider); border-radius: var(--radius-lg); padding: var(--space-5); box-shadow: var(--shadow-panel); }
 .presentation-peak, [data-presentation="peak"] { background: var(--surface-raised); border-color: var(--panel-peak-border); box-shadow: var(--shadow-peak); }
@@ -666,7 +669,8 @@ label { gap: var(--space-2); }
 .attempt-folds { gap: var(--space-4); margin-top: var(--space-4); }
 
 .responsive-table tr, .responsive-table td, .responsive-table th, .kv > div { min-width: 0; }
-.kv { gap: 0 var(--space-6); }
+.kv { gap: 0 var(--space-6); grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }
+.attempt .kv { grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); }
 .kv > div { gap: var(--space-3); padding: var(--space-2) 0; border-bottom-color: var(--divider); }
 .kv dd { color: var(--text-primary); font-size: var(--type-control); }
 .review-split { gap: var(--space-6); margin-top: var(--space-3); }

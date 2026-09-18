@@ -25,9 +25,9 @@
 
 ## 5. Preserve theme, motion, and responsive behavior
 
-- [ ] 5.1 Complete dark-theme overrides at the semantic-token layer and verify the light/dark contrast matrix and representative status/model/focus fixtures pass the AA-oriented checks owned by the accessibility change.
-- [ ] 5.2 Extend reduced-motion rules to every new transition, pulse, spinner, or live effect while keeping static busy/progress cues; verify reduced-motion emulation removes non-essential motion and leaves state labels and shapes intact.
-- [ ] 5.3 Reflow navigation, filters, settings editors, tables, feedback, safety rails, paths, and action groups at the supported narrow viewport; verify browser acceptance at 320 CSS pixels and 400% zoom has no page-level horizontal overflow, clipped evidence, or hidden focused control.
+- [x] 5.1 Complete dark-theme overrides at the semantic-token layer and verify the light/dark contrast matrix and representative status/model/focus fixtures pass the AA-oriented checks owned by the accessibility change.
+- [x] 5.2 Extend reduced-motion rules to every new transition, pulse, spinner, or live effect while keeping static busy/progress cues; verify reduced-motion emulation removes non-essential motion and leaves state labels and shapes intact.
+- [x] 5.3 Reflow navigation, filters, settings editors, tables, feedback, safety rails, paths, and action groups at the supported narrow viewport; verify browser acceptance at 320 CSS pixels and 400% zoom has no page-level horizontal overflow, clipped evidence, or hidden focused control.
 
 ## 6. Verify integrated delivery
 

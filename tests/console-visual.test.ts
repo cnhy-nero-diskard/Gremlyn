@@ -148,6 +148,18 @@ test("current navigation and interactive states have independent visual hooks", 
   assert.match(stylesheet, /data-connection-state="reconnecting"/u);
 });
 
+test("theme, motion, and narrow layout rules preserve semantic evidence", () => {
+  assert.match(stylesheet, /@media\s*\(prefers-color-scheme:\s*dark\)[\s\S]*--status-success-fg/iu);
+  assert.match(stylesheet, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*animation:\s*none/iu);
+  assert.match(stylesheet, /transition-duration:\s*\.01ms\s*!important/iu);
+  assert.match(stylesheet, /\.grid\s*\{[^}]*minmax\(min\(100%,\s*260px\)/su);
+  assert.match(stylesheet, /\.attempt-grid\s*\{[^}]*minmax\(min\(100%,\s*23rem\)/su);
+  assert.match(stylesheet, /\.kv\s*\{[^}]*minmax\(min\(100%,\s*16rem\)/su);
+  assert.match(stylesheet, /@media\s*\(max-width:\s*720px\)[\s\S]*responsive-table/iu);
+  assert.match(stylesheet, /@media\s*\(max-width:\s*420px\)[\s\S]*stat-strip/iu);
+  assert.match(stylesheet, /overflow-wrap:\s*anywhere/iu);
+});
+
 test("semantic status treatments retain visible text and non-color markers", () => {
   const statuses = ["succeeded", "failed", "cancelled", "interrupted", "running"];
   for (const status of statuses) {
