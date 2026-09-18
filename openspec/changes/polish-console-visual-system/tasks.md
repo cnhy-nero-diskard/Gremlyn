@@ -31,6 +31,6 @@
 
 ## 6. Verify integrated delivery
 
-- [ ] 6.1 Add a visual coverage matrix for current routes and all landed sibling states, then record light/dark desktop/narrow checks for focus, hover, active, disabled, busy, success, warning, failure, danger, and neutral event treatments.
-- [ ] 6.2 Run the focused console/render/style tests, `npm run build`, `npm run lint`, and the full automated test suite, and record that no external asset, framework, runtime dependency, route, database, or workflow behavior was introduced.
-- [ ] 6.3 Run `openspec validate polish-console-visual-system --strict` after implementation and reconcile the completed artifacts with any final sibling selector names while preserving this change's visual-only ownership boundary.
+- [x] 6.1 Add a visual coverage matrix for current routes and all landed sibling states, then record light/dark desktop/narrow checks for focus, hover, active, disabled, busy, success, warning, failure, danger, and neutral event treatments.
+- [x] 6.2 Run the focused console/render/style tests, `npm run build`, `npm run lint`, and the full automated test suite, and record that no external asset, framework, runtime dependency, route, database, or workflow behavior was introduced.
+- [x] 6.3 Run `openspec validate polish-console-visual-system --strict` after implementation and reconcile the completed artifacts with any final sibling selector names while preserving this change's visual-only ownership boundary.
