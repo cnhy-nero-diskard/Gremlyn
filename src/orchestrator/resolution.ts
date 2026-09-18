@@ -44,7 +44,7 @@ import {
   statusEntries,
   unmergedEntries,
 } from "../workspace/gitops.js";
-import { resetWorkspace } from "../workspace/reset.js";
+import { refreshWorkspaceTree } from "../workspace/reset.js";
 import {
   collectStrandedDiff,
   prepareWorkspace,
@@ -584,14 +584,23 @@ export class ResolutionOrchestrator {
       expectedHead: input.expectedSha,
       patchRef,
     });
-    return resetWorkspace({
+    // In-place refresh, not remove-and-recreate: `git clean -fd` keeps ignored
+    // files, so an installed node_modules survives and the refreshed workspace
+    // can still validate. A final preparation re-verifies the state and seeds
+    // ignored files.
+    await refreshWorkspaceTree({
+      workspaceRoot: input.repository.workspaceRoot,
+      prNumber: input.prNumber,
+      headSha: input.expectedSha,
+    });
+    return prepareWorkspace({
       sourcePath: input.repository.sourcePath,
       workspaceRoot: input.repository.workspaceRoot,
       prNumber: input.prNumber,
       headBranch: input.headBranch,
       headSha: input.expectedSha,
       ...(input.seedFiles === undefined ? {} : { seedFiles: input.seedFiles }),
-      actions,
+      ...(actions === undefined ? {} : { actions }),
     });
   }
 

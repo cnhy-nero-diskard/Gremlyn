@@ -69,3 +69,36 @@ export async function resetWorkspace(options: {
   });
   return prepared;
 }
+
+/**
+ * In-place refresh for the quarantine-before-retry path.
+ *
+ * Unlike {@link resetWorkspace}, which removes and recreates the checkout
+ * (discarding everything, including gitignored dependencies a fresh workspace
+ * needs for validation), this resets the existing checkout to the expected
+ * head in place: `git reset --hard` restores tracked files and `git clean
+ * -fd` removes untracked files that are not ignored. Ignored files such as an
+ * installed `node_modules` survive, so a refreshed workspace can still build
+ * and test without a reinstall. The stranded work must already be quarantined
+ * elsewhere — this discards the working tree by design.
+ *
+ * The target guards are the same as the explicit reset: only the derived
+ * workspace path beneath its workspace root.
+ */
+export async function refreshWorkspaceTree(options: {
+  workspaceRoot: string;
+  prNumber: number;
+  headSha: string;
+}): Promise<string> {
+  const expectedPath = workspacePathFor(options.workspaceRoot, options.prNumber);
+  if (!isBeneath(expectedPath, options.workspaceRoot)) {
+    throw new WorkspaceError(
+      "workspace-outside-root",
+      `refusing to refresh ${expectedPath}: it is not beneath the configured workspace root`,
+    );
+  }
+  await git(["fetch", "origin", "--prune"], { cwd: expectedPath });
+  await git(["reset", "--hard", options.headSha], { cwd: expectedPath });
+  await git(["clean", "-fd"], { cwd: expectedPath });
+  return expectedPath;
+}

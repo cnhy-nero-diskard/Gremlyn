@@ -12,7 +12,7 @@ import {
   workspacePathFor,
 } from "../src/workspace/worktree.js";
 import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
-import { resetWorkspace } from "../src/workspace/reset.js";
+import { resetWorkspace, refreshWorkspaceTree } from "../src/workspace/reset.js";
 import { createTempRepo, pushCommit, remoteSha, type TempRepo } from "./helpers/gitrepo.js";
 
 const AUTHOR = ["-c", "user.name=Test", "-c", "user.email=test@example.com"];
@@ -217,6 +217,47 @@ test("collectStrandedDiff pulls remote first and captures tracked and untracked 
   // Non-destructive: the workspace still holds the work.
   assert.ok((await statusEntries(prepared.path)).length > 0);
   assert.equal(readFileSync(join(prepared.path, "stranded-new.txt"), "utf8"), "new work\n");
+});
+
+test("in-place refresh resets tracked and untracked work but keeps ignored dependencies", async () => {
+  const repo = await createTempRepo();
+  const withIgnore = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    ".gitignore",
+    "deps/\n",
+    "ignore deps",
+  );
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 17,
+    headBranch: repo.headBranch,
+    headSha: withIgnore,
+  });
+  mkdirSync(join(prepared.path, "deps"));
+  writeFileSync(join(prepared.path, "deps", "keep"), "installed\n", "utf8");
+  writeFileSync(join(prepared.path, "feature.txt"), "modified\n", "utf8");
+  writeFileSync(join(prepared.path, "junk.txt"), "discard\n", "utf8");
+  const movedHead = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    "next.txt",
+    "next\n",
+    "advance",
+  );
+
+  await refreshWorkspaceTree({
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 17,
+    headSha: movedHead,
+  });
+
+  assert.equal(await headSha(prepared.path), movedHead);
+  assert.deepEqual(await statusEntries(prepared.path), []);
+  assert.equal(existsSync(join(prepared.path, "junk.txt")), false);
+  assert.equal(readFileSync(join(prepared.path, "feature.txt"), "utf8").trim(), "feature work");
+  assert.equal(readFileSync(join(prepared.path, "deps", "keep"), "utf8"), "installed\n");
 });
 
 test("workspace path derives from root and PR number only", () => {
