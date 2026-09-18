@@ -955,7 +955,8 @@ test("retry after head-changed preserves secret-bearing stranded patches byte-fo
     if (!moved) {
       moved = true;
       writeFileSync(join(workspacePath, "feature.txt"), strandedContent, "utf8");
-      writeFileSync(join(workspacePath, "stranded-empty.txt"), "", "utf8");
+      const strandedName = "stranded space-é.txt";
+      writeFileSync(join(workspacePath, strandedName), "", "utf8");
       const movedHead = await pushCommit(
         data.gitRepo.sourcePath,
         data.gitRepo.headBranch,
@@ -988,9 +989,10 @@ test("retry after head-changed preserves secret-bearing stranded patches byte-fo
   const patch = readFileSync(patchRef, "utf8");
   assert.match(patch, /fixture-secret/);
   assert.match(patch, /index 0000000\.\.e69de29/);
+  assert.match(patch, /stranded space-é\.txt/u);
   assert.doesNotMatch(patch, /\[redacted\]/u);
   if (process.platform !== "win32") assert.equal(statSync(patchRef).mode & 0o777, 0o600);
-  assert.equal(existsSync(join(first.workspace_path, "stranded-empty.txt")), false);
+  assert.equal(existsSync(join(first.workspace_path, "stranded space-é.txt")), false);
 
   const restoreRoot = mkdtempSync(join(tmpdir(), "gremlyn-patch-restore-"));
   const restorePath = join(restoreRoot, "workspace");
@@ -1013,8 +1015,8 @@ test("retry after head-changed preserves secret-bearing stranded patches byte-fo
   try {
     await git(["-c", "core.autocrlf=false", "apply", patchRef], { cwd: restorePath });
     assert.equal(readFileSync(join(restorePath, "feature.txt"), "utf8"), strandedContent);
-    assert.equal(existsSync(join(restorePath, "stranded-empty.txt")), true);
-    assert.equal(readFileSync(join(restorePath, "stranded-empty.txt")).length, 0);
+    assert.equal(existsSync(join(restorePath, "stranded space-é.txt")), true);
+    assert.equal(readFileSync(join(restorePath, "stranded space-é.txt")).length, 0);
   } finally {
     await git(["worktree", "remove", "--force", restorePath], { cwd: data.gitRepo.sourcePath });
   }

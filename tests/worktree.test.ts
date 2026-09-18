@@ -200,7 +200,8 @@ test("collectStrandedDiff pulls remote first and captures tracked and untracked 
     headSha: sha,
   });
   writeFileSync(join(prepared.path, "feature.txt"), "modified\n", "utf8");
-  writeFileSync(join(prepared.path, "stranded-new.txt"), "new work\n", "utf8");
+  const strandedName = "stranded space-é.txt";
+  writeFileSync(join(prepared.path, strandedName), "new work\n", "utf8");
 
   const diff = await collectStrandedDiff(prepared.path);
 
@@ -209,14 +210,14 @@ test("collectStrandedDiff pulls remote first and captures tracked and untracked 
     "tracked modification is listed",
   );
   assert.ok(
-    diff.files.some((file) => file.includes("stranded-new.txt")),
+    diff.files.includes(strandedName),
     "untracked addition is listed",
   );
-  assert.match(diff.patch, /stranded-new\.txt/);
+  assert.match(diff.patch, /stranded space-é\.txt/u);
   assert.match(diff.patch, /modified/);
   // Non-destructive: the workspace still holds the work.
   assert.ok((await statusEntries(prepared.path)).length > 0);
-  assert.equal(readFileSync(join(prepared.path, "stranded-new.txt"), "utf8"), "new work\n");
+  assert.equal(readFileSync(join(prepared.path, strandedName), "utf8"), "new work\n");
 });
 
 test("collectStrandedDiff uses a binary-capable patch for tracked binary changes", async () => {

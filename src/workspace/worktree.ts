@@ -323,11 +323,11 @@ export async function collectStrandedDiff(workspacePath: string): Promise<Strand
   await git(["fetch", "origin", "--prune"], { cwd: workspacePath });
   // `-uall` expands untracked directories to individual files so nothing is
   // silently omitted from the record.
-  const { stdout: porcelain } = await git(["status", "--porcelain", "-uall"], {
+  const { stdout: porcelain } = await git(["status", "--porcelain=v1", "-z", "-uall"], {
     cwd: workspacePath,
   });
-  const entries = porcelain.split("\n").filter((line) => line.length > 0);
-  const files = entries.map((entry) => entry.slice(3).trim()).filter((name) => name.length > 0);
+  const entries = porcelain.split("\0").filter((entry) => entry.length > 0);
+  const files = entries.map((entry) => entry.slice(3)).filter((name) => name.length > 0);
 
   let stashSha: string | null = null;
   try {
@@ -358,7 +358,7 @@ export async function collectStrandedDiff(workspacePath: string): Promise<Strand
 
   const untracked = entries
     .filter((entry) => entry.startsWith("??"))
-    .map((entry) => entry.slice(3).trim())
+    .map((entry) => entry.slice(3))
     .filter((name) => name.length > 0 && !name.endsWith("/"));
   for (const name of untracked) {
     const rendered = renderUntrackedHunk(workspacePath, name);
