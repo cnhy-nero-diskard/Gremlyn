@@ -639,6 +639,15 @@ export class ResolutionOrchestrator {
         prNumber: input.prNumber,
         headSha: input.expectedSha,
         expectedSnapshot: workspaceSnapshotAtCollection,
+        actions,
+        auditContext: {
+          jobId: input.jobId,
+          priorAttemptId: prior.id,
+          priorHead: prior.head_sha_at_prepare,
+          expectedHead: input.expectedSha,
+          priorFailureReason: prior.failure_reason,
+          patchRef,
+        },
       });
     } catch (error) {
       this.options.logger.warn("stranded workspace changed before refresh; keeping halt", {

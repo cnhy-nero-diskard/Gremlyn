@@ -90,9 +90,37 @@ export async function refreshWorkspaceTree(options: {
   prNumber: number;
   headSha: string;
   expectedSnapshot?: WorkspaceSnapshot;
+  actions?: Pick<OperatorActionStore, "record">;
+  auditContext?: {
+    jobId: number;
+    priorAttemptId: number;
+    priorHead: string;
+    expectedHead: string;
+    priorFailureReason: string | null;
+    patchRef: string;
+  };
 }): Promise<string> {
   const expectedPath = workspacePathFor(options.workspaceRoot, options.prNumber);
+  const recordRefusal = (check: string, message?: string): void => {
+    options.actions?.record({
+      action: "workspace-quarantine",
+      target: expectedPath,
+      effect: "refused",
+      detail: {
+        reason: "workspace-dirty",
+        check,
+        ...(message === undefined ? {} : { message }),
+        ...(options.auditContext ?? {}),
+      },
+    });
+  };
   if (!isBeneath(expectedPath, options.workspaceRoot)) {
+    options.actions?.record({
+      action: "workspace-quarantine",
+      target: expectedPath,
+      effect: "refused",
+      detail: { reason: "workspace-outside-root" },
+    });
     throw new WorkspaceError(
       "workspace-outside-root",
       `refusing to refresh ${expectedPath}: it is not beneath the configured workspace root`,
@@ -104,11 +132,11 @@ export async function refreshWorkspaceTree(options: {
     try {
       actualSnapshot = await workspaceSnapshot(expectedPath);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordRefusal("snapshot-unavailable", message);
       throw new WorkspaceError(
         "workspace-dirty",
-        `refusing to refresh ${expectedPath}: workspace state could not be re-checked: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `refusing to refresh ${expectedPath}: workspace state could not be re-checked: ${message}`,
       );
     }
     if (
@@ -116,6 +144,7 @@ export async function refreshWorkspaceTree(options: {
       actualSnapshot.status !== options.expectedSnapshot.status ||
       actualSnapshot.fingerprint !== options.expectedSnapshot.fingerprint
     ) {
+      recordRefusal("snapshot-mismatch");
       throw new WorkspaceError(
         "workspace-dirty",
         `refusing to refresh ${expectedPath}: workspace changed after quarantine validation`,

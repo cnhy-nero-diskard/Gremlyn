@@ -971,8 +971,8 @@ test("retry keeps content edits made to an already-dirty file after quarantine v
   await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
   const first = data.store.db
-    .prepare("SELECT head_sha_at_prepare, workspace_path FROM attempts WHERE attempt_number = 1")
-    .get() as { head_sha_at_prepare: string; workspace_path: string };
+    .prepare("SELECT id, head_sha_at_prepare, workspace_path FROM attempts WHERE attempt_number = 1")
+    .get() as { id: number; head_sha_at_prepare: string; workspace_path: string };
   const raceFile = join(first.workspace_path, "feature.txt");
   let mutated = false;
   data.logger.onInfo = (event) => {
@@ -1002,13 +1002,22 @@ test("retry keeps content edits made to an already-dirty file after quarantine v
     " M feature.txt",
     "?? resolved.txt",
   ]);
-  assert.deepEqual(
-    await data.store.db
-      .prepare("SELECT action FROM operator_actions WHERE action = 'workspace-quarantine'")
-      .all(),
-    [],
-    "a workspace changed after validation must not be quarantined or refreshed",
-  );
+  const refusal = data.store.db
+    .prepare("SELECT * FROM operator_actions WHERE action = 'workspace-quarantine'")
+    .get() as { target: string; effect: string; detail: string } | undefined;
+  assert.ok(refusal, "the refused quarantine is recorded");
+  assert.equal(refusal.target, first.workspace_path);
+  assert.equal(refusal.effect, "refused");
+  assert.deepEqual(JSON.parse(refusal.detail), {
+    reason: "workspace-dirty",
+    check: "snapshot-mismatch",
+    jobId: job.id,
+    priorAttemptId: first.id,
+    priorHead: first.head_sha_at_prepare,
+    expectedHead: movedHead,
+    priorFailureReason: "head-changed",
+    patchRef: (JSON.parse(refusal.detail) as { patchRef: string }).patchRef,
+  });
   data.store.close();
 });
 
