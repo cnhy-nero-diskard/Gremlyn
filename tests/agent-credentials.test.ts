@@ -168,7 +168,12 @@ test("OpenCode rotated credentials are read back from the XDG layout and persist
   const rotated = '{"opencode":{"accessToken":"rotated-token"}}';
   writeFileSync(join(dest, "xdg-data", "opencode", "auth.json"), rotated, "utf8");
   try {
-    const persisted = persistRotatedCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
+    const persisted = persistRotatedCredentials(
+      source,
+      dest,
+      OPENCODE_CREDENTIAL_FILES,
+      "opencode",
+    );
 
     assert.deepEqual(persisted, ["auth.json"]);
     assert.equal(readFileSync(join(source, "auth.json"), "utf8"), rotated);
@@ -481,8 +486,5 @@ test("a genuine unauthorized payload still classifies as authentication, not bil
 });
 
 test("an unrelated OpenCode error event (UnknownError) is not read as billing", () => {
-  assert.equal(
-    isAgentBillingFailure({ stdout: REAL_OPENCODE_UNKNOWN_ERROR, stderr: "" }),
-    false,
-  );
+  assert.equal(isAgentBillingFailure({ stdout: REAL_OPENCODE_UNKNOWN_ERROR, stderr: "" }), false);
 });

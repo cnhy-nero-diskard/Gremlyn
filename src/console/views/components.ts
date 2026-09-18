@@ -13,7 +13,7 @@ export function escapeHtml(value: unknown): string {
 export function statusPill(status: string): string {
   const safe = escapeHtml(status);
   const className = status.replace(/[^a-z0-9_-]/gi, "-");
-  return `<span class="status-pill status-${className}" aria-label="Status: ${safe}">${safe}</span>`;
+  return `<span class="status-pill status-${className}" data-status-value="${safe}" aria-label="Status: ${safe}">${safe}</span>`;
 }
 
 export function duration(
@@ -140,7 +140,7 @@ export function keyValueTable(
 
 export function dangerZone(repoId: number, defaultPr: number): string {
   const controls = `<div class="actions danger-controls"><label>Pull request <input name="reset-pr" type="number" min="1" value="${defaultPr}"></label><label>Confirmation <input data-reset-confirm name="reset-confirm" autocomplete="off" placeholder="RESET"></label><button class="danger" data-action="reset" data-reset-submit data-url="/workspaces/${repoId}/reset" data-body="{&quot;confirm&quot;:&quot;RESET&quot;,&quot;prNumber&quot;:${defaultPr}}" disabled>Reset workspace</button></div>`;
-  return `<section class="panel danger-zone span-all" id="danger-zone"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}</section>`;
+  return `<section class="panel danger-zone span-all" id="danger-zone" data-action-scope="reset-${String(repoId)}"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></section>`;
 }
 
 export function timelineStepper(
@@ -153,10 +153,64 @@ export function timelineStepper(
       .map((entry, index) => {
         const next = entries[index + 1];
         // The date repeats on every row; the clock is the part that varies.
-        return `<li>${statusPill(entry.status)}${timeElement(entry.at, "clock", clockTime(entry.at, timeZone), { timeZone })}<span class="muted">${elapsedTimeElement(entry.at, next?.at ?? finishedAt)}</span></li>`;
+        return `<li data-live-key="timeline-${String(entry.id)}">${statusPill(entry.status)}${timeElement(entry.at, "clock", clockTime(entry.at, timeZone), { timeZone })}<span class="muted">${elapsedTimeElement(entry.at, next?.at ?? finishedAt)}</span></li>`;
       })
       .join("") || '<li class="muted">No status events recorded.</li>'
   }</ol>`;
+}
+
+export interface ResponsiveTableColumn {
+  readonly label: string;
+}
+
+export interface ResponsiveTableRow {
+  readonly key: string;
+  readonly cells: readonly string[];
+}
+
+export interface ResponsiveTableOptions {
+  readonly caption: string;
+  readonly columns: readonly ResponsiveTableColumn[];
+  readonly rows: readonly ResponsiveTableRow[];
+  readonly className?: string;
+  readonly emptyMessage: string;
+}
+
+/**
+ * Render one semantic table DOM that can become labelled record cards at a
+ * narrow width. The runtime checks keep live keys and visible data labels
+ * deterministic instead of allowing a new view to silently weaken them.
+ */
+export function responsiveTable(options: ResponsiveTableOptions): string {
+  const caption = options.caption.trim();
+  if (!caption) throw new Error("responsive tables require a visible caption");
+  if (options.columns.length === 0) throw new Error("responsive tables require columns");
+  const labels = options.columns.map((column) => column.label.trim());
+  if (labels.some((label) => label.length === 0)) {
+    throw new Error("responsive table column labels must not be empty");
+  }
+  if (new Set(labels).size !== labels.length) {
+    throw new Error("responsive table column labels must be unique");
+  }
+  const keys = new Set<string>();
+  const rows = options.rows
+    .map((row) => {
+      const key = row.key.trim();
+      if (!key || keys.has(key)) throw new Error("responsive table row keys must be unique");
+      if (row.cells.length !== labels.length) {
+        throw new Error("responsive table rows must cover every column");
+      }
+      keys.add(key);
+      return `<tr data-live-key="${escapeHtml(key)}">${row.cells
+        .map((cell, index) => `<td data-label="${escapeHtml(labels[index] ?? "")}">${cell}</td>`)
+        .join("")}</tr>`;
+    })
+    .join("");
+  const body =
+    rows ||
+    `<tr><td colspan="${String(labels.length)}" class="muted table-empty">${escapeHtml(options.emptyMessage)}</td></tr>`;
+  const className = options.className ? ` ${escapeHtml(options.className)}` : "";
+  return `<div class="table-scroll responsive-table-wrap" data-table-overflow role="region" aria-label="${escapeHtml(caption)}" tabindex="-1"><table class="responsive-table${className}"><caption>${escapeHtml(caption)}</caption><thead><tr>${labels.map((label) => `<th scope="col">${escapeHtml(label)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 /** A zero and a one look alike in a column of numbers; say which one passed. */
@@ -166,14 +220,26 @@ function exitCode(code: number | null): string {
 }
 
 export function validationTable(runs: ValidationRun[]): string {
-  const rows =
-    runs
-      .map(
-        (run) =>
-          `<tr><td><code>${escapeHtml(displayCommand(run.command))}</code></td><td>${exitCode(run.exit_code)}</td><td class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</td><td><details><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details></td></tr>`,
-      )
-      .join("") || '<tr><td colspan="4" class="muted">No validation runs recorded.</td></tr>';
-  return `<table class="validation-table"><thead><tr><th>Command</th><th>Exit code</th><th>Duration</th><th>Output</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return responsiveTable({
+    caption: "Validation results",
+    className: "validation-table",
+    columns: [
+      { label: "Command" },
+      { label: "Exit code" },
+      { label: "Duration" },
+      { label: "Output" },
+    ],
+    rows: runs.map((run) => ({
+      key: `validation-${String(run.id)}`,
+      cells: [
+        `<code>${escapeHtml(displayCommand(run.command))}</code>`,
+        `<span data-status-value="${run.exit_code === null ? "not-run" : run.exit_code === 0 ? "passed" : "failed"}">${exitCode(run.exit_code)}</span>`,
+        `<span class="num">${run.duration_ms === null ? "—" : `${String(run.duration_ms)}ms`}</span>`,
+        `<details data-details-key="validation-output-${String(run.id)}"><summary>Show output</summary>${artifactOutput("Validation output", run.output_ref, run.outputRetained, run.output)}</details>`,
+      ],
+    })),
+    emptyMessage: "No validation runs recorded.",
+  });
 }
 
 function displayCommand(command: string): string {
@@ -199,7 +265,7 @@ function artifactOutput(
   if (reference === null) {
     return `<p class="artifact-not-retained muted">No ${escapeHtml(label.toLowerCase())} was captured.</p>`;
   }
-  return `<pre>${escapeHtml(output)}</pre>`;
+  return `<pre class="validation-output">${escapeHtml(output)}</pre>`;
 }
 
 /**
@@ -259,7 +325,7 @@ export function attemptCard(
       ? ""
       : `<details class="activity-fold"><summary>Agent transcript</summary>${agentActivity(attempt.activity, "", options.timeZone)}</details>`;
   const output = `<details><summary>Raw agent output</summary>${artifactOutput("Captured agent output", attempt.output_ref, attempt.outputRetained, attempt.output)}</details>`;
-  return `<article class="attempt">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
+  return `<article class="attempt" data-live-key="attempt-${String(attempt.id)}">${head}${spec}${failure}${facts}<div class="attempt-folds">${transcript}${output}</div></article>`;
 }
 
 /** Render one field value compactly; objects and arrays stay on a single line. */
@@ -364,7 +430,7 @@ export function agentActivity(
         timeElement(block.at, "clock", clockTime(block.at, timeZone), { timeZone }) +
         pending;
       const shell = (inner: string): string =>
-        `<li class="activity-block activity-${escapeHtml(block.kind)}${open}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;
+        `<li class="activity-block activity-${escapeHtml(block.kind)}${open}" data-live-key="activity-${String(block.seq)}"><span class="activity-dot" aria-hidden="true"></span>${inner}</li>`;
 
       if (block.kind === "tool") {
         const { name, input } = toolParts(block.text);
@@ -393,7 +459,7 @@ export function logEntries(logs: LogRow[], timeZone?: string): string {
     logs
       .map((log) => {
         const level = log.level.toLowerCase();
-        return `<article class="log-line log-${escapeHtml(level.replace(/[^a-z]/gu, ""))}" data-log-entry data-level="${escapeHtml(log.level)}">${timeElement(log.at, "clock", logClock(log.at, timeZone), { timeZone })}<span class="log-level">${escapeHtml(level)}</span><span class="log-body"><span class="log-event">${escapeHtml(log.event)}</span>${logFields(log.fields)}</span></article>`;
+        return `<article class="log-line log-${escapeHtml(level.replace(/[^a-z]/gu, ""))}" data-live-key="log-${String(log.id)}" data-log-entry data-level="${escapeHtml(log.level)}">${timeElement(log.at, "clock", logClock(log.at, timeZone), { timeZone })}<span class="log-level">${escapeHtml(level)}</span><span class="log-body"><span class="log-event">${escapeHtml(log.event)}</span>${logFields(log.fields)}</span></article>`;
       })
       .join("") || '<p class="muted">No structured log entries.</p>'
   );

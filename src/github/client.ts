@@ -64,14 +64,7 @@ export interface PollCommentsResult {
 
 /** GitHub's fixed reaction vocabulary. */
 export type ReactionContent =
-  | "+1"
-  | "-1"
-  | "laugh"
-  | "confused"
-  | "heart"
-  | "hooray"
-  | "rocket"
-  | "eyes";
+  "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
 
 export interface GitHubClient {
   /** Login of the identity the client authenticates as. */

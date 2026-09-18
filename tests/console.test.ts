@@ -33,6 +33,7 @@ import {
   logClock,
   logEntries,
   relativeTimestamp,
+  responsiveTable,
   statusPill,
   timeElement,
 } from "../src/console/views/components.js";
@@ -222,10 +223,17 @@ test("dashboard shows repositories plus running, queued, success and failure sec
   assert.match(response.body, /Running/);
   assert.match(response.body, /Queued/);
   assert.match(response.body, /Recent successes and failures/);
+  assert.equal((response.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(response.body, /aria-label="Primary"/u);
+  assert.match(response.body, /data-connection-status/gu);
+  assert.match(response.body, /data-operation-announcer/gu);
+  assert.doesNotMatch(response.body, /data-live-status/gu);
+  assert.match(response.body, /data-action-scope="settings-/u);
+  assert.match(response.body, /data-action-feedback data-action-announcement/gu);
   assert.ok(
     response.body.indexOf('class="health-summary"') > response.body.indexOf('id="health-region"'),
   );
-  assert.match(response.headers["set-cookie"] as string, /HttpOnly/);
+  assert.equal(response.headers["set-cookie"], undefined);
   await app.close();
   data.store.close();
 });
@@ -428,7 +436,8 @@ test("the dashboard filters the provider catalog by each repository's agent kind
   const app = buildConsoleServer(data.options);
   const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
   assert.equal(dashboard.statusCode, 200);
-  const cards = dashboard.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/gu) ?? [];
+  const cards =
+    dashboard.body.match(/<article class="card repo-card"[^>]*>[\s\S]*?<\/article>/gu) ?? [];
   assert.equal(cards.length, 2);
   const clineCard = cards.find((card) => card.includes('data-agent-kind="cline"'));
   const opencodeCard = cards.find((card) => card.includes('data-agent-kind="opencode"'));
@@ -474,9 +483,9 @@ test("a persisted provider mismatch stays visible and is not demoted to custom",
   const app = buildConsoleServer(data.options);
   const response = await app.inject({ method: "GET", url: "/", headers: AUTH });
   assert.equal(response.statusCode, 200);
-  const card = (response.body.match(/<article class="card repo-card">[\s\S]*?<\/article>/u) ?? [
-    "",
-  ])[0];
+  const card = (response.body.match(
+    /<article class="card repo-card"[^>]*>[\s\S]*?<\/article>/u,
+  ) ?? [""])[0];
   assert.match(card, /data-provider-mismatch/);
   assert.match(card, /Provider mismatch/);
   assert.match(card, /Current provider: opencode/);
@@ -532,6 +541,10 @@ test("job detail separates attempts and shows context, failure, output, validati
   ]) {
     assert.ok(response.body.includes(expected), expected);
   }
+  assert.equal((response.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(response.body, /<a href="\/" aria-current="page">Dashboard<\/a>/u);
+  assert.match(response.body, /data-action-scope="job-/u);
+  assert.match(response.body, /data-action-feedback data-action-announcement/gu);
   assert.equal(response.body.includes(SECRET), false);
   assert.match(response.body, /&lt;script&gt;\[redacted\]&lt;\/script&gt;/);
   await app.close();
@@ -669,7 +682,23 @@ test("presentation assets and sign-in are available without a token while data r
   }
   assert.match(stylesheetPath, new RegExp(`app\\.${assetHash}\\.css`));
   assert.match(clientScriptPath, new RegExp(`app\\.${assetHash}\\.js`));
-  assert.match((await app.inject({ method: "GET", url: "/auth" })).body, /stylesheet/);
+  const authPage = await app.inject({ method: "GET", url: "/auth" });
+  assert.match(authPage.body, /stylesheet/);
+  assert.match(authPage.body, /<form method="post" action="\/auth"/u);
+  assert.match(authPage.body, /autofocus/gu);
+  assert.match(authPage.body, /autocomplete="off"/u);
+  assert.doesNotMatch(authPage.body, /Dashboard|Commands|Audit|Sign out/gu);
+  assert.doesNotMatch(authPage.body, /data-connection-status|data-operation-announcer/gu);
+  const invalidForm = await app.inject({
+    method: "POST",
+    url: "/auth",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "text/html" },
+    payload: "token=wrong-secret",
+  });
+  assert.equal(invalidForm.statusCode, 401);
+  assert.match(invalidForm.body, /aria-invalid="true"/u);
+  assert.match(invalidForm.body, /aria-describedby="auth-error"/u);
+  assert.equal(invalidForm.body.includes("wrong-secret"), false);
   assert.equal((await app.inject({ method: "GET", url: "/commands" })).statusCode, 401);
   assert.equal(
     (await app.inject({ method: "POST", url: "/auth", payload: { token: "wrong" } })).statusCode,
@@ -747,6 +776,10 @@ test("commands and audit views expose outcomes and redacted action details", asy
   assert.match(commands.body, new RegExp(`/jobs/${data.jobId}`));
   assert.match(audit.body, /workspace-reset/);
   assert.match(audit.body, /recreated/);
+  assert.equal((commands.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(commands.body, /<a href="\/commands" aria-current="page">Commands<\/a>/u);
+  assert.equal((audit.body.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(audit.body, /<a href="\/audit" aria-current="page">Audit<\/a>/u);
   assert.equal(commands.body.includes(SECRET), false);
   assert.equal(audit.body.includes(SECRET), false);
   await app.close();
@@ -813,7 +846,7 @@ test("command and audit streams deliver newly recorded rows", async () => {
       .run(data.repoId, "2026-08-27T00:00:01.000Z");
   });
   assert.equal(command.kind, "change");
-  assert.match(command.fragments["commands-region"] ?? "", /<td>999<\/td>/);
+  assert.match(command.fragments["commands-region"] ?? "", /data-label="Comment">999<\/td>/);
   const audit = await readChange("/audit/stream", () => {
     data.options.operatorActions.record({
       action: "stream-test",
@@ -1025,6 +1058,46 @@ test("client time refresh uses carried instants without a database update", () =
   assert.equal(nodes[0]!.textContent, "2s ago");
 });
 
+test("action announcements stay in the originating action scope", () => {
+  const feedback = (text: string) => ({
+    attributes: {} as Record<string, string>,
+    classList: { toggle: () => undefined },
+    setAttribute(name: string, value: string) {
+      this.attributes[name] = value;
+    },
+    textContent: text,
+  });
+  const first = feedback("First scope is unchanged.");
+  const second = feedback("");
+  const firstScope = {
+    dataset: { actionScope: "first" },
+    querySelector: (_selector: string) => first,
+  };
+  const secondScope = {
+    dataset: { actionScope: "second" },
+    querySelector: (_selector: string) => second,
+  };
+  const secondButton = { closest: () => secondScope };
+  const start = clientScript.indexOf("  const announcementKeys");
+  const end = clientScript.indexOf("  const safeActionError", start);
+  assert.ok(start >= 0 && end > start);
+  runInNewContext(
+    `${clientScript.slice(start, end)}\n  actionMessage(secondButton, "Second scope updated.");`,
+    {
+      document: {
+        querySelector: (selector: string) =>
+          selector === "[data-action-announcement]"
+            ? firstScope.querySelector(selector)
+            : undefined,
+      },
+      firstScope,
+      secondButton,
+    },
+  );
+  assert.equal(first.textContent, "First scope is unchanged.");
+  assert.equal(second.textContent, "Second scope updated.");
+});
+
 test("console shutdown drains every registered live-update stream", async () => {
   const data = fixture();
   const app = buildConsoleServer(data.options);
@@ -1132,6 +1205,29 @@ test("pure view helpers escape values and render absent values safely", () => {
   assert.match(keyValueTable({ "<unsafe>": null, value: "<script>" }), /&lt;script&gt;/);
   assert.match(dangerZone(1, 12), /data-reset-submit/);
   assert.match(dangerZone(1, 12), /disabled/);
+});
+
+test("responsive table helper enforces labelled, keyed records", () => {
+  const html = responsiveTable({
+    caption: "Example records",
+    columns: [{ label: "Name" }, { label: "State" }],
+    rows: [{ key: "record-1", cells: ["alpha", statusPill("ready")] }],
+    emptyMessage: "No records.",
+  });
+  assert.match(html, /<caption>Example records<\/caption>/u);
+  assert.match(html, /<th scope="col">Name<\/th>/u);
+  assert.match(html, /data-live-key="record-1"/u);
+  assert.match(html, /data-label="Name">alpha<\/td>/u);
+  assert.throws(
+    () =>
+      responsiveTable({
+        caption: "Bad records",
+        columns: [{ label: "Name" }, { label: "Name" }],
+        rows: [],
+        emptyMessage: "Empty",
+      }),
+    /unique/u,
+  );
 });
 
 test("wall-clock helpers use the requested local timezone and retain the UTC instant", () => {
@@ -1291,6 +1387,30 @@ test("scrollable panels and keyed details survive a live region swap", () => {
   // Reasoning is collapsed behind a <details>; narration is not.
   assert.match(html, /<details[^>]*>.*Thinking/su);
   assert.match(html, /activity-open/u, "an unfinished block says it is still writing");
+});
+
+test("live console records expose stable identity and the client uses keyed reconciliation", async () => {
+  const data = fixture();
+  const app = buildConsoleServer(data.options);
+  const dashboard = await app.inject({ method: "GET", url: "/", headers: AUTH });
+  const job = await app.inject({ method: "GET", url: `/jobs/${data.jobId}`, headers: AUTH });
+  assert.match(
+    dashboard.body,
+    new RegExp(`data-live-key="repository-${String(data.repoId)}"`, "u"),
+  );
+  assert.match(dashboard.body, new RegExp(`data-live-key="job-${String(data.jobId)}"`, "u"));
+  assert.match(job.body, /data-live-key="attempt-/u);
+  assert.match(job.body, /data-live-key="validation-/u);
+  assert.match(job.body, /data-live-key="log-/u);
+  assert.match(clientScript, /reconcileFragment/u);
+  assert.match(clientScript, /registerRepositoryState/u);
+  assert.match(clientScript, /semanticSnapshot/u);
+  assert.match(clientScript, /routeSessionExpiry/u);
+  assert.match(clientScript, /payload\.kind === 'heartbeat'[\s\S]*?return;/u);
+  assert.doesNotMatch(clientScript, /status\(payload\.kind === 'heartbeat'/u);
+  assert.doesNotMatch(clientScript, /root\.innerHTML\s*=/u);
+  await app.close();
+  data.store.close();
 });
 
 test("an attempt card never presents an unpushed commit as published work", () => {

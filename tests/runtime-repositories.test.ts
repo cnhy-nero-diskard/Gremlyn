@@ -48,16 +48,13 @@ test("syncRepositories keeps an operator's model/provider/effort choice across a
   assert.equal(update.ok, true);
 
   // The process restarts; the config file on disk still says "luna".
-  const [resynced] = syncRepositories(
-    store.db,
-    [
-      config({
-        sourcePath: "/src/widgets-moved",
-        provider: "configured-provider",
-        model: "configured-model",
-      }),
-    ],
-  );
+  const [resynced] = syncRepositories(store.db, [
+    config({
+      sourcePath: "/src/widgets-moved",
+      provider: "configured-provider",
+      model: "configured-model",
+    }),
+  ]);
   assert.ok(resynced);
   assert.equal(resynced.provider, "cline");
   assert.equal(resynced.model, "moonshotai/kimi-k3");
@@ -69,10 +66,9 @@ test("syncRepositories keeps an operator's model/provider/effort choice across a
 test("startup mismatch reporting leaves the persisted provider and model untouched", () => {
   const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-runtime-provider-mismatch-"));
   const store = new Store({ dataDir, file: ":memory:" });
-  const [repository] = syncRepositories(
-    store.db,
-    [config({ agent: "cline", provider: "opencode", model: "opencode/gpt-5.4" })],
-  );
+  const [repository] = syncRepositories(store.db, [
+    config({ agent: "cline", provider: "opencode", model: "opencode/gpt-5.4" }),
+  ]);
   assert.ok(repository);
   const warnings: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const count = reportRepositoryProviderMismatches(

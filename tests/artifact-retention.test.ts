@@ -93,9 +93,13 @@ test("retention keeps live artifacts and trims terminal artifacts oldest-first",
   assert.equal(report.removedBytes, 4);
   assert.equal(report.remainingBytes, 8);
   assert.equal(
-    (data.store.db
-      .prepare("SELECT COUNT(*) AS count FROM operator_actions WHERE action = 'artifact-retention'")
-      .get() as { count: number }).count,
+    (
+      data.store.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM operator_actions WHERE action = 'artifact-retention'",
+        )
+        .get() as { count: number }
+    ).count,
     1,
   );
   data.store.close();
@@ -144,7 +148,11 @@ test("age retention removes terminal output, validation, and state but protects 
   assert.equal(report.removed, 3);
   assert.equal(readFileSync(liveOutput, "utf8"), "live output");
   assert.equal(
-    (data.store.db.prepare("SELECT output_ref FROM attempts WHERE id = ?").get(terminal.attemptId) as { output_ref: string }).output_ref,
+    (
+      data.store.db
+        .prepare("SELECT output_ref FROM attempts WHERE id = ?")
+        .get(terminal.attemptId) as { output_ref: string }
+    ).output_ref,
     oldOutput,
   );
   assert.equal(live.jobId > 0, true);

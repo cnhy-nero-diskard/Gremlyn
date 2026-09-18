@@ -11,7 +11,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActivityRecorder, activityPath, opencodeLineMapper, writeActivity } from "../src/agent/activity.js";
+import {
+  ActivityRecorder,
+  activityPath,
+  opencodeLineMapper,
+  writeActivity,
+} from "../src/agent/activity.js";
 
 function line(event: Record<string, unknown>, ts = "2026-08-28T18:05:44.524Z"): string {
   return JSON.stringify({ ts, type: "agent_event", event });
@@ -20,7 +25,9 @@ function line(event: Record<string, unknown>, ts = "2026-08-28T18:05:44.524Z"): 
 test("each content type is extracted from its own field", () => {
   const recorder = new ActivityRecorder();
   // Narration streams deltas plus the whole block so far.
-  recorder.push(line({ type: "content_start", contentType: "text", text: "Pl", accumulated: "Pl" }));
+  recorder.push(
+    line({ type: "content_start", contentType: "text", text: "Pl", accumulated: "Pl" }),
+  );
   recorder.push(
     line({ type: "content_start", contentType: "text", text: "an", accumulated: "Plan" }),
   );
@@ -56,9 +63,7 @@ test("each content type is extracted from its own field", () => {
 test("token deltas collapse into one block per content run", () => {
   const recorder = new ActivityRecorder();
   for (let i = 1; i <= 300; i += 1) {
-    recorder.push(
-      line({ type: "content_start", contentType: "text", accumulated: "x".repeat(i) }),
-    );
+    recorder.push(line({ type: "content_start", contentType: "text", accumulated: "x".repeat(i) }));
   }
   const activity = recorder.snapshot();
   // 300 deltas describe one growing block; storing each would be the wall of
@@ -103,7 +108,9 @@ test("unparsable and unknown lines are ignored, never thrown", () => {
 
 test("a runaway block is truncated with the loss stated", () => {
   const recorder = new ActivityRecorder();
-  recorder.push(line({ type: "content_start", contentType: "text", accumulated: "y".repeat(25_000) }));
+  recorder.push(
+    line({ type: "content_start", contentType: "text", accumulated: "y".repeat(25_000) }),
+  );
   const text = recorder.snapshot().blocks[0]?.text ?? "";
   assert.ok(text.length < 25_000);
   assert.match(text, /truncated \(5000 more characters\)/u);
@@ -200,7 +207,10 @@ test("OpenCode: text and reasoning are recovered as separate closed blocks", () 
   );
   assert.equal(activity.blocks[0]?.text, "The user is asking me to reply with a single word.");
   assert.equal(activity.blocks[1]?.text, "READY");
-  assert.ok(activity.blocks.every((b) => b.done), "OpenCode blocks arrive already complete");
+  assert.ok(
+    activity.blocks.every((b) => b.done),
+    "OpenCode blocks arrive already complete",
+  );
   assert.equal(activity.iterations, 1);
   assert.deepEqual(activity.usage, {
     tokens: { total: 8080, input: 6244, output: 44, reasoning: 0, cache: { write: 0, read: 1792 } },

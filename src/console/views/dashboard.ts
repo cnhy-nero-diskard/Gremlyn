@@ -7,12 +7,7 @@ import {
   type ProviderModelOption,
   type ProviderOption,
 } from "../../agent/provider-catalog.js";
-import {
-  elapsedTimeElement,
-  escapeHtml,
-  relativeTimeElement,
-  statusPill,
-} from "./components.js";
+import { elapsedTimeElement, escapeHtml, relativeTimeElement, statusPill } from "./components.js";
 
 /** Configured agent definitions, keyed by the agent id a repository references. */
 type AgentDefinitions = Record<string, AgentDefinition>;
@@ -151,13 +146,17 @@ function modelProviderControl(
   const { efforts, providerOptional, kind } = agentOptionsFor(repo, agents);
   const providers = providersForKind(catalog, kind);
   const knownProvider = providers.find((provider) => provider.id === providerId);
-  const knownProviderForAnotherKind = catalog.providers.find((provider) => provider.id === providerId);
-  const providerMismatch = providerId.length > 0 && !knownProvider && knownProviderForAnotherKind !== undefined;
+  const knownProviderForAnotherKind = catalog.providers.find(
+    (provider) => provider.id === providerId,
+  );
+  const providerMismatch =
+    providerId.length > 0 && !knownProvider && knownProviderForAnotherKind !== undefined;
   // An empty provider is a real state for provider-optional agents, not an
   // unnamed custom one — render it as its own selectable option so saving the
   // card round-trips the empty value instead of coercing it to a custom id.
   const emptyProvider = providerOptional && providerId === "";
-  const providerValue = knownProvider || emptyProvider || providerMismatch ? providerId : CUSTOM_PROVIDER;
+  const providerValue =
+    knownProvider || emptyProvider || providerMismatch ? providerId : CUSTOM_PROVIDER;
   const emptyOption = providerOptional
     ? `<option value=""${emptyProvider ? " selected" : ""}>None — provider is folded into the model id</option>`
     : "";
@@ -202,8 +201,8 @@ function modelProviderControl(
       ? "No separate provider; enter the model id in provider/model form."
       : providerMismatch
         ? `Provider ${providerId} is not supported by the configured ${kind ?? "agent"}; choose a supported provider to replace it.`
-      : "Custom provider; enter the exact provider and model ids.";
-  return `<div class="model-provider-picker" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}" data-saved-provider="${escapeHtml(providerId)}" data-saved-model="${escapeHtml(repo.model ?? "")}" data-saved-effort="${escapeHtml(repo.effort ?? "")}" data-saved-timeout="${escapeHtml(repo.timeout_seconds === null || repo.timeout_seconds === undefined ? "" : String(repo.timeout_seconds))}"${kind ? ` data-agent-kind="${escapeHtml(kind)}"` : ""}${providerOptional ? " data-provider-optional" : ""}${providerMismatch ? ` data-provider-mismatch="${escapeHtml(providerId)}"` : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label>${providerMismatch ? `<small class="model-picker-mismatch" data-provider-mismatch-message>Provider mismatch: the persisted provider is not supported by this repository's configured agent.</small>` : ""}<label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small></div>`;
+        : "Custom provider; enter the exact provider and model ids.";
+  return `<div class="model-provider-picker" data-action-scope="settings-${String(repo.id)}" data-repo-picker data-repo-id="${repo.id}" data-catalog-source="${catalog.source}" data-saved-provider="${escapeHtml(providerId)}" data-saved-model="${escapeHtml(repo.model ?? "")}" data-saved-effort="${escapeHtml(repo.effort ?? "")}" data-saved-timeout="${escapeHtml(repo.timeout_seconds === null || repo.timeout_seconds === undefined ? "" : String(repo.timeout_seconds))}"${kind ? ` data-agent-kind="${escapeHtml(kind)}"` : ""}${providerOptional ? " data-provider-optional" : ""}${providerMismatch ? ` data-provider-mismatch="${escapeHtml(providerId)}"` : ""}><label>Provider <select name="repo-provider-${repo.id}" data-repo-provider-select data-repo-field="provider" data-provider-value="${escapeHtml(providerId)}">${providerOptions}</select>${customProvider}</label>${providerMismatch ? `<small class="model-picker-mismatch" data-provider-mismatch-message>Provider mismatch: the persisted provider is not supported by this repository's configured agent.</small>` : ""}<label>Model ${modelSelect}${modelInput}</label><div class="model-picker-meta" data-repo-model-meta>${modelMeta}</div><small class="model-picker-description" data-repo-model-description>${escapeHtml(modelHint)}</small><label>Effort ${effort}</label><label>Timeout (seconds) ${timeout}</label><small class="model-picker-hint" data-repo-hint>${escapeHtml(hint)} Blank timeout means no limit. Effort tiers come from the configured agent.</small><p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></div>`;
 }
 
 export function repositoryCards(
@@ -230,7 +229,7 @@ function repositoryCard(
   const head = `<header class="repo-head"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><span class="state state-${on ? "on" : "off"}" data-enabled>${on ? "enabled" : "disabled"}</span><button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${on ? "Disable" : "Enable"}</button></header>`;
   const chips = `<p class="repo-chips"><span class="chip">agent <code>${escapeHtml(repo.agent ?? "unknown")}</code></span><span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
   const validation = `<div class="repo-validation"><h4>Validation commands</h4>${validationLabel(repo)}</div>`;
-  return `<article class="card repo-card">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${validation}</article>`;
+  return `<article class="card repo-card" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
 }
 
 /**
@@ -246,7 +245,7 @@ function jobItem(job: JobSummary): string {
     relativeTimeElement(job.created_at),
     `<span class="job-row-elapsed">${elapsedTimeElement(job.created_at, job.finished_at)}</span>`,
   ].join("");
-  return `<li class="job-row"><a class="job-row-main" href="/jobs/${job.id}"><span class="job-row-repo">${escapeHtml(`${job.owner}/${job.name}`)} <span class="job-row-pr">#${String(job.pr_number)}</span></span>${statusPill(job.status)}</a><span class="job-row-meta">${meta}</span></li>`;
+  return `<li class="job-row" data-live-key="job-${String(job.id)}"><a class="job-row-main" href="/jobs/${job.id}"><span class="job-row-repo">${escapeHtml(`${job.owner}/${job.name}`)} <span class="job-row-pr">#${String(job.pr_number)}</span></span>${statusPill(job.status)}</a><span class="job-row-meta">${meta}</span></li>`;
 }
 
 export function jobLane(title: string, jobs: JobSummary[], regionId?: string): string {
@@ -254,7 +253,7 @@ export function jobLane(title: string, jobs: JobSummary[], regionId?: string): s
     ? `<ul class="job-rows">${jobs.map(jobItem).join("")}</ul>`
     : '<p class="lane-empty muted">No jobs in this lane.</p>';
   const lane = title.toLowerCase().split(" ")[0] ?? "lane";
-  const content = `<section class="panel lane lane-${escapeHtml(lane)}"><h2>${escapeHtml(title)} <span class="lane-count">${String(jobs.length)}</span></h2>${body}</section>`;
+  const content = `<section class="panel lane lane-${escapeHtml(lane)}"><h2 data-focus-fallback tabindex="-1">${escapeHtml(title)} <span class="lane-count">${String(jobs.length)}</span></h2>${body}</section>`;
   return regionId ? `<div id="${regionId}">${content}</div>` : content;
 }
 
@@ -279,7 +278,7 @@ export function dashboardRegions(
   const catalogNote = `<p class="catalog-note">Provider catalog: ${catalogStatus} Cline models use provider-qualified ids; OpenAI Codex models use bare Codex ids.</p>`;
   return {
     health: `<div class="health-summary">${statusPill(health.status)}<span class="muted page-summary">${escapeHtml(summary)}</span></div><section class="stat-strip" aria-label="Orchestrator health"><div class="metric ${health.stale ? "stale" : ""}"><span>Orchestrator</span><strong>${escapeHtml(health.status)}</strong><small>${health.lastPolledAt ? `last poll ${relativeTimeElement(health.lastPolledAt)}` : "no poll recorded"}</small></div><div class="metric"><span>Poll freshness</span><strong>${health.lastPolledAt ? relativeTimeElement(health.lastPolledAt) : "—"}</strong><small>${health.stale ? "stale — polling may have stopped" : `interval ${String(health.pollIntervalSec)}s`}</small></div><div class="metric"><span>Queue depth</span><strong>${String(health.queueDepth)}</strong><small>jobs waiting</small></div><div class="metric"><span>Concurrency</span><strong>${String(health.inFlight)} / ${String(health.concurrency)}</strong><small>jobs executing</small></div></section>`,
-    repositories: `<h2>Repositories <span class="muted panel-note">${String(model.repositories.length)}</span></h2>${catalogNote}${repositoryCards(model.repositories, catalog, agents)}`,
+    repositories: `<h2 data-focus-fallback tabindex="-1">Repositories <span class="muted panel-note">${String(model.repositories.length)}</span></h2>${catalogNote}${repositoryCards(model.repositories, catalog, agents)}`,
     jobs: `<div class="lanes">${jobLane("Running", model.running)}${jobLane("Queued", model.queued)}${jobLane("Recent successes and failures", model.recent)}</div>`,
   };
 }
@@ -297,6 +296,6 @@ export function dashboardView(
   timeZone?: string,
 ): string {
   const regions = dashboardRegions(model, catalog, agents, timeZone);
-  const head = `<header class="page-head"><div class="page-title"><h1>Dashboard</h1></div><div id="health-region">${regions.health}</div><p class="sr-status" data-live-status role="status">Live updates are connected when supported.</p></header>`;
+  const head = `<header class="page-head"><div class="page-title"><h1 data-focus-fallback tabindex="-1">Dashboard</h1></div><div id="health-region">${regions.health}</div></header>`;
   return `<div class="dash-page">${head}<div id="job-lanes">${regions.jobs}</div><section class="panel" id="repositories">${regions.repositories}</section></div>`;
 }

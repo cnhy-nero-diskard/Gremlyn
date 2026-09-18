@@ -89,13 +89,22 @@ export async function reclaimWorkspaces(
   const nowMs = options.now instanceof Date ? options.now.getTime() : (options.now ?? Date.now());
   if (!Number.isFinite(nowMs)) throw new Error("workspace reclamation clock is invalid");
 
-  const repositories = new Map(options.repositories.map((repository) => [repository.id, repository]));
+  const repositories = new Map(
+    options.repositories.map((repository) => [repository.id, repository]),
+  );
   const found = await listReclamationCandidates(options.repositories);
   const decisions: WorkspaceReclamationDecision[] = [];
   for (const item of found) {
     const repository = repositories.get(item.repositoryId);
     if (!repository) continue;
-    const eligibility = await inspectCandidate(options.db, repository, item.prNumber, item.path, nowMs, options.minimumAgeMs);
+    const eligibility = await inspectCandidate(
+      options.db,
+      repository,
+      item.prNumber,
+      item.path,
+      nowMs,
+      options.minimumAgeMs,
+    );
     if (!eligibility.ok) {
       const decision: WorkspaceReclamationDecision = {
         repositoryId: repository.id,
@@ -190,7 +199,10 @@ async function inspectCandidate(
   try {
     modifiedAt = (await stat(path)).mtimeMs;
   } catch (error) {
-    return { ok: false, reason: `retained: could not determine workspace age (${errorMessage(error)})` };
+    return {
+      ok: false,
+      reason: `retained: could not determine workspace age (${errorMessage(error)})`,
+    };
   }
   if (!Number.isFinite(modifiedAt)) {
     return { ok: false, reason: "retained: workspace age is not finite" };
@@ -204,7 +216,10 @@ async function inspectCandidate(
   try {
     status = await statusEntries(path);
   } catch (error) {
-    return { ok: false, reason: `retained: could not determine workspace cleanliness (${errorMessage(error)})` };
+    return {
+      ok: false,
+      reason: `retained: could not determine workspace cleanliness (${errorMessage(error)})`,
+    };
   }
   if (status.length > 0) {
     return { ok: false, reason: "retained: workspace holds uncommitted or untracked work" };

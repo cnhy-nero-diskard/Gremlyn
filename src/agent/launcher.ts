@@ -55,7 +55,9 @@ export type ProcessRunner = (
  * Returns undefined whenever anything is unrecognised, leaving the caller to
  * spawn the binary as configured.
  */
-export function resolveWindowsShim(binary: string): { binary: string; prefix: string[] } | undefined {
+export function resolveWindowsShim(
+  binary: string,
+): { binary: string; prefix: string[] } | undefined {
   if (process.platform !== "win32") return undefined;
   let shimPath: string | undefined;
   if (/\.cmd$/iu.test(binary) && existsSync(binary)) {

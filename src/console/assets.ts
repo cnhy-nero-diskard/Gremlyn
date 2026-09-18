@@ -5,7 +5,7 @@ export const stylesheet = `
 :root {
   color-scheme: light;
   --bg: #f5f7fb; --surface: #fff; --surface-muted: #eef2f7; --text: #172033;
-  --muted: #5e6a7e; --border: #d5dce8; --accent: #2457c5; --focus: #f59e0b;
+  --muted: #5e6a7e; --border: #d5dce8; --accent: #2457c5; --accent-contrast: #fff; --focus: #b54708;
   --success: #147d4d; --failure: #b42318; --cancelled: #8a4b08; --interrupted: #6941c6;
   --success-bg: #dcfae6; --failure-bg: #fee4e2; --cancelled-bg: #fff1d6; --interrupted-bg: #eee8ff;
   --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -13,17 +13,18 @@ export const stylesheet = `
 }
 @media (prefers-color-scheme: dark) {
   :root { color-scheme: dark; --bg: #0e1420; --surface: #172033; --surface-muted: #222d40;
-    --text: #eef3fb; --muted: #aebbd0; --border: #34435c; --accent: #8bb4ff; --focus: #fbbf24;
+    --text: #eef3fb; --muted: #aebbd0; --border: #34435c; --accent: #8bb4ff; --accent-contrast: #0e1420; --focus: #fbbf24;
     --success: #65d99d; --failure: #ff8f87; --cancelled: #ffc46b; --interrupted: #c5aaff;
     --success-bg: #123c2c; --failure-bg: #4a201f; --cancelled-bg: #493516; --interrupted-bg: #30245b; }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; }
+body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; overflow-x: hidden; }
 a { color: var(--accent); }
 a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .shell { max-width: 1240px; margin: 0 auto; padding: 1rem; }
 /* The job page runs two live panels side by side; it needs the extra room. */
 .shell-wide { max-width: 1760px; }
+main, .dash-page, .job-page, #job-lanes, #repositories, .page-head, .lanes, .repo-defaults, .model-provider-picker { min-width: 0; }
 header.site-header { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: .8rem; margin-bottom: 1.25rem; }
 nav { display: flex; gap: .8rem; flex-wrap: wrap; }
 .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
@@ -48,9 +49,16 @@ section.panel > h3 { font-size: .8rem; font-weight: 700; text-transform: upperca
 .page-summary { font-size: .9rem; }
 .stale { border-color: var(--failure); color: var(--failure); }
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+th, td { text-align: left; padding: .55rem; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
 th { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
-.table-scroll { overflow-x: auto; }
+.table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.responsive-table-wrap { position: relative; }
+.responsive-table-wrap:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.responsive-table caption { caption-side: top; text-align: left; padding: 0 0 .6rem; font-weight: 700; color: var(--text); }
+.responsive-table code, .responsive-table a { overflow-wrap: anywhere; }
+.responsive-table details { min-width: 0; }
+.validation-output { max-height: 14rem; overflow: auto; white-space: pre-wrap; }
+.table-empty { padding: 1rem .55rem; }
 td.num { font-variant-numeric: tabular-nums; }
 /* Let the command column absorb the slack; the rest are fixed-width facts, so
    a two-row table does not stretch four columns across the whole panel. */
@@ -58,6 +66,20 @@ td.num { font-variant-numeric: tabular-nums; }
 .validation-table th:nth-child(3), .validation-table td:nth-child(3) { width: 8rem; }
 .validation-table th:nth-child(4), .validation-table td:nth-child(4) { width: 30%; }
 .validation-table summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+@media (max-width: 720px) {
+  .responsive-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .responsive-table, .responsive-table tbody, .responsive-table tr, .responsive-table td { display: block; }
+  .responsive-table tbody { display: grid; gap: .7rem; }
+  .responsive-table tr { border: 1px solid var(--border); border-radius: .45rem; padding: .35rem .7rem; background: var(--surface-muted); }
+  .responsive-table td { display: grid; grid-template-columns: minmax(7rem, 36%) minmax(0, 1fr); gap: .6rem;
+    align-items: start; padding: .55rem 0; border-bottom: 1px solid var(--border); }
+  .responsive-table td:last-child { border-bottom: 0; }
+  .responsive-table td::before { content: attr(data-label); color: var(--muted); font-size: .74rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .responsive-table td.table-empty { display: block; }
+  .responsive-table td.table-empty::before { content: none; }
+}
 .exit { display: inline-block; min-width: 1.7rem; text-align: center; border-radius: .3rem;
   padding: .05rem .35rem; font-weight: 700; font-size: .82rem; font-variant-numeric: tabular-nums; }
 .exit-ok { color: var(--success); background: var(--success-bg); }
@@ -65,8 +87,12 @@ td.num { font-variant-numeric: tabular-nums; }
 pre, code { font-family: var(--mono); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-muted); border-radius: .4rem; padding: .75rem; }
 button, input, select { font: inherit; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
 button { cursor: pointer; border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .7rem; color: var(--text); background: var(--surface-muted); }
-button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 button.danger { color: var(--failure); border-color: var(--failure); }
 button:disabled { cursor: not-allowed; opacity: .55; }
 input, select { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: .35rem; padding: .4rem .5rem; }
@@ -119,6 +145,13 @@ label { display: inline-flex; gap: .45rem; align-items: center; }
 .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .muted { color: var(--muted); }
 .sr-status { min-height: 1.5rem; color: var(--muted); }
+.action-feedback { min-height: 1.4rem; margin: .35rem 0 0; color: var(--muted); font-size: .82rem; }
+.action-feedback:empty { display: none; }
+.action-feedback.is-error { color: var(--failure); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.console-status { margin: 0 0 1rem; padding: .45rem .7rem; border: 1px solid var(--border);
+  border-radius: .4rem; color: var(--muted); font-size: .85rem; }
 .signin { max-width: 34rem; margin: 10vh auto; }
 
 /* Job page ------------------------------------------------------------------
@@ -357,7 +390,17 @@ pre.activity-text { margin: .3rem 0 0; background: transparent; padding: 0; font
 
 export const clientScript = `
 (() => {
-  const status = (message) => { const node = document.querySelector('[data-live-status]'); if (node) node.textContent = message; };
+  let connectionState = 'initial';
+  const setConnectionStatus = (state, message, shouldAnnounce = true) => {
+    const node = document.querySelector('[data-connection-status]');
+    const changed = connectionState !== state;
+    connectionState = state;
+    if (node && (node.textContent !== message || node.dataset.connectionState !== state)) {
+      node.dataset.connectionState = state;
+      node.textContent = message;
+    }
+    if (changed && shouldAnnounce && typeof announce === 'function') announce('connection', state, message, 'polite');
+  };
   const relativeText = (value, now = Date.now()) => {
     if (!value) return 'never';
     const ms = now - Date.parse(value);
@@ -389,6 +432,13 @@ export const clientScript = `
   });
   refreshTimes();
   setInterval(refreshTimes, 1000);
+  const updateTableOverflow = (root = document) => root.querySelectorAll('[data-table-overflow]').forEach((node) => {
+    const overflow = node.scrollWidth > node.clientWidth + 1;
+    node.dataset.overflow = overflow ? 'true' : 'false';
+    node.tabIndex = overflow ? 0 : -1;
+  });
+  updateTableOverflow();
+  if (typeof window !== 'undefined') window.addEventListener('resize', () => updateTableOverflow());
   // The log region is replaced wholesale on every stream tick, so anything the
   // operator set by hand — filter text, level, follow, scroll position — has to
   // be carried across the swap or it resets several times a second.
@@ -592,48 +642,63 @@ export const clientScript = `
   const timeoutFor = (root) => root.querySelector('[data-repo-timeout]')?.value.trim() || '';
   const savePicker = async (root, previousProvider, previousModel) => {
     const provider = providerFor(root); const model = modelFor(root); const effort = savedEffortFor(root); const id = root.dataset.repoId;
+    const focused = document.activeElement;
     const controls = [...root.querySelectorAll('[data-repo-provider-select], [data-repo-provider-input], [data-repo-model-select], [data-repo-model-input]')];
     controls.forEach((control) => { control.disabled = true; });
-    root.dataset.pickerSaving = 'true'; status('Saving model and provider…');
+    root.dataset.pickerSaving = 'true'; actionMessage(root, 'Saving model and provider…', false, 'settings:' + id + ':saving-model');
     try {
       const response = await fetch('/repos/' + id + '/model-provider', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, model, effort }) });
       const payload = await response.json().catch(() => ({}));
+      if (await routeSessionExpiry(response, payload)) return;
       if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
-      root.dataset.savedProvider = payload.provider; root.dataset.savedModel = payload.model; delete root.dataset.providerMismatch; status('Model and provider updated');
+      root.dataset.savedProvider = payload.provider; root.dataset.savedModel = payload.model; delete root.dataset.providerMismatch; actionMessage(root, 'Model and provider updated', false, 'settings:' + id + ':saved-model');
     } catch (error) {
       setPickerSelection(root, previousProvider, previousModel, savedEffortFor(root));
-      status(error instanceof Error ? error.message : 'Update refused');
-    } finally { delete root.dataset.pickerSaving; controls.forEach((control) => { control.disabled = false; }); }
+      actionMessage(root, error instanceof Error ? safeActionError({ error: error.message }) : 'Update refused.', true, 'settings:' + id + ':model-error');
+    } finally {
+      delete root.dataset.pickerSaving; controls.forEach((control) => { control.disabled = false; });
+      if (focused && typeof focused.focus === 'function' && root.contains(focused)) focused.focus({ preventScroll: true });
+    }
   };
   const saveEffort = async (root, previousEffort) => {
     const input = root.querySelector('[data-repo-effort]'); const id = root.dataset.repoId;
     if (!input) return;
-    input.disabled = true; root.dataset.pickerSaving = 'true'; status('Saving reasoning effort…');
+    const focused = document.activeElement === input;
+    input.disabled = true; root.dataset.pickerSaving = 'true'; actionMessage(root, 'Saving reasoning effort…', false, 'settings:' + id + ':saving-effort');
     try {
       const response = await fetch('/repos/' + id + '/effort', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ effort: effortFor(root) }) });
       const payload = await response.json().catch(() => ({}));
+      if (await routeSessionExpiry(response, payload)) return;
       if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
-      root.dataset.savedEffort = payload.effort; status('Reasoning effort updated');
+      root.dataset.savedEffort = payload.effort; actionMessage(root, 'Reasoning effort updated', false, 'settings:' + id + ':saved-effort');
     } catch (error) {
       root.dataset.savedEffort = previousEffort;
       input.value = previousEffort;
-      status(error instanceof Error ? error.message : 'Update refused');
-    } finally { delete root.dataset.pickerSaving; input.disabled = false; }
+      actionMessage(root, error instanceof Error ? safeActionError({ error: error.message }) : 'Update refused.', true, 'settings:' + id + ':effort-error');
+    } finally {
+      delete root.dataset.pickerSaving; input.disabled = false;
+      if (focused) input.focus({ preventScroll: true });
+    }
   };
   const saveTimeout = async (root, previousTimeout) => {
     const input = root.querySelector('[data-repo-timeout]'); const id = root.dataset.repoId;
     if (!input) return;
-    input.disabled = true; status('Saving agent timeout…');
+    const focused = document.activeElement === input;
+    input.disabled = true; actionMessage(root, 'Saving agent timeout…', false, 'settings:' + id + ':saving-timeout');
     const raw = input.value.trim(); const timeoutSeconds = raw === '' ? null : Number(raw);
     try {
       const response = await fetch('/repos/' + id + '/timeout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ timeoutSeconds }) });
       const payload = await response.json().catch(() => ({}));
+      if (await routeSessionExpiry(response, payload)) return;
       if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
-      root.dataset.savedTimeout = payload.timeoutSeconds === null ? '' : String(payload.timeoutSeconds); status(payload.timeoutSeconds === null ? 'Agent timeout disabled' : 'Agent timeout updated');
+      root.dataset.savedTimeout = payload.timeoutSeconds === null ? '' : String(payload.timeoutSeconds); actionMessage(root, payload.timeoutSeconds === null ? 'Agent timeout disabled' : 'Agent timeout updated', false, 'settings:' + id + ':saved-timeout');
     } catch (error) {
       input.value = previousTimeout;
-      status(error instanceof Error ? error.message : 'Update refused');
-    } finally { input.disabled = false; }
+      actionMessage(root, error instanceof Error ? safeActionError({ error: error.message }) : 'Update refused.', true, 'settings:' + id + ':timeout-error');
+    } finally {
+      input.disabled = false;
+      if (focused) input.focus({ preventScroll: true });
+    }
   };
   const refreshModelCatalog = async () => {
     try {
@@ -643,9 +708,170 @@ export const clientScript = `
       document.querySelectorAll('[data-repo-picker]').forEach((root) => { if (!pickerBusy(root)) renderLivePicker(root); });
     } catch { /* The server-rendered bundled catalog remains usable offline. */ }
   };
-  // Any scrollable panel inside a swapped region loses its position, because
-  // the region's innerHTML is replaced wholesale. Key by name, not index, so a
-  // panel appearing or disappearing between ticks cannot shift the mapping.
+  const surfaceHooks = new Map();
+  const announcementKeys = new Set();
+  const escapeSelector = (value) => typeof CSS !== 'undefined' && CSS.escape
+    ? CSS.escape(value)
+    : String(value).replace(/[^a-zA-Z0-9_-]/gu, '\\$&');
+  const isElement = (node) => Boolean(node && node.nodeType === 1);
+  const directKey = (node) => isElement(node) ? (node.dataset.liveKey || '') : '';
+  const keyedSelector = (key) => '[data-live-key="' + escapeSelector(key) + '"]';
+  const describeNode = (node) => {
+    const text = node?.textContent?.replace(/\\s+/gu, ' ').trim() || 'record';
+    return text.slice(0, 80);
+  };
+  const announce = (channel, eventKey, message, priority = 'polite', target = null) => {
+    const key = channel + '|' + eventKey + '|' + message;
+    if (announcementKeys.has(key)) return false;
+    announcementKeys.add(key);
+    while (announcementKeys.size > 256) {
+      const oldest = announcementKeys.values().next().value;
+      if (!oldest) break;
+      announcementKeys.delete(oldest);
+    }
+    const selector = channel === 'connection'
+      ? '[data-connection-status]'
+      : channel === 'action'
+        ? '[data-action-announcement]'
+        : '[data-operation-announcer]';
+    const node = target || document.querySelector(selector);
+    if (!node) return false;
+    node.setAttribute('aria-live', priority);
+    node.textContent = message;
+    return true;
+  };
+  const semanticSnapshot = (root) => {
+    const states = new Map();
+    [root, ...root.querySelectorAll('[data-live-key]')].forEach((owner) => {
+      const key = owner === root ? (root.id || directKey(root)) : directKey(owner);
+      if (!key) return;
+      const values = [...owner.querySelectorAll('[data-status-value]')]
+        .filter((node) => {
+          const nearest = node.closest('[data-live-key]');
+          return owner === root ? !nearest || nearest === root : nearest === owner;
+        })
+        .map((node) => node.getAttribute('data-status-value') || '')
+        .filter(Boolean);
+      if (values.length) states.set(key, values.join('|'));
+    });
+    return states;
+  };
+  const announceSemanticChanges = (root, before) => {
+    const after = semanticSnapshot(root);
+    after.forEach((value, key) => {
+      const previous = before.get(key);
+      if (previous === value) return;
+      const actionable = /failed|cancelled|interrupted|error|bad/iu.test(value);
+      if (previous === undefined && !actionable) return;
+      const owner = root.id === key ? root : root.querySelector(keyedSelector(key));
+      const label = owner?.querySelector('h1, h2, h3, a')?.textContent?.replace(/\\s+/gu, ' ').trim()
+        || 'An operational record';
+      const status = value.split('|').join(', ');
+      announce(
+        'operational',
+        'state:' + key + ':' + (previous || 'new') + '>' + value,
+        label.slice(0, 80) + ' is now ' + status + '.',
+        'polite',
+      );
+    });
+  };
+  const actionMessage = (source, message, error = false, eventKey = '') => {
+    const scope = source?.closest ? source.closest('[data-action-scope]') : null;
+    const node = scope?.querySelector(':scope > [data-action-feedback]') || scope?.querySelector('[data-action-feedback]');
+    if (!node) return;
+    node.classList.toggle('is-error', error);
+    node.setAttribute('role', error ? 'alert' : 'status');
+    node.setAttribute('aria-live', error ? 'assertive' : 'polite');
+    node.textContent = message;
+    announce('action', eventKey || ((scope.dataset.actionScope || 'action') + ':' + message), message, error ? 'assertive' : 'polite', node);
+  };
+  const safeActionError = (payload, fallback = 'Action refused. Try again.') => {
+    const known = typeof payload?.error === 'string' ? payload.error : '';
+    const messages = {
+      'model-required': 'Choose a model before saving.',
+      'provider-required': 'Choose a provider before saving.',
+      'effort-required': 'Choose a reasoning effort before saving.',
+      'effort-not-supported': 'That reasoning effort is not supported by this agent.',
+      'timeout-invalid': 'Enter a valid timeout in seconds.',
+      'explicit-reset-confirmation-required': 'Type RESET to confirm the workspace reset.',
+      'workspace-reset-unavailable': 'Workspace reset is unavailable.',
+      'retry-unavailable': 'Retry is unavailable for this job.',
+      'cancel-unavailable': 'Cancel is unavailable for this job.',
+    };
+    return messages[known] || fallback;
+  };
+  const routeSessionExpiry = async (response, payload) => {
+    if (response.status !== 401 || payload?.error !== 'session-expired') return false;
+    document.querySelectorAll('[data-action-feedback]').forEach((node) => {
+      node.textContent = '';
+      node.classList.remove('is-error');
+      node.setAttribute('role', 'status');
+      node.setAttribute('aria-live', 'polite');
+    });
+    if (typeof window !== 'undefined' && window.location) window.location.assign('/auth?reason=expired');
+    return true;
+  };
+  const registerSurface = (name, hook) => {
+    surfaceHooks.set(name, hook);
+    return () => surfaceHooks.delete(name);
+  };
+  const registerRepositoryState = (hook) => registerSurface('repository-settings', hook);
+  const registerActionFeedback = (scope, hook) => registerSurface('action:' + scope, hook);
+  const registerJobSafetySteps = (hook) => registerSurface('job-safety-rail', hook);
+  const pathFrom = (ancestor, node) => {
+    const path = [];
+    let current = node;
+    while (current && current !== ancestor) {
+      const parent = current.parentNode;
+      if (!parent) break;
+      path.unshift(Array.prototype.indexOf.call(parent.childNodes, current));
+      current = parent;
+    }
+    return current === ancestor ? path : [];
+  };
+  const nodeAtPath = (ancestor, path) => {
+    let current = ancestor;
+    for (const index of path || []) {
+      current = current?.childNodes?.[index];
+      if (!current) return null;
+    }
+    return current;
+  };
+  const keyedOwner = (root, node) => {
+    let owner = isElement(node) && node.closest ? node.closest('[data-live-key]') : null;
+    if (!owner || !root.contains(owner)) owner = root;
+    return owner;
+  };
+  const nextKeyFor = (owner) => {
+    if (!owner || owner === owner.parentNode) return '';
+    let sibling = owner.nextElementSibling;
+    while (sibling) {
+      const key = directKey(sibling);
+      if (key) return key;
+      sibling = sibling.nextElementSibling;
+    }
+    return '';
+  };
+  const focusSnapshot = (root) => {
+    const active = document.activeElement;
+    if (!active || !root.contains(active)) return null;
+    const owner = keyedOwner(root, active);
+    const selector = active.id
+      ? { kind: 'id', value: active.id }
+      : active.name
+        ? { kind: 'name', value: active.name }
+        : null;
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      ownerLabel: owner === root ? '' : describeNode(owner),
+      nextKey: owner === root ? '' : nextKeyFor(owner),
+      path: pathFrom(owner, active),
+      selector,
+      selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+      selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+      selectionDirection: active.selectionDirection || 'none',
+    };
+  };
   const scrollState = (root) => {
     const state = {};
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
@@ -660,30 +886,92 @@ export const clientScript = `
     const follow = root.querySelector('[data-activity-follow]');
     return follow ? { follow: follow.checked } : null;
   };
+  const fieldSnapshot = (root) => [...root.querySelectorAll('input, select, textarea')].map((field) => {
+    const owner = keyedOwner(root, field);
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      path: pathFrom(owner, field),
+      id: field.id || '',
+      name: field.name || '',
+      value: field.value,
+      checked: typeof field.checked === 'boolean' ? field.checked : null,
+      selectionStart: typeof field.selectionStart === 'number' ? field.selectionStart : null,
+      selectionEnd: typeof field.selectionEnd === 'number' ? field.selectionEnd : null,
+      selectionDirection: field.selectionDirection || 'none',
+    };
+  });
+  const detailsSnapshot = (root) => [...root.querySelectorAll('details')].map((detail) => {
+    const owner = keyedOwner(root, detail);
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      path: pathFrom(owner, detail),
+      key: detail.dataset.detailsKey || '',
+      open: detail.open,
+    };
+  });
+  const feedbackSnapshot = (root) => [...root.querySelectorAll('[data-action-feedback]')].map((node) => {
+    const owner = keyedOwner(root, node);
+    return {
+      ownerKey: owner === root ? '' : directKey(owner),
+      path: pathFrom(owner, node),
+      text: node.textContent || '',
+      role: node.getAttribute('role') || 'status',
+      live: node.getAttribute('aria-live') || 'polite',
+      error: node.classList.contains('is-error'),
+    };
+  });
   const remember = (root) => ({
-    // A dragged panel height lives in an inline style on an element the swap
-    // destroys, so it has to be carried across like any other operator input.
+    focus: focusSnapshot(root),
+    // A dragged panel height lives in an inline style on an element the keyed
+    // reconciler retains, but the value is carried explicitly for new nodes.
     sizes: Object.fromEntries([...root.querySelectorAll('[data-resizable]')].map((el) => [el.dataset.resizable, el.style.height])),
     activity: activityState(root),
-    // Keyed where a stable identity exists: a live transcript appends blocks,
-    // and index-based restore would reopen whichever element slid into the slot.
-    details: [...root.querySelectorAll('details')].map((d) => d.open),
-    detailKeys: Object.fromEntries([...root.querySelectorAll('details[data-details-key]')].map((d) => [d.dataset.detailsKey, d.open])),
-    inputs: [...root.querySelectorAll('input, select')].filter((i) => !i.closest('[data-repo-picker]')).map((i) => ({ name: i.name, value: i.value })),
+    details: detailsSnapshot(root),
+    feedback: feedbackSnapshot(root),
+    inputs: fieldSnapshot(root),
     log: logState(root),
     scrolls: scrollState(root),
+    surfaces: Object.fromEntries([...surfaceHooks.entries()].flatMap(([name, hook]) => {
+      try { return [[name, hook.capture?.(root)]]; } catch { return []; }
+    })),
   });
+  const restoreField = (root, saved) => {
+    const owner = saved.ownerKey ? root.querySelector(keyedSelector(saved.ownerKey)) : root;
+    if (!owner) return null;
+    let field = saved.id ? owner.querySelector('#' + escapeSelector(saved.id)) : null;
+    if (!field && saved.name) field = owner.querySelector('[name="' + escapeSelector(saved.name) + '"]');
+    if (!field) field = nodeAtPath(owner, saved.path);
+    if (!field) return null;
+    if (typeof saved.value === 'string' && 'value' in field) field.value = saved.value;
+    if (typeof saved.checked === 'boolean' && 'checked' in field) field.checked = saved.checked;
+    if (saved.selectionStart !== null && typeof field.setSelectionRange === 'function') {
+      try { field.setSelectionRange(saved.selectionStart, saved.selectionEnd, saved.selectionDirection); } catch { /* field type has no selection */ }
+    }
+    return field;
+  };
   const restore = (root, state) => {
     root.querySelectorAll('[data-resizable]').forEach((el) => {
       const saved = state.sizes && state.sizes[el.dataset.resizable];
       if (saved) el.style.height = saved;
     });
-    [...root.querySelectorAll('details')].forEach((d, i) => {
-      const key = d.dataset.detailsKey;
-      if (key && state.detailKeys && state.detailKeys[key] !== undefined) { d.open = state.detailKeys[key]; return; }
-      if (!key && state.details[i] !== undefined) d.open = state.details[i];
+    state.details.forEach((saved) => {
+      const owner = saved.ownerKey ? root.querySelector(keyedSelector(saved.ownerKey)) : root;
+      if (!owner) return;
+      const detail = saved.key
+        ? owner.querySelector('[data-details-key="' + escapeSelector(saved.key) + '"]')
+        : nodeAtPath(owner, saved.path);
+      if (detail) detail.open = saved.open;
     });
-    state.inputs.forEach((saved) => { if (!saved.name) return; const input = root.querySelector('[name="' + CSS.escape(saved.name) + '"]'); if (input && document.activeElement !== input) input.value = saved.value; });
+    state.inputs.forEach((saved) => restoreField(root, saved));
+    state.feedback.forEach((saved) => {
+      const owner = saved.ownerKey ? root.querySelector(keyedSelector(saved.ownerKey)) : root;
+      const node = owner ? nodeAtPath(owner, saved.path) : null;
+      if (!node || !node.matches?.('[data-action-feedback]')) return;
+      node.textContent = saved.text;
+      node.setAttribute('role', saved.role);
+      node.setAttribute('aria-live', saved.live);
+      node.classList.toggle('is-error', saved.error);
+    });
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
       const saved = state.scrolls[el.dataset.scrollKeep];
       if (!saved) return;
@@ -718,45 +1006,180 @@ export const clientScript = `
       const pr = root.querySelector('input[name="reset-pr"]');
       reset.dataset.body = JSON.stringify({ confirm: 'RESET', prNumber: Number(pr?.value) });
     }
+    Object.entries(state.surfaces || {}).forEach(([name, saved]) => {
+      try { surfaceHooks.get(name)?.restore?.(root, saved); } catch { /* a surface may have gone away */ }
+    });
+    const focus = state.focus;
+    if (!focus) return;
+    const owner = focus.ownerKey ? root.querySelector(keyedSelector(focus.ownerKey)) : root;
+    const focused = owner ? nodeAtPath(owner, focus.path) : null;
+    if (focused && typeof focused.focus === 'function') {
+      focused.focus({ preventScroll: true });
+      if (focus.selectionStart !== null && typeof focused.setSelectionRange === 'function') {
+        try { focused.setSelectionRange(focus.selectionStart, focus.selectionEnd, focus.selectionDirection); } catch { /* field type has no selection */ }
+      }
+      return;
+    }
+    if (focus.ownerKey) {
+      const next = focus.nextKey ? root.querySelector(keyedSelector(focus.nextKey)) : null;
+      const target = next?.querySelector('a, button, input, select, textarea, [tabindex]:not([tabindex="-1"])') || next;
+      const fallback = root.querySelector('[data-focus-fallback]');
+      if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+      else if (fallback && typeof fallback.focus === 'function') fallback.focus({ preventScroll: true });
+      announce('operational', 'removed:' + focus.ownerKey, (focus.ownerLabel || 'The focused record') + ' was removed.', 'polite');
+    }
+  };
+  const sameKind = (left, right) => left?.nodeType === right?.nodeType && (!isElement(left) || !isElement(right) || left.tagName === right.tagName);
+  const syncAttributes = (current, incoming) => {
+    [...current.attributes].forEach((attribute) => {
+      if (!incoming.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    });
+    [...incoming.attributes].forEach((attribute) => {
+      if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    });
+  };
+  const reconcileChildren = (parent, incomingParent) => {
+    const previous = [...parent.childNodes];
+    const keyed = new Map();
+    previous.forEach((node) => {
+      const key = directKey(node);
+      if (key) keyed.set(key, node);
+    });
+    const used = new Set();
+    const incomingKeys = new Set();
+    const desired = [...incomingParent.childNodes].map((incoming, index) => {
+      const key = directKey(incoming);
+      if (key && incomingKeys.has(key)) throw new Error('duplicate live key');
+      if (key) incomingKeys.add(key);
+      if (key && keyed.has(key) && used.has(keyed.get(key))) throw new Error('duplicate live key');
+      let current = key ? keyed.get(key) : previous[index];
+      if (current && (used.has(current) || !sameKind(current, incoming))) current = null;
+      if (!current && !key) current = previous.find((node) => !used.has(node) && !directKey(node) && sameKind(node, incoming));
+      if (current) {
+        used.add(current);
+        return reconcileNode(current, incoming);
+      }
+      return incoming.cloneNode(true);
+    });
+    desired.forEach((node, index) => {
+      const at = parent.childNodes[index] || null;
+      if (at !== node) parent.insertBefore(node, at);
+    });
+    previous.forEach((node) => { if (!used.has(node) && node.parentNode === parent) parent.removeChild(node); });
+  };
+  const reconcileNode = (current, incoming) => {
+    if (!sameKind(current, incoming)) return incoming.cloneNode(true);
+    if (!isElement(current)) {
+      if (current.textContent !== incoming.textContent) current.textContent = incoming.textContent;
+      return current;
+    }
+    syncAttributes(current, incoming);
+    reconcileChildren(current, incoming);
+    return current;
+  };
+  const reconcileFragment = (root, html) => {
+    const state = remember(root);
+    const semantic = semanticSnapshot(root);
+    const template = document.createElement('template');
+    template.innerHTML = String(html || '');
+    try {
+      reconcileChildren(root, template.content);
+    } catch {
+      root.replaceChildren(...[...template.content.childNodes].map((node) => node.cloneNode(true)));
+    }
+    restore(root, state);
+    announceSemanticChanges(root, semantic);
+    return root;
   };
   const swap = (fragments) => {
     Object.entries(fragments || {}).forEach(([id, html]) => {
       const root = document.getElementById(id); if (!root) return;
-      if (id === 'repositories' && pickerBusy(root)) return;
       const atBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 24;
-      const state = remember(root); root.innerHTML = html; restore(root, state);
-      root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
+      const busy = pickerBusy(root);
+      reconcileFragment(root, html);
+      if (!busy) root.querySelectorAll('[data-repo-picker]').forEach((picker) => modelCatalog ? renderLivePicker(picker) : syncPicker(picker));
       if (atBottom) root.scrollTop = root.scrollHeight;
+      updateTableOverflow(root);
     });
     refreshTimes();
   };
+  if (typeof window !== 'undefined') {
+    window.gremlynConsole = {
+      announce,
+      registerSurface,
+      registerRepositoryState,
+      registerActionFeedback,
+      registerJobSafetySteps,
+      reconcileFragment,
+      reconcile: (id, html) => {
+        const root = document.getElementById(id);
+        return root ? reconcileFragment(root, html) : null;
+      },
+      swap,
+    };
+  }
+  const redirectToSignIn = (reason) => {
+    if (typeof window !== 'undefined' && window.location) window.location.assign('/auth?reason=' + reason);
+  };
+  const probeSessionStatus = async () => {
+    try {
+      const response = await fetch('/session-status', { credentials: 'same-origin' });
+      const payload = await response.json().catch(() => ({}));
+      if (payload.status === 'expired' || payload.status === 'absent') {
+        document.querySelectorAll('[data-action-feedback]').forEach((node) => { node.textContent = ''; });
+        redirectToSignIn('expired');
+        return false;
+      }
+      return payload.status === 'active';
+    } catch { return false; }
+  };
   const eventSource = document.querySelector('[data-stream]');
-  if (eventSource && window.EventSource) {
-    const stream = new EventSource(eventSource.dataset.stream);
+  if (eventSource && typeof window !== 'undefined' && window.EventSource) {
+    const stream = new window.EventSource(eventSource.dataset.stream);
     const applyStreamEvent = (event) => {
       try {
         const payload = JSON.parse(event.data);
+        if (payload.kind === 'heartbeat') {
+          return;
+        }
         swap(payload.fragments || payload);
-        status(payload.kind === 'heartbeat' ? 'Live heartbeat' : 'Updated just now');
-      } catch { status('Unable to apply live update'); }
+        setConnectionStatus('connected', 'Live updates connected.');
+      } catch {
+        announce('operational', 'stream-parse-error', 'A live update could not be applied.', 'polite');
+      }
     };
     ['job-update', 'dashboard-update', 'commands-update', 'audit-update'].forEach((name) => stream.addEventListener(name, applyStreamEvent));
-    stream.onerror = () => status('Live updates reconnecting…');
+    stream.onopen = () => setConnectionStatus('connected', 'Live updates connected.');
+    stream.onerror = async () => {
+      setConnectionStatus('reconnecting', 'Live updates reconnecting.');
+      const active = await probeSessionStatus();
+      if (!active && stream.readyState === window.EventSource.CLOSED) setConnectionStatus('disconnected', 'Live updates disconnected.');
+    };
+  } else if (eventSource) {
+    setConnectionStatus('disconnected', 'Live updates are unavailable in this browser.');
   }
   document.addEventListener('click', async (event) => {
     const button = event.target instanceof Element ? event.target.closest('[data-action]') : null; if (!button || button.disabled) return;
     const action = button.dataset.action; const url = button.dataset.url || window.location.pathname;
     if (action === 'reset' && !window.confirm('Reset this workspace?')) return;
-    button.disabled = true; status('Working…');
+    const focused = document.activeElement === button;
+    button.disabled = true; actionMessage(button, 'Working…', false, 'action:' + action + ':working');
     try {
       const body = button.dataset.body ? JSON.parse(button.dataset.body) : undefined;
       const response = await fetch(url, { method: 'POST', ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}) });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || ('Request failed (' + response.status + ')'));
-      status(payload.enabled === undefined ? 'Action completed' : (payload.enabled ? 'Repository enabled' : 'Repository disabled'));
+      if (await routeSessionExpiry(response, payload)) return;
+      if (!response.ok) {
+        actionMessage(button, safeActionError(payload), true, 'action:' + action + ':error');
+        return;
+      }
+      actionMessage(button, payload.enabled === undefined ? 'Action completed.' : (payload.enabled ? 'Repository enabled.' : 'Repository disabled.'), false, 'action:' + action + ':success');
       if (payload.enabled !== undefined) { const label = button.parentElement.querySelector('[data-enabled]'); if (label) { label.textContent = payload.enabled ? 'enabled' : 'disabled'; label.className = 'state state-' + (payload.enabled ? 'on' : 'off'); } button.textContent = payload.enabled ? 'Disable' : 'Enable'; }
+    } catch { actionMessage(button, 'Action failed. Try again.', true, 'action:' + action + ':error'); }
+    finally {
       button.disabled = false;
-    } catch (error) { status(error instanceof Error ? error.message : 'Action refused'); button.disabled = false; }
+      if (focused) button.focus({ preventScroll: true });
+    }
   });
   document.addEventListener('input', (event) => {
     const target = event.target instanceof HTMLInputElement ? event.target : null;
@@ -809,8 +1232,6 @@ export const clientScript = `
     syncPicker(root);
   });
   void refreshModelCatalog();
-  const signIn = document.querySelector('[data-sign-in]');
-  if (signIn) signIn.addEventListener('click', async () => { const token = document.querySelector('#token').value; const response = await fetch('/auth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }); if (response.ok) window.location.href = '/'; else document.querySelector('[data-auth-error]').textContent = 'Invalid token'; });
 })();
 `;
 
