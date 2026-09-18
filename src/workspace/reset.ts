@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { OperatorActionStore } from "../store/actions.js";
-import { git } from "./gitops.js";
+import { git, workspaceSnapshot, type WorkspaceSnapshot } from "./gitops.js";
 import {
   isBeneath,
   prepareWorkspace,
@@ -89,6 +89,7 @@ export async function refreshWorkspaceTree(options: {
   workspaceRoot: string;
   prNumber: number;
   headSha: string;
+  expectedSnapshot?: WorkspaceSnapshot;
 }): Promise<string> {
   const expectedPath = workspacePathFor(options.workspaceRoot, options.prNumber);
   if (!isBeneath(expectedPath, options.workspaceRoot)) {
@@ -98,6 +99,28 @@ export async function refreshWorkspaceTree(options: {
     );
   }
   await git(["fetch", "origin", "--prune"], { cwd: expectedPath });
+  if (options.expectedSnapshot !== undefined) {
+    let actualSnapshot: WorkspaceSnapshot;
+    try {
+      actualSnapshot = await workspaceSnapshot(expectedPath);
+    } catch (error) {
+      throw new WorkspaceError(
+        "workspace-dirty",
+        `refusing to refresh ${expectedPath}: workspace state could not be re-checked: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (
+      actualSnapshot.headSha !== options.expectedSnapshot.headSha ||
+      actualSnapshot.status !== options.expectedSnapshot.status
+    ) {
+      throw new WorkspaceError(
+        "workspace-dirty",
+        `refusing to refresh ${expectedPath}: workspace changed after quarantine validation`,
+      );
+    }
+  }
   await git(["reset", "--hard", options.headSha], { cwd: expectedPath });
   await git(["clean", "-fd"], { cwd: expectedPath });
   return expectedPath;

@@ -36,10 +36,13 @@ class CancellingLogger extends Logger {
   cancelAt: string | undefined;
   /** Wired by the test once the job id is known. */
   cancel: ((jobId: number) => void) | undefined;
+  /** Optional test hook for deterministic races at logged boundaries. */
+  onInfo: ((event: string, fields: LogFields) => void) | undefined;
 
   override info(event: string, fields: LogFields = {}): void {
     super.info(event, fields);
     if (event === this.cancelAt && typeof fields.jobId === "number") this.cancel?.(fields.jobId);
+    this.onInfo?.(event, fields);
   }
 }
 
@@ -877,11 +880,9 @@ test("retry preserves a dirty workspace that moved beyond the prior recorded hea
   assert.equal(await headSha(workspacePath), thirdHead, "the moved workspace head is preserved");
   assert.equal(readFileSync(dirtyPath, "utf8"), "unrelated dirty edit\n");
   assert.deepEqual(
-    (
-      await data.store.db
-        .prepare("SELECT action FROM operator_actions WHERE action = 'workspace-quarantine'")
-        .all()
-    ),
+    await data.store.db
+      .prepare("SELECT action FROM operator_actions WHERE action = 'workspace-quarantine'")
+      .all(),
     [],
     "a diverged workspace must not be quarantined",
   );
@@ -940,6 +941,73 @@ test("retry after head-changed quarantines stranded work and refreshes to the mo
   assert.equal(
     await headSha(first.workspace_path),
     await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch),
+  );
+  data.store.close();
+});
+
+test("retry keeps edits added after quarantine validation and does not refresh", async () => {
+  const data = await setup("files-modified");
+  const originalRun = data.executor.run.bind(data.executor);
+  let movedHead = "";
+  let moved = false;
+  data.executor.run = async (options) => {
+    const result = await originalRun(options);
+    if (!moved) {
+      moved = true;
+      movedHead = await pushCommit(
+        data.gitRepo.sourcePath,
+        data.gitRepo.headBranch,
+        "concurrent.txt",
+        "remote update\n",
+        "concurrent update",
+      );
+      const pr = await data.github.getPullRequest("acme", "widgets", 27);
+      data.github.addPullRequest({ ...pr, headSha: movedHead });
+    }
+    return result;
+  };
+
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const first = data.store.db
+    .prepare("SELECT head_sha_at_prepare, workspace_path FROM attempts WHERE attempt_number = 1")
+    .get() as { head_sha_at_prepare: string; workspace_path: string };
+  const raceFile = join(first.workspace_path, "operator-race.txt");
+  let mutated = false;
+  data.logger.onInfo = (event) => {
+    if (
+      event === "stranded workspace quarantine validated; refreshing to current head" &&
+      !mutated
+    ) {
+      mutated = true;
+      writeFileSync(raceFile, "operator edit after validation\n", "utf8");
+    }
+  };
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(mutated, true, "the workspace changed after patch validation");
+  assert.equal(data.executor.runs.length, 1, "the retry must not run the agent after the race");
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT failure_reason FROM attempts WHERE attempt_number = 2")
+        .get() as { failure_reason: string }
+    ).failure_reason,
+    "workspace-dirty",
+  );
+  assert.equal(await headSha(first.workspace_path), first.head_sha_at_prepare);
+  assert.equal(readFileSync(raceFile, "utf8"), "operator edit after validation\n");
+  assert.ok(
+    (await statusEntries(first.workspace_path)).some((entry) =>
+      entry.includes("operator-race.txt"),
+    ),
+  );
+  assert.deepEqual(
+    await data.store.db
+      .prepare("SELECT action FROM operator_actions WHERE action = 'workspace-quarantine'")
+      .all(),
+    [],
+    "a workspace changed after validation must not be quarantined or refreshed",
   );
   data.store.close();
 });

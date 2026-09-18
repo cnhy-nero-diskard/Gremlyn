@@ -41,10 +41,11 @@ import { runValidationCommands } from "../validate/runner.js";
 import {
   currentBranch,
   git,
-  headSha,
   mergeInProgress,
   statusEntries,
   unmergedEntries,
+  workspaceSnapshot,
+  type WorkspaceSnapshot,
 } from "../workspace/gitops.js";
 import { refreshWorkspaceTree } from "../workspace/reset.js";
 import {
@@ -524,13 +525,16 @@ export class ResolutionOrchestrator {
       break;
     }
     if (!prior?.head_sha_at_prepare) return undefined;
-    let workspaceHead: string;
+    let workspaceSnapshotAtCollection: WorkspaceSnapshot;
     try {
-      workspaceHead = await headSha(workspacePath);
+      workspaceSnapshotAtCollection = await workspaceSnapshot(workspacePath);
     } catch {
       return undefined;
     }
-    if (workspaceHead === input.expectedSha || workspaceHead !== prior.head_sha_at_prepare) {
+    if (
+      workspaceSnapshotAtCollection.headSha === input.expectedSha ||
+      workspaceSnapshotAtCollection.headSha !== prior.head_sha_at_prepare
+    ) {
       return undefined;
     }
 
@@ -539,6 +543,17 @@ export class ResolutionOrchestrator {
     let diff: { files: string[]; patch: string; stashSha: string | null };
     try {
       diff = await collectStrandedDiff(workspacePath);
+      const afterCollection = await workspaceSnapshot(workspacePath);
+      if (
+        afterCollection.headSha !== workspaceSnapshotAtCollection.headSha ||
+        afterCollection.status !== workspaceSnapshotAtCollection.status
+      ) {
+        this.options.logger.warn("stranded workspace changed during collection; keeping halt", {
+          jobId: input.jobId,
+          path: workspacePath,
+        });
+        return undefined;
+      }
     } catch (error) {
       this.options.logger.warn("stranded workspace collection failed; keeping halt", {
         jobId: input.jobId,
@@ -553,7 +568,7 @@ export class ResolutionOrchestrator {
     const header = [
       "# stranded work quarantined before retry (pull request head moved)",
       `# job: ${input.jobId} prior attempt: ${prior.id}`,
-      `# prior head: ${prior.head_sha_at_prepare} workspace head: ${workspaceHead}`,
+      `# prior head: ${prior.head_sha_at_prepare} workspace head: ${workspaceSnapshotAtCollection.headSha}`,
       `# current head: ${input.expectedSha}`,
       `# files: ${diff.files.length > 0 ? diff.files.join(", ") : "(none listed)"}`,
       `# stash: ${diff.stashSha ?? "(none)"}`,
@@ -603,6 +618,35 @@ export class ResolutionOrchestrator {
       }
       rmSync(patchCheckRoot, { recursive: true, force: true });
     }
+    this.options.logger.info(
+      "stranded workspace quarantine validated; refreshing to current head",
+      {
+        jobId: input.jobId,
+        priorAttemptId: prior.id,
+        workspaceHead: workspaceSnapshotAtCollection.headSha,
+        expectedHead: input.expectedSha,
+        patchRef,
+      },
+    );
+    // In-place refresh, not remove-and-recreate: `git clean -fd` keeps ignored
+    // files, so an installed node_modules survives and the refreshed workspace
+    // can still validate. A final preparation re-verifies the state and seeds
+    // ignored files.
+    try {
+      await refreshWorkspaceTree({
+        workspaceRoot: input.repository.workspaceRoot,
+        prNumber: input.prNumber,
+        headSha: input.expectedSha,
+        expectedSnapshot: workspaceSnapshotAtCollection,
+      });
+    } catch (error) {
+      this.options.logger.warn("stranded workspace changed before refresh; keeping halt", {
+        jobId: input.jobId,
+        path: workspacePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
     actions.record({
       action: "workspace-quarantine",
       target: workspacePath,
@@ -611,29 +655,13 @@ export class ResolutionOrchestrator {
         jobId: input.jobId,
         priorAttemptId: prior.id,
         priorHead: prior.head_sha_at_prepare,
-        workspaceHead,
+        workspaceHead: workspaceSnapshotAtCollection.headSha,
         expectedHead: input.expectedSha,
         reason: prior.failure_reason,
         patchRef,
         files: diff.files,
         stashSha: diff.stashSha,
       },
-    });
-    this.options.logger.info("stranded workspace quarantined; resetting to current head", {
-      jobId: input.jobId,
-      priorAttemptId: prior.id,
-      workspaceHead,
-      expectedHead: input.expectedSha,
-      patchRef,
-    });
-    // In-place refresh, not remove-and-recreate: `git clean -fd` keeps ignored
-    // files, so an installed node_modules survives and the refreshed workspace
-    // can still validate. A final preparation re-verifies the state and seeds
-    // ignored files.
-    await refreshWorkspaceTree({
-      workspaceRoot: input.repository.workspaceRoot,
-      prNumber: input.prNumber,
-      headSha: input.expectedSha,
     });
     return prepareWorkspace({
       sourcePath: input.repository.sourcePath,

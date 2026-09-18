@@ -52,6 +52,21 @@ export async function statusEntries(cwd: string): Promise<string[]> {
   return stdout.split("\n").filter((line) => line.length > 0);
 }
 
+/** Exact working-tree state used to guard a destructive refresh. */
+export interface WorkspaceSnapshot {
+  headSha: string;
+  status: string;
+}
+
+/** Capture HEAD and the NUL-delimited porcelain status without lossy parsing. */
+export async function workspaceSnapshot(cwd: string): Promise<WorkspaceSnapshot> {
+  const [head, status] = await Promise.all([
+    git(["rev-parse", "HEAD"], { cwd }),
+    git(["status", "--porcelain=v1", "-z", "-uall"], { cwd }),
+  ]);
+  return { headSha: head.stdout.trim(), status: status.stdout };
+}
+
 const UNMERGED_CODES = new Set(["UU", "AA", "DD", "AU", "UA", "DU", "UD"]);
 
 /** Entries in a conflicted (unmerged) merge state, from porcelain status. */
