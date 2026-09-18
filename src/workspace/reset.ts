@@ -99,8 +99,34 @@ export async function refreshWorkspaceTree(options: {
     priorFailureReason: string | null;
     patchRef: string;
   };
+  refreshContext?: {
+    workspaceHead: string;
+    files: string[];
+    stashSha: string | null;
+  };
+  /** Test seam for forcing a failure at a specific destructive step. */
+  runGit?: typeof git;
 }): Promise<string> {
   const expectedPath = workspacePathFor(options.workspaceRoot, options.prNumber);
+  const runGit = options.runGit ?? git;
+  const recordRefresh = (
+    effect: "quarantined-and-recreated" | "failed" | "partial",
+    stage: "reset" | "clean" | "refresh",
+    message?: string,
+  ): void => {
+    options.actions?.record({
+      action: "workspace-quarantine",
+      target: expectedPath,
+      effect,
+      detail: {
+        ...(options.auditContext ?? {}),
+        ...(options.refreshContext ?? {}),
+        reason: options.auditContext?.priorFailureReason ?? null,
+        stage,
+        ...(message === undefined ? {} : { message }),
+      },
+    });
+  };
   const recordRefusal = (check: string, message?: string): void => {
     options.actions?.record({
       action: "workspace-quarantine",
@@ -126,7 +152,7 @@ export async function refreshWorkspaceTree(options: {
       `refusing to refresh ${expectedPath}: it is not beneath the configured workspace root`,
     );
   }
-  await git(["fetch", "origin", "--prune"], { cwd: expectedPath });
+  await runGit(["fetch", "origin", "--prune"], { cwd: expectedPath });
   if (options.expectedSnapshot !== undefined) {
     let actualSnapshot: WorkspaceSnapshot;
     try {
@@ -151,7 +177,18 @@ export async function refreshWorkspaceTree(options: {
       );
     }
   }
-  await git(["reset", "--hard", options.headSha], { cwd: expectedPath });
-  await git(["clean", "-fd"], { cwd: expectedPath });
+  try {
+    await runGit(["reset", "--hard", options.headSha], { cwd: expectedPath });
+  } catch (error) {
+    recordRefresh("failed", "reset", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  try {
+    await runGit(["clean", "-fd"], { cwd: expectedPath });
+  } catch (error) {
+    recordRefresh("partial", "clean", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  recordRefresh("quarantined-and-recreated", "refresh");
   return expectedPath;
 }

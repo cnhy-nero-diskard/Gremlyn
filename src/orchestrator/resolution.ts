@@ -648,6 +648,11 @@ export class ResolutionOrchestrator {
           priorFailureReason: prior.failure_reason,
           patchRef,
         },
+        refreshContext: {
+          workspaceHead: workspaceSnapshotAtCollection.headSha,
+          files: diff.files,
+          stashSha: diff.stashSha,
+        },
       });
     } catch (error) {
       this.options.logger.warn("stranded workspace changed before refresh; keeping halt", {
@@ -657,22 +662,6 @@ export class ResolutionOrchestrator {
       });
       return undefined;
     }
-    actions.record({
-      action: "workspace-quarantine",
-      target: workspacePath,
-      effect: "quarantined-and-recreated",
-      detail: {
-        jobId: input.jobId,
-        priorAttemptId: prior.id,
-        priorHead: prior.head_sha_at_prepare,
-        workspaceHead: workspaceSnapshotAtCollection.headSha,
-        expectedHead: input.expectedSha,
-        reason: prior.failure_reason,
-        patchRef,
-        files: diff.files,
-        stashSha: diff.stashSha,
-      },
-    });
     return prepareWorkspace({
       sourcePath: input.repository.sourcePath,
       workspaceRoot: input.repository.workspaceRoot,

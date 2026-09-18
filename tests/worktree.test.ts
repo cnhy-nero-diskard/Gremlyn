@@ -11,7 +11,13 @@ import {
   WorkspaceError,
   workspacePathFor,
 } from "../src/workspace/worktree.js";
-import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
+import {
+  currentBranch,
+  git,
+  headSha,
+  statusEntries,
+  workspaceSnapshot,
+} from "../src/workspace/gitops.js";
 import { resetWorkspace, refreshWorkspaceTree } from "../src/workspace/reset.js";
 import { createTempRepo, pushCommit, remoteSha, type TempRepo } from "./helpers/gitrepo.js";
 
@@ -304,6 +310,80 @@ test("in-place refresh resets tracked and untracked work but keeps ignored depen
   assert.equal(existsSync(join(prepared.path, "junk.txt")), false);
   assert.equal(readFileSync(join(prepared.path, "feature.txt"), "utf8").trim(), "feature work");
   assert.equal(readFileSync(join(prepared.path, "deps", "keep"), "utf8"), "installed\n");
+});
+
+test("in-place refresh audits a partial outcome when clean fails after reset", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 18,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "feature.txt"), "discard this edit\n", "utf8");
+  writeFileSync(join(prepared.path, "leftover.txt"), "retain this file\n", "utf8");
+  const snapshot = await workspaceSnapshot(prepared.path);
+  const store = new Store({ dataDir: ":memory:", file: ":memory:" });
+  const actions = new OperatorActionStore(store.db);
+
+  try {
+    await assert.rejects(
+      refreshWorkspaceTree({
+        workspaceRoot: repo.workspaceRoot,
+        prNumber: 18,
+        headSha: sha,
+        expectedSnapshot: snapshot,
+        actions,
+        auditContext: {
+          jobId: 1,
+          priorAttemptId: 2,
+          priorHead: sha,
+          expectedHead: sha,
+          priorFailureReason: "validation-failed",
+          patchRef: join(repo.root, "stranded.patch"),
+        },
+        refreshContext: {
+          workspaceHead: snapshot.headSha,
+          files: ["feature.txt", "leftover.txt"],
+          stashSha: null,
+        },
+        runGit: async (args, options) => {
+          if (args[0] === "clean") throw new Error("simulated clean failure");
+          return git(args, options);
+        },
+      }),
+      /simulated clean failure/u,
+    );
+
+    assert.equal(
+      readFileSync(join(prepared.path, "feature.txt"), "utf8").replaceAll("\r\n", "\n"),
+      "feature work\n",
+    );
+    assert.equal(readFileSync(join(prepared.path, "leftover.txt"), "utf8"), "retain this file\n");
+    const recorded = actions.list()[0];
+    assert.ok(recorded, "the partial refresh is recorded");
+    assert.equal(recorded.action, "workspace-quarantine");
+    assert.equal(recorded.target, prepared.path);
+    assert.equal(recorded.effect, "partial");
+    assert.deepEqual(JSON.parse(recorded.detail ?? "{}"), {
+      jobId: 1,
+      priorAttemptId: 2,
+      priorHead: sha,
+      workspaceHead: sha,
+      expectedHead: sha,
+      priorFailureReason: "validation-failed",
+      patchRef: join(repo.root, "stranded.patch"),
+      reason: "validation-failed",
+      files: ["feature.txt", "leftover.txt"],
+      stashSha: null,
+      stage: "clean",
+      message: "simulated clean failure",
+    });
+  } finally {
+    store.close();
+  }
 });
 
 test("workspace path derives from root and PR number only", () => {
