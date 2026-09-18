@@ -406,6 +406,14 @@ function renderUntrackedHunk(workspacePath: string, name: string): string {
   const text = raw.toString("utf8");
   const lines = text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) {
+    return [
+      `diff --git a/${name} b/${name}`,
+      `new file mode ${entry.mode & 0o111 ? "100755" : "100644"}`,
+      "index 0000000..e69de29",
+      "",
+    ].join("\n");
+  }
   const hunk = [
     `diff --git a/${name} b/${name}`,
     `new file mode ${entry.mode & 0o111 ? "100755" : "100644"}`,

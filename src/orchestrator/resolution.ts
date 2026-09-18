@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
@@ -39,6 +40,7 @@ import { inspectWorkspace } from "../validate/inspection.js";
 import { runValidationCommands } from "../validate/runner.js";
 import {
   currentBranch,
+  git,
   headSha,
   mergeInProgress,
   statusEntries,
@@ -567,6 +569,39 @@ export class ResolutionOrchestrator {
         message: error instanceof Error ? error.message : String(error),
       });
       return undefined;
+    }
+    const patchCheckRoot = mkdtempSync(join(tmpdir(), "gremlyn-patch-check-"));
+    const patchCheckPath = join(patchCheckRoot, "workspace");
+    try {
+      await git(
+        [
+          "-c",
+          "core.autocrlf=false",
+          "-c",
+          "core.eol=lf",
+          "worktree",
+          "add",
+          "--detach",
+          patchCheckPath,
+          prior.head_sha_at_prepare,
+        ],
+        { cwd: workspacePath },
+      );
+      await git(["-c", "core.autocrlf=false", "apply", patchRef], { cwd: patchCheckPath });
+    } catch (error) {
+      this.options.logger.warn("stranded workspace patch validation failed; keeping halt", {
+        jobId: input.jobId,
+        path: workspacePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    } finally {
+      try {
+        await git(["worktree", "remove", "--force", patchCheckPath], { cwd: workspacePath });
+      } catch {
+        // Best-effort cleanup; the original workspace remains untouched.
+      }
+      rmSync(patchCheckRoot, { recursive: true, force: true });
     }
     actions.record({
       action: "workspace-quarantine",
