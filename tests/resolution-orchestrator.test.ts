@@ -867,3 +867,55 @@ test("retry after head-changed quarantines stranded work and refreshes to the mo
   );
   data.store.close();
 });
+
+test("retry after head-changed refuses to refresh when stranded binary or oversized bytes cannot be captured", async () => {
+  const data = await setup("files-modified");
+  const originalRun = data.executor.run.bind(data.executor);
+  const workspacePath = join(data.gitRepo.workspaceRoot, "pr-27");
+  const trackedBinary = Buffer.from([0, 1, 2, 255, 254]);
+  const untrackedBinary = Buffer.from([255, 0, 3, 4]);
+  const oversized = Buffer.alloc(512 * 1024 + 1, 7);
+  let moved = false;
+  data.executor.run = async (options) => {
+    const result = await originalRun(options);
+    if (!moved) {
+      moved = true;
+      writeFileSync(join(workspacePath, "feature.txt"), trackedBinary);
+      writeFileSync(join(workspacePath, "stranded-binary.bin"), untrackedBinary);
+      writeFileSync(join(workspacePath, "stranded-oversized.bin"), oversized);
+      const movedHead = await pushCommit(
+        data.gitRepo.sourcePath,
+        data.gitRepo.headBranch,
+        "concurrent.txt",
+        "remote update\n",
+        "concurrent update",
+      );
+      const pr = await data.github.getPullRequest("acme", "widgets", 27);
+      data.github.addPullRequest({ ...pr, headSha: movedHead });
+    }
+    return result;
+  };
+
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const first = data.store.db.prepare("SELECT * FROM attempts WHERE attempt_number = 1").get() as {
+    failure_reason: string;
+    workspace_path: string;
+  };
+  assert.equal(first.failure_reason, "head-changed");
+
+  await assert.rejects(() => completeRetry(data, job.id));
+  assert.equal(
+    (
+      data.store.db
+        .prepare("SELECT failure_reason FROM attempts WHERE attempt_number = 2")
+        .get() as { failure_reason: string }
+    ).failure_reason,
+    "workspace-dirty",
+  );
+  assert.equal(data.executor.runs.length, 1, "unsupported stranded bytes block destructive refresh");
+  assert.deepEqual(readFileSync(join(workspacePath, "feature.txt")), trackedBinary);
+  assert.deepEqual(readFileSync(join(workspacePath, "stranded-binary.bin")), untrackedBinary);
+  assert.deepEqual(readFileSync(join(workspacePath, "stranded-oversized.bin")), oversized);
+  data.store.close();
+});

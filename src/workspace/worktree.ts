@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { isLockOwnerAlive } from "../orchestrator/instance-lock.js";
@@ -312,10 +312,12 @@ export interface StrandedDiff {
  * stale refs. Collection itself is non-destructive — `git stash create` writes
  * only a commit object, never a ref and never the working tree — so the caller
  * can preserve the result and then reset through the guarded destructive path.
- * Tracked changes come from the stash commit; untracked files are appended as
- * new-file hunks (`git stash create` takes no untracked flag), with oversized
- * or binary files noted by name rather than by content. When no stash commit
- * can be created the tracked portion falls back to `git diff HEAD`.
+ * Tracked changes come from the stash commit and use Git's binary-capable patch
+ * format; untracked files are appended as new-file hunks (`git stash create`
+ * takes no untracked flag). If an untracked entry cannot be represented
+ * losslessly by that text patch, collection fails closed so the caller will
+ * not reset the workspace and discard it. When no stash commit can be created
+ * the tracked portion falls back to `git diff HEAD`.
  */
 export async function collectStrandedDiff(workspacePath: string): Promise<StrandedDiff> {
   await git(["fetch", "origin", "--prune"], { cwd: workspacePath });
@@ -339,14 +341,16 @@ export async function collectStrandedDiff(workspacePath: string): Promise<Strand
   let patch = "";
   if (stashSha !== null) {
     try {
-      patch = (await git(["diff", "HEAD", stashSha, "--patch"], { cwd: workspacePath })).stdout;
+      patch = (await git(["diff", "--binary", "--patch", "HEAD", stashSha], {
+        cwd: workspacePath,
+      })).stdout;
     } catch {
       patch = "";
     }
   }
   if (patch.length === 0) {
     try {
-      patch = (await git(["diff", "HEAD", "--patch"], { cwd: workspacePath })).stdout;
+      patch = (await git(["diff", "--binary", "--patch", "HEAD"], { cwd: workspacePath })).stdout;
     } catch {
       patch = "";
     }
@@ -358,47 +362,53 @@ export async function collectStrandedDiff(workspacePath: string): Promise<Strand
     .filter((name) => name.length > 0 && !name.endsWith("/"));
   for (const name of untracked) {
     const rendered = renderUntrackedHunk(workspacePath, name);
-    if (rendered) patch += patch.endsWith("\n") || patch.length === 0 ? rendered : `\n${rendered}`;
+    patch += patch.endsWith("\n") || patch.length === 0 ? rendered : `\n${rendered}`;
   }
   return { files, patch, stashSha };
 }
 
-/** Largest untracked file captured by content; anything bigger is named, not read. */
+/** Largest untracked file captured by the text patch representation. */
 const STRANDED_FILE_LIMIT = 512 * 1024;
 
 /**
  * Render one untracked file as a new-file hunk without touching the index.
- * Returns null for paths that escape the workspace or cannot be read, so one
- * awkward file never sinks the whole collection.
+ * Unsupported entries throw so the caller can refuse the destructive refresh
+ * rather than claim to have preserved bytes that the patch does not contain.
  */
-function renderUntrackedHunk(workspacePath: string, name: string): string | null {
+function renderUntrackedHunk(workspacePath: string, name: string): string {
   const absolute = resolve(workspacePath, name);
   if (!isBeneath(absolute, workspacePath) && resolve(absolute) !== resolve(workspacePath)) {
-    return null;
+    throw new Error(`untracked path escapes workspace: ${name}`);
   }
-  let stat: { size: number; isDirectory(): boolean };
+  let entry: ReturnType<typeof lstatSync>;
   try {
-    stat = statSync(absolute);
+    entry = lstatSync(absolute);
   } catch {
-    return `# untracked ${name}: unreadable, left out of this patch\n`;
+    throw new Error(`untracked path is unreadable: ${name}`);
   }
-  if (stat.isDirectory()) return `# untracked ${name}/: directory listing left out of this patch\n`;
-  if (stat.size > STRANDED_FILE_LIMIT) {
-    return `# untracked ${name}: ${(stat.size / 1024).toFixed(1)} KiB, content left out of this patch\n`;
+  if (entry.isSymbolicLink()) throw new Error(`untracked symlink cannot be captured: ${name}`);
+  if (entry.isDirectory()) throw new Error(`untracked directory cannot be captured: ${name}/`);
+  if (!entry.isFile()) throw new Error(`untracked entry cannot be captured: ${name}`);
+  if (entry.size > STRANDED_FILE_LIMIT) {
+    throw new Error(
+      `untracked file exceeds capture limit: ${name} (${(entry.size / 1024).toFixed(1)} KiB)`,
+    );
   }
   let raw: Buffer;
   try {
     raw = readFileSync(absolute);
   } catch {
-    return `# untracked ${name}: unreadable, left out of this patch\n`;
+    throw new Error(`untracked file is unreadable: ${name}`);
   }
-  if (raw.includes(0)) return `# untracked ${name}: binary, content left out of this patch\n`;
+  if (raw.includes(0) || !Buffer.from(raw.toString("utf8"), "utf8").equals(raw)) {
+    throw new Error(`untracked binary file cannot be captured: ${name}`);
+  }
   const text = raw.toString("utf8");
   const lines = text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   const hunk = [
     `diff --git a/${name} b/${name}`,
-    "new file mode 100644",
+    `new file mode ${entry.mode & 0o111 ? "100755" : "100644"}`,
     "--- /dev/null",
     `+++ b/${name}`,
     `@@ -0,0 +1,${lines.length} @@`,

@@ -219,6 +219,51 @@ test("collectStrandedDiff pulls remote first and captures tracked and untracked 
   assert.equal(readFileSync(join(prepared.path, "stranded-new.txt"), "utf8"), "new work\n");
 });
 
+test("collectStrandedDiff uses a binary-capable patch for tracked binary changes", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 160,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  const binary = Buffer.from([0, 1, 2, 255, 254]);
+  writeFileSync(join(prepared.path, "feature.txt"), binary);
+
+  const diff = await collectStrandedDiff(prepared.path);
+
+  assert.match(diff.patch, /diff --git a\/feature\.txt b\/feature\.txt/);
+  assert.match(diff.patch, /GIT binary patch/);
+  assert.deepEqual(readFileSync(join(prepared.path, "feature.txt")), binary);
+});
+
+test("collectStrandedDiff refuses unsupported untracked bytes before destructive refresh", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 161,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  const binary = Buffer.from([255, 0, 3, 4]);
+  const oversized = Buffer.alloc(512 * 1024 + 1, 7);
+  const binaryPath = join(prepared.path, "stranded-binary.bin");
+  const oversizedPath = join(prepared.path, "stranded-oversized.bin");
+  writeFileSync(binaryPath, binary);
+  writeFileSync(oversizedPath, oversized);
+
+  await assert.rejects(
+    collectStrandedDiff(prepared.path),
+    /untracked (binary file cannot be captured|file exceeds capture limit)/u,
+  );
+  assert.deepEqual(readFileSync(binaryPath), binary);
+  assert.deepEqual(readFileSync(oversizedPath), oversized);
+});
+
 test("in-place refresh resets tracked and untracked work but keeps ignored dependencies", async () => {
   const repo = await createTempRepo();
   const withIgnore = await pushCommit(
