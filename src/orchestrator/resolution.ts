@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
@@ -37,11 +37,21 @@ import type {
 } from "../types.js";
 import { inspectWorkspace } from "../validate/inspection.js";
 import { runValidationCommands } from "../validate/runner.js";
-import { statusEntries } from "../workspace/gitops.js";
 import {
+  currentBranch,
+  headSha,
+  mergeInProgress,
+  statusEntries,
+  unmergedEntries,
+} from "../workspace/gitops.js";
+import { resetWorkspace } from "../workspace/reset.js";
+import {
+  collectStrandedDiff,
   prepareWorkspace,
   workspacePathFor,
+  WorkspaceError,
   type AdoptionClaimHandle,
+  type PreparedWorkspace,
 } from "../workspace/worktree.js";
 import {
   agentFailureReason,
@@ -382,6 +392,209 @@ export class ResolutionOrchestrator {
     return { command, exitCode: row.exit_code, output };
   }
 
+  /**
+   * Prepare the workspace, pulling remote state first on every path.
+   *
+   * `prepareWorkspace` already fetches before reasoning, but a retry wedged by
+   * the fail-and-retry sequence needs more: a prior attempt blocked by
+   * `head-changed` leaves uncommitted work against a head the pull request no
+   * longer has, so the next preparation fails as `workspace-dirty` forever.
+   * When that exact wedge is detected the stranded work is quarantined to a
+   * patch artifact, the workspace is reset to the current head through the
+   * guarded reset path, and preparation continues clean. Anything else —
+   * conflicted state, wrong branch, a head that did not move, or a prior
+   * failure that is not `head-changed` — keeps the classic halt so uncommitted
+   * work is never reinterpreted.
+   */
+  private async prepareWorkspaceForAttempt(input: {
+    jobId: number;
+    attemptId: number;
+    repository: RuntimeRepository;
+    prNumber: number;
+    headBranch: string;
+    headSha: string;
+    seedFiles: readonly string[] | undefined;
+    resumeDirtyWorkspace: boolean;
+    adoptExistingCheckout: boolean | undefined;
+  }): Promise<PreparedWorkspace> {
+    const {
+      jobId,
+      attemptId,
+      repository,
+      prNumber,
+      headBranch,
+      headSha: expectedSha,
+      seedFiles,
+      resumeDirtyWorkspace,
+      adoptExistingCheckout,
+    } = input;
+    try {
+      return await prepareWorkspace({
+        sourcePath: repository.sourcePath,
+        workspaceRoot: repository.workspaceRoot,
+        prNumber,
+        headBranch,
+        headSha: expectedSha,
+        ...(seedFiles === undefined ? {} : { seedFiles }),
+        resumeDirtyWorkspace,
+        ...(adoptExistingCheckout === undefined ? {} : { adoptExistingCheckout }),
+        attemptId,
+        ...(this.options.operatorActions === undefined
+          ? {}
+          : { actions: this.options.operatorActions }),
+      });
+    } catch (error) {
+      const refreshed = await this.refreshStaleWorkspaceForRetry({
+        jobId,
+        repository,
+        prNumber,
+        headBranch,
+        expectedSha,
+        seedFiles,
+        workspaceError: error,
+        resumeRetained: resumeDirtyWorkspace,
+      });
+      if (refreshed === undefined) throw error;
+      this.options.logger.info("retry continues on a refreshed workspace", {
+        jobId,
+        attemptId,
+        path: refreshed.path,
+      });
+      return refreshed;
+    }
+  }
+
+  /**
+   * Quarantine stranded `head-changed` work and reset to the moved head.
+   *
+   * Returns the freshly prepared workspace, or `undefined` when this wedge
+   * does not apply and the original `workspace-dirty` must stand.
+   */
+  private async refreshStaleWorkspaceForRetry(input: {
+    jobId: number;
+    repository: RuntimeRepository;
+    prNumber: number;
+    headBranch: string;
+    expectedSha: string;
+    seedFiles: readonly string[] | undefined;
+    workspaceError: unknown;
+    resumeRetained: boolean;
+  }): Promise<PreparedWorkspace | undefined> {
+    const actions = this.options.operatorActions;
+    if (actions === undefined) return undefined;
+    if (
+      !(input.workspaceError instanceof WorkspaceError) ||
+      input.workspaceError.reason !== "workspace-dirty" ||
+      input.resumeRetained
+    ) {
+      return undefined;
+    }
+    const workspacePath = workspacePathFor(input.repository.workspaceRoot, input.prNumber);
+    if (!existsSync(workspacePath)) return undefined;
+    try {
+      if ((await currentBranch(workspacePath)) !== input.headBranch) return undefined;
+      if ((await unmergedEntries(workspacePath)).length > 0) return undefined;
+      if (await mergeInProgress(workspacePath)) return undefined;
+    } catch {
+      return undefined;
+    }
+    // Only a prior attempt of this job blocked by `head-changed` that retained
+    // uncommitted work qualifies: any other publishing failure keeps the halt.
+    const attempts = this.jobs.listAttempts(input.jobId);
+    let prior: AttemptRow | undefined;
+    for (let index = attempts.length - 1; index >= 0; index -= 1) {
+      const attempt = attempts[index];
+      if (!attempt?.workspace_path || !samePath(attempt.workspace_path, workspacePath)) continue;
+      if (
+        attempt.has_uncommitted_changes === 1 &&
+        attempt.outcome === "failed" &&
+        attempt.failure_stage === "publishing" &&
+        attempt.failure_reason === "head-changed" &&
+        attempt.head_sha_at_prepare
+      ) {
+        prior = attempt;
+      }
+      break;
+    }
+    if (!prior?.head_sha_at_prepare) return undefined;
+    let workspaceHead: string;
+    try {
+      workspaceHead = await headSha(workspacePath);
+    } catch {
+      return undefined;
+    }
+    if (workspaceHead === input.expectedSha) return undefined;
+
+    // Pull remote state first (inside the collector), then preserve the
+    // stranded work non-destructively before anything is reset.
+    let diff: { files: string[]; patch: string; stashSha: string | null };
+    try {
+      diff = await collectStrandedDiff(workspacePath);
+    } catch (error) {
+      this.options.logger.warn("stranded workspace collection failed; keeping halt", {
+        jobId: input.jobId,
+        path: workspacePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+    const outputDir = join(this.options.dataDir, "output");
+    mkdirSync(outputDir, { recursive: true });
+    const patchRef = join(outputDir, `stranded-job-${input.jobId}-attempt-${prior.id}.patch`);
+    const header = [
+      "# stranded work quarantined before retry (pull request head moved)",
+      `# job: ${input.jobId} prior attempt: ${prior.id}`,
+      `# prior head: ${prior.head_sha_at_prepare} workspace head: ${workspaceHead}`,
+      `# current head: ${input.expectedSha}`,
+      `# files: ${diff.files.length > 0 ? diff.files.join(", ") : "(none listed)"}`,
+      `# stash: ${diff.stashSha ?? "(none)"}`,
+      `# restore with: git apply ${`stranded-job-${input.jobId}-attempt-${prior.id}.patch`}`,
+      "",
+    ].join("\n");
+    try {
+      writeFileSync(patchRef, this.redact(`${header}${diff.patch}`), "utf8");
+    } catch (error) {
+      this.options.logger.warn("stranded workspace patch write failed; keeping halt", {
+        jobId: input.jobId,
+        path: workspacePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+    actions.record({
+      action: "workspace-quarantine",
+      target: workspacePath,
+      effect: "quarantined-and-recreated",
+      detail: {
+        jobId: input.jobId,
+        priorAttemptId: prior.id,
+        priorHead: prior.head_sha_at_prepare,
+        workspaceHead,
+        expectedHead: input.expectedSha,
+        reason: "head-changed",
+        patchRef,
+        files: diff.files,
+        stashSha: diff.stashSha,
+      },
+    });
+    this.options.logger.info("stranded workspace quarantined; resetting to current head", {
+      jobId: input.jobId,
+      priorAttemptId: prior.id,
+      workspaceHead,
+      expectedHead: input.expectedSha,
+      patchRef,
+    });
+    return resetWorkspace({
+      sourcePath: input.repository.sourcePath,
+      workspaceRoot: input.repository.workspaceRoot,
+      prNumber: input.prNumber,
+      headBranch: input.headBranch,
+      headSha: input.expectedSha,
+      ...(input.seedFiles === undefined ? {} : { seedFiles: input.seedFiles }),
+      actions,
+    });
+  }
+
   private enqueueAttempt(
     jobId: number,
     attemptId: number,
@@ -519,19 +732,16 @@ export class ResolutionOrchestrator {
           workspacePathFor(repository.workspaceRoot, prNumber),
         ) &&
         input.retainedWorkspace.headSha === context.headSha;
-      const workspace = await prepareWorkspace({
-        sourcePath: repository.sourcePath,
-        workspaceRoot: repository.workspaceRoot,
+      const workspace = await this.prepareWorkspaceForAttempt({
+        jobId,
+        attemptId,
+        repository,
         prNumber,
         headBranch: context.headBranch,
         headSha: context.headSha,
         seedFiles: repository.workspaceSeedFiles,
         resumeDirtyWorkspace: resumeRetained,
         adoptExistingCheckout: repository.adoptWorktree,
-        attemptId,
-        ...(this.options.operatorActions === undefined
-          ? {}
-          : { actions: this.options.operatorActions }),
       });
       workspacePath = workspace.path;
       adoptionClaim = workspace.adoptionClaim;

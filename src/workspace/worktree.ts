@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { isLockOwnerAlive } from "../orchestrator/instance-lock.js";
@@ -293,6 +293,118 @@ export async function verifyRemoteHead(options: {
       `pull request head changed from ${options.expectedSha} to ${actualSha ?? "unknown"}`,
     );
   }
+}
+
+export interface StrandedDiff {
+  /** Porcelain display names of the uncommitted entries, for records and tests. */
+  files: string[];
+  /** Unified patch of the stranded work (tracked and untracked), possibly empty. */
+  patch: string;
+  /** Stash commit holding the work, when one could be created. */
+  stashSha: string | null;
+}
+
+/**
+ * Future-proof pre-retry refresh helper: pull remote state first, then collect
+ * stranded uncommitted work without touching it.
+ *
+ * `git fetch` runs before anything is read so a retry never reasons about
+ * stale refs. Collection itself is non-destructive — `git stash create` writes
+ * only a commit object, never a ref and never the working tree — so the caller
+ * can preserve the result and then reset through the guarded destructive path.
+ * Tracked changes come from the stash commit; untracked files are appended as
+ * new-file hunks (`git stash create` takes no untracked flag), with oversized
+ * or binary files noted by name rather than by content. When no stash commit
+ * can be created the tracked portion falls back to `git diff HEAD`.
+ */
+export async function collectStrandedDiff(workspacePath: string): Promise<StrandedDiff> {
+  await git(["fetch", "origin", "--prune"], { cwd: workspacePath });
+  // `-uall` expands untracked directories to individual files so nothing is
+  // silently omitted from the record.
+  const { stdout: porcelain } = await git(["status", "--porcelain", "-uall"], {
+    cwd: workspacePath,
+  });
+  const entries = porcelain.split("\n").filter((line) => line.length > 0);
+  const files = entries.map((entry) => entry.slice(3).trim()).filter((name) => name.length > 0);
+
+  let stashSha: string | null = null;
+  try {
+    const created = await git(["stash", "create"], { cwd: workspacePath });
+    const sha = created.stdout.trim();
+    if (/^[0-9a-f]{40}$/u.test(sha)) stashSha = sha;
+  } catch {
+    stashSha = null;
+  }
+
+  let patch = "";
+  if (stashSha !== null) {
+    try {
+      patch = (await git(["diff", "HEAD", stashSha, "--patch"], { cwd: workspacePath })).stdout;
+    } catch {
+      patch = "";
+    }
+  }
+  if (patch.length === 0) {
+    try {
+      patch = (await git(["diff", "HEAD", "--patch"], { cwd: workspacePath })).stdout;
+    } catch {
+      patch = "";
+    }
+  }
+
+  const untracked = entries
+    .filter((entry) => entry.startsWith("??"))
+    .map((entry) => entry.slice(3).trim())
+    .filter((name) => name.length > 0 && !name.endsWith("/"));
+  for (const name of untracked) {
+    const rendered = renderUntrackedHunk(workspacePath, name);
+    if (rendered) patch += patch.endsWith("\n") || patch.length === 0 ? rendered : `\n${rendered}`;
+  }
+  return { files, patch, stashSha };
+}
+
+/** Largest untracked file captured by content; anything bigger is named, not read. */
+const STRANDED_FILE_LIMIT = 512 * 1024;
+
+/**
+ * Render one untracked file as a new-file hunk without touching the index.
+ * Returns null for paths that escape the workspace or cannot be read, so one
+ * awkward file never sinks the whole collection.
+ */
+function renderUntrackedHunk(workspacePath: string, name: string): string | null {
+  const absolute = resolve(workspacePath, name);
+  if (!isBeneath(absolute, workspacePath) && resolve(absolute) !== resolve(workspacePath)) {
+    return null;
+  }
+  let stat: { size: number; isDirectory(): boolean };
+  try {
+    stat = statSync(absolute);
+  } catch {
+    return `# untracked ${name}: unreadable, left out of this patch\n`;
+  }
+  if (stat.isDirectory()) return `# untracked ${name}/: directory listing left out of this patch\n`;
+  if (stat.size > STRANDED_FILE_LIMIT) {
+    return `# untracked ${name}: ${(stat.size / 1024).toFixed(1)} KiB, content left out of this patch\n`;
+  }
+  let raw: Buffer;
+  try {
+    raw = readFileSync(absolute);
+  } catch {
+    return `# untracked ${name}: unreadable, left out of this patch\n`;
+  }
+  if (raw.includes(0)) return `# untracked ${name}: binary, content left out of this patch\n`;
+  const text = raw.toString("utf8");
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const hunk = [
+    `diff --git a/${name} b/${name}`,
+    "new file mode 100644",
+    "--- /dev/null",
+    `+++ b/${name}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join("\n");
+  return text.endsWith("\n") ? `${hunk}\n` : `${hunk}\n\\ No newline at end of file\n`;
 }
 
 async function assertValidWorktree(path: string): Promise<void> {

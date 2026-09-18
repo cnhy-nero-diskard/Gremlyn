@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FakeExecutor, type FakeOutcome } from "../src/agent/fake.js";
@@ -18,7 +18,7 @@ import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
 import { adoptionClaimPath, readAdoptionClaim } from "../src/workspace/worktree.js";
 import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
-import { createTempRepo, remoteSha } from "./helpers/gitrepo.js";
+import { createTempRepo, pushCommit, remoteSha } from "./helpers/gitrepo.js";
 
 /**
  * A logger that cancels the running job the instant a named event is logged.
@@ -809,5 +809,61 @@ test("a validation failure whose recorded head has moved is not resumed", async 
 
   await assert.rejects(() => completeRetry(data, job.id));
   assert.equal(data.executor.runs.length, 1, "a moved head must close the resume off");
+  data.store.close();
+});
+
+test("retry after head-changed quarantines stranded work and refreshes to the moved head", async () => {
+  const data = await setup("files-modified");
+  // Race the first attempt: the agent's edits land, then the pull request head
+  // moves both on the git remote and in the GitHub view before publication.
+  const originalRun = data.executor.run.bind(data.executor);
+  let movedHead = "";
+  let moved = false;
+  data.executor.run = async (options) => {
+    const result = await originalRun(options);
+    if (!moved) {
+      moved = true;
+      movedHead = await pushCommit(
+        data.gitRepo.sourcePath,
+        data.gitRepo.headBranch,
+        "concurrent.txt",
+        "remote update\n",
+        "concurrent update",
+      );
+      const pr = await data.github.getPullRequest("acme", "widgets", 27);
+      data.github.addPullRequest({ ...pr, headSha: movedHead });
+    }
+    return result;
+  };
+
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const first = data.store.db.prepare("SELECT * FROM attempts WHERE attempt_number = 1").get() as {
+    id: number;
+    failure_stage: string;
+    failure_reason: string;
+    workspace_path: string;
+  };
+  assert.equal(first.failure_stage, "publishing");
+  assert.equal(first.failure_reason, "head-changed");
+
+  const retried = await completeRetry(data, job.id);
+  assert.equal(retried.kind, "completed");
+  assert.equal(data.executor.runs.length, 2, "the retry runs on the refreshed workspace");
+
+  const quarantine = data.store.db
+    .prepare("SELECT * FROM operator_actions WHERE action = 'workspace-quarantine'")
+    .get() as { effect: string; detail: string } | undefined;
+  assert.ok(quarantine, "the quarantine is recorded");
+  assert.equal(quarantine.effect, "quarantined-and-recreated");
+  const patchRef = (JSON.parse(quarantine.detail) as { patchRef: string }).patchRef;
+  assert.equal(existsSync(patchRef), true);
+  assert.match(readFileSync(patchRef, "utf8"), /resolved\.txt/);
+
+  assert.deepEqual(await statusEntries(first.workspace_path), []);
+  assert.equal(
+    await headSha(first.workspace_path),
+    await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch),
+  );
   data.store.close();
 });

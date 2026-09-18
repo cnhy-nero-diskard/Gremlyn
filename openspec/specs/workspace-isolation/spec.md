@@ -123,6 +123,15 @@ the retry.
 - **THEN** the retry fails with the unexpected-state reason and the modifications
   are preserved
 
+#### Scenario: Retry after a moved head quarantines stranded work and refreshes
+
+- **WHEN** a retry follows an attempt blocked from publishing because the pull
+  request head moved, the workspace is on the expected branch without conflicts,
+  and it still holds that attempt's uncommitted work against the superseded head
+- **THEN** the system pulls remote state first, preserves the stranded work as a
+  patch artifact, records the quarantine with its location, resets the workspace
+  to the current head through the guarded reset path, and runs the agent there
+
 #### Scenario: Conflicted workspace
 
 - **WHEN** the workspace is in a conflicted merge state

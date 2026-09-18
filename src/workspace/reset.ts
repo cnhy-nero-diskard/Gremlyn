@@ -27,6 +27,8 @@ export async function resetWorkspace(options: {
   headBranch: string;
   headSha: string;
   targetPath?: string;
+  /** Repository-relative gitignored files copied from the source checkout. */
+  seedFiles?: readonly string[];
   actions: Pick<OperatorActionStore, "record">;
 }): Promise<PreparedWorkspace> {
   const expectedPath = workspacePathFor(options.workspaceRoot, options.prNumber);

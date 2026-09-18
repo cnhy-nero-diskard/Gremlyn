@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
 import {
+  collectStrandedDiff,
   isBeneath,
   prepareWorkspace,
   WorkspaceError,
@@ -186,6 +187,36 @@ test("dirty resume still refuses a workspace whose base head diverged", async ()
     }),
     (err: unknown) => err instanceof WorkspaceError && err.reason === "workspace-diverged",
   );
+});
+
+test("collectStrandedDiff pulls remote first and captures tracked and untracked work untouched", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 16,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "feature.txt"), "modified\n", "utf8");
+  writeFileSync(join(prepared.path, "stranded-new.txt"), "new work\n", "utf8");
+
+  const diff = await collectStrandedDiff(prepared.path);
+
+  assert.ok(
+    diff.files.some((file) => file.includes("feature.txt")),
+    "tracked modification is listed",
+  );
+  assert.ok(
+    diff.files.some((file) => file.includes("stranded-new.txt")),
+    "untracked addition is listed",
+  );
+  assert.match(diff.patch, /stranded-new\.txt/);
+  assert.match(diff.patch, /modified/);
+  // Non-destructive: the workspace still holds the work.
+  assert.ok((await statusEntries(prepared.path)).length > 0);
+  assert.equal(readFileSync(join(prepared.path, "stranded-new.txt"), "utf8"), "new work\n");
 });
 
 test("workspace path derives from root and PR number only", () => {
