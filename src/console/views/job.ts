@@ -144,9 +144,10 @@ function jobHeader(model: JobDetail): string {
   const { owner, name, pr_number: pr, comment_id: comment } = model.job;
   const repo = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
   const prUrl = `https://github.com/${repo}/pull/${String(pr)}`;
+  const outcomeClass = model.job.status === "succeeded" ? " job-outcome-success" : "";
   const title = `<div class="job-title"><h1 data-focus-fallback tabindex="-1">${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span><span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
   const links = `<p class="job-links"><a href="${prUrl}">Pull request #${String(pr)} ↗</a><a href="${prUrl}#discussion_r${String(comment)}">Triggering comment discussion_r${String(comment)} ↗</a></p>`;
-  return `<header class="page-head"><div class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></div>${title}${links}${statStrip(model)}</header>`;
+  return `<header class="page-head presentation-peak${outcomeClass}" data-presentation="peak" data-job-outcome="${escapeHtml(model.job.status)}"><div class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></div>${title}${links}${statStrip(model)}</header>`;
 }
 
 /**
@@ -166,7 +167,7 @@ function activityPanel(model: JobDetail, timeZone?: string): string {
   // left off. The operator's own choice survives every stream tick after that.
   const live = LIVE_STATUSES.includes(model.job.status);
   const follow = `<label class="follow-toggle" title="Pin to the newest step while the agent runs"><input type="checkbox" data-activity-follow${live ? " checked" : ""}> Follow</label>`;
-  return `<section class="panel activity-panel" data-resizable="activity"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null, follow, timeZone)}</section>`;
+  return `<section class="panel presentation-panel activity-panel" data-presentation="panel" data-resizable="activity"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null, follow, timeZone)}</section>`;
 }
 
 /**
@@ -189,10 +190,10 @@ function jobAside(model: JobDetail, timeZone?: string): string {
         }),
       )
       .join("") || '<p class="muted">No attempts recorded.</p>';
-  const timeline = `<section class="panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at, timeZone)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
-  const review = `<section class="panel span-all"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
-  const attemptPanel = `<section class="panel span-all"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
-  const validation = `<section class="panel span-2">${validationTable(model.validation)}</section>`;
+  const timeline = `<section class="panel presentation-panel"><h2>Timeline</h2>${timelineStepper(model.timeline, model.job.finished_at, timeZone)}<p class="panel-foot"><strong>Total elapsed</strong> ${durationBetween(totalStart, totalEnd)}</p></section>`;
+  const review = `<section class="panel presentation-inset span-all" data-presentation="inset"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
+  const attemptPanel = `<section class="panel presentation-panel span-all" data-presentation="panel"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
+  const validation = `<section class="panel presentation-inset span-2" data-presentation="inset">${validationTable(model.validation)}</section>`;
   return `<div class="job-aside">${timeline}${validation}${review}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
@@ -206,7 +207,7 @@ export function jobRegions(
   const logControls = `<div class="actions log-controls"><label class="log-search">Search <input data-log-filter placeholder="Filter entries"></label><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div>`;
   return {
     "job-detail-region": `${jobHeader(model)}${activityPanel(model, timeZone)}${jobAside(model, timeZone)}`,
-    "job-log-region": `<section class="panel" id="log-viewer" data-resizable="log"><h2 data-focus-fallback tabindex="-1">Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs, timeZone)}</div></section>`,
+    "job-log-region": `<section class="panel presentation-inset" data-presentation="inset" id="log-viewer" data-resizable="log"><h2 data-focus-fallback tabindex="-1">Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs, timeZone)}</div></section>`,
   };
 }
 

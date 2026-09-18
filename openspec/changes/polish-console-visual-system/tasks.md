@@ -1,8 +1,8 @@
 ## 1. Establish the visual foundation
 
-- [ ] 1.1 Replace all undeclared Inter references with the documented native sans and monospace stacks, then verify the served stylesheet contains no `Inter`, `@font-face`, remote URL, or font-loading request.
-- [ ] 1.2 Add the primitive type, line-height, weight, spacing, radius, border, shadow, and motion tokens to the shared stylesheet and verify a focused stylesheet test asserts the required token names and offline-safe values.
-- [ ] 1.3 Add light and dark semantic surface, text, divider, interaction, focus, and status triplets plus component aliases, then verify focused tests reject raw status colors in migrated component rules.
+- [x] 1.1 Replace all undeclared Inter references with the documented native sans and monospace stacks, then verify the served stylesheet contains no `Inter`, `@font-face`, remote URL, or font-loading request.
+- [x] 1.2 Add the primitive type, line-height, weight, spacing, radius, border, shadow, and motion tokens to the shared stylesheet and verify a focused stylesheet test asserts the required token names and offline-safe values.
+- [x] 1.3 Add light and dark semantic surface, text, divider, interaction, focus, and status triplets plus component aliases, then verify focused tests reject raw status colors in migrated component rules.
 
 ## 2. Apply hierarchy and rhythm
 

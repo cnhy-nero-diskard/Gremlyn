@@ -140,7 +140,7 @@ export function keyValueTable(
 
 export function dangerZone(repoId: number, defaultPr: number): string {
   const controls = `<div class="actions danger-controls"><label>Pull request <input name="reset-pr" type="number" min="1" value="${defaultPr}"></label><label>Confirmation <input data-reset-confirm name="reset-confirm" autocomplete="off" placeholder="RESET"></label><button class="danger" data-action="reset" data-reset-submit data-url="/workspaces/${repoId}/reset" data-body="{&quot;confirm&quot;:&quot;RESET&quot;,&quot;prNumber&quot;:${defaultPr}}" disabled>Reset workspace</button></div>`;
-  return `<section class="panel danger-zone span-all" id="danger-zone" data-action-scope="reset-${String(repoId)}"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></section>`;
+  return `<section class="panel danger-zone presentation-inset span-all" data-presentation="inset" id="danger-zone" data-action-scope="reset-${String(repoId)}"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></section>`;
 }
 
 export function timelineStepper(

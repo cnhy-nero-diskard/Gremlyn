@@ -28,7 +28,7 @@ export function layout(
   // The job page runs two live panels side by side and needs the room; the
   // list pages read better held to a comfortable measure.
   const shell = options.wide ? "shell shell-wide" : "shell";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${stylesheetPath}"></head><body><div class="${shell}"><header class="site-header"><strong>Gremlyn operator console</strong>${navigation}</header>${liveChannels}<main>${body}</main>${stream}</div><script src="${clientScriptPath}" defer></script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${stylesheetPath}"></head><body><div class="${shell}"><header class="site-header presentation-quiet" data-presentation="quiet"><strong>Gremlyn operator console</strong>${navigation}</header>${liveChannels}<main>${body}</main>${stream}</div><script src="${clientScriptPath}" defer></script></body></html>`;
 }
 
 export function authLayout(reason?: SignInReason): string {
@@ -43,7 +43,7 @@ export function authLayout(reason?: SignInReason): string {
   const error = `<p id="auth-error" class="sr-status auth-error" data-auth-error role="alert"${message ? "" : " hidden"}>${escapeHtml(message)}</p>`;
   return layout(
     "Gremlyn sign in",
-    `<section class="signin card"><h1>Sign in</h1><p>Authenticate to view jobs and operational state.</p><form method="post" action="/auth" data-sign-in-form><label for="token">Console token</label><input id="token" name="token" type="password" autofocus autocomplete="off" value="" aria-describedby="auth-error"${message ? ' aria-invalid="true"' : ""}><button class="primary" type="submit">Sign in</button>${error}</form></section>`,
+    `<section class="signin card presentation-peak" data-presentation="peak"><h1>Sign in</h1><p>Authenticate to view jobs and operational state.</p><form method="post" action="/auth" data-sign-in-form><label for="token">Console token</label><input id="token" name="token" type="password" autofocus autocomplete="off" value="" aria-describedby="auth-error"${message ? ' aria-invalid="true"' : ""}><button class="primary" type="submit">Sign in</button>${error}</form></section>`,
     { authenticated: false },
   );
 }
