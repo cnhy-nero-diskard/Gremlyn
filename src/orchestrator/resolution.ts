@@ -546,7 +546,8 @@ export class ResolutionOrchestrator {
       const afterCollection = await workspaceSnapshot(workspacePath);
       if (
         afterCollection.headSha !== workspaceSnapshotAtCollection.headSha ||
-        afterCollection.status !== workspaceSnapshotAtCollection.status
+        afterCollection.status !== workspaceSnapshotAtCollection.status ||
+        afterCollection.fingerprint !== workspaceSnapshotAtCollection.fingerprint
       ) {
         this.options.logger.warn("stranded workspace changed during collection; keeping halt", {
           jobId: input.jobId,

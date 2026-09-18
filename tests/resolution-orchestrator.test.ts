@@ -945,7 +945,7 @@ test("retry after head-changed quarantines stranded work and refreshes to the mo
   data.store.close();
 });
 
-test("retry keeps edits added after quarantine validation and does not refresh", async () => {
+test("retry keeps content edits made to an already-dirty file after quarantine validation", async () => {
   const data = await setup("files-modified");
   const originalRun = data.executor.run.bind(data.executor);
   let movedHead = "";
@@ -954,6 +954,7 @@ test("retry keeps edits added after quarantine validation and does not refresh",
     const result = await originalRun(options);
     if (!moved) {
       moved = true;
+      writeFileSync(join(options.cwd, "feature.txt"), "operator edit before quarantine\n", "utf8");
       movedHead = await pushCommit(
         data.gitRepo.sourcePath,
         data.gitRepo.headBranch,
@@ -972,7 +973,7 @@ test("retry keeps edits added after quarantine validation and does not refresh",
   const first = data.store.db
     .prepare("SELECT head_sha_at_prepare, workspace_path FROM attempts WHERE attempt_number = 1")
     .get() as { head_sha_at_prepare: string; workspace_path: string };
-  const raceFile = join(first.workspace_path, "operator-race.txt");
+  const raceFile = join(first.workspace_path, "feature.txt");
   let mutated = false;
   data.logger.onInfo = (event) => {
     if (
@@ -997,11 +998,10 @@ test("retry keeps edits added after quarantine validation and does not refresh",
   );
   assert.equal(await headSha(first.workspace_path), first.head_sha_at_prepare);
   assert.equal(readFileSync(raceFile, "utf8"), "operator edit after validation\n");
-  assert.ok(
-    (await statusEntries(first.workspace_path)).some((entry) =>
-      entry.includes("operator-race.txt"),
-    ),
-  );
+  assert.deepEqual(await statusEntries(first.workspace_path), [
+    " M feature.txt",
+    "?? resolved.txt",
+  ]);
   assert.deepEqual(
     await data.store.db
       .prepare("SELECT action FROM operator_actions WHERE action = 'workspace-quarantine'")

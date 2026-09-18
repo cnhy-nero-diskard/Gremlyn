@@ -113,7 +113,8 @@ export async function refreshWorkspaceTree(options: {
     }
     if (
       actualSnapshot.headSha !== options.expectedSnapshot.headSha ||
-      actualSnapshot.status !== options.expectedSnapshot.status
+      actualSnapshot.status !== options.expectedSnapshot.status ||
+      actualSnapshot.fingerprint !== options.expectedSnapshot.fingerprint
     ) {
       throw new WorkspaceError(
         "workspace-dirty",
