@@ -1,5 +1,9 @@
 import type Database from "better-sqlite3";
-import { providerSupportsAgentKind, bundledProviderCatalog, type ProviderCatalogSnapshot } from "../agent/provider-catalog.js";
+import {
+  providerSupportsAgentKind,
+  bundledProviderCatalog,
+  type ProviderCatalogSnapshot,
+} from "../agent/provider-catalog.js";
 import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../config/loader.js";
 import type { RepoConfig } from "../config/loader.js";
 import type { RuntimeRepository } from "../orchestrator/resolution.js";

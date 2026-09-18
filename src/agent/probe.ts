@@ -28,7 +28,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { EXPECTED_CLINE_VERSION, extractSessionId, extractVersion } from "./cline.js";
-import { CREDENTIAL_SEED_FILES, OPENCODE_CREDENTIAL_FILES, seedAgentCredentials } from "./credentials.js";
+import {
+  CREDENTIAL_SEED_FILES,
+  OPENCODE_CREDENTIAL_FILES,
+  seedAgentCredentials,
+} from "./credentials.js";
 import { AGENT_ENV_ALLOWLIST, buildAgentEnvironment } from "./environment.js";
 import { defaultRunner, type ProcessRunner } from "./launcher.js";
 import { EXPECTED_OPENCODE_VERSION } from "./opencode.js";
@@ -136,7 +140,8 @@ async function runOnce(input: {
   }
   let seeded: readonly string[] | undefined;
   if (input.seedSource) {
-    const files = input.seedFiles ?? DEFAULT_SEED_FILES_BY_KIND[input.kind] ?? CREDENTIAL_SEED_FILES;
+    const files =
+      input.seedFiles ?? DEFAULT_SEED_FILES_BY_KIND[input.kind] ?? CREDENTIAL_SEED_FILES;
     try {
       const copied = seedAgentCredentials(input.seedSource, dataDir, files, input.kind);
       seeded = copied;
@@ -220,7 +225,9 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
 
   const kind = values.kind ?? process.env.GREMLYN_PROBE_KIND ?? "cline";
   if (!EXECUTOR_FACTORIES[kind]) {
-    out(`kind "${kind}" is not a registered executor (known: ${Object.keys(EXECUTOR_FACTORIES).join(", ")})`);
+    out(
+      `kind "${kind}" is not a registered executor (known: ${Object.keys(EXECUTOR_FACTORIES).join(", ")})`,
+    );
     return 1;
   }
   const binary = values.binary ?? process.env.GREMLYN_PROBE_BINARY ?? kind;
@@ -464,7 +471,9 @@ ${run.result.stderr}`),
       out("agent keeps its credentials. To exercise the fix, re-run with the");
       out("credential source this agent is configured with (config.example.yaml):");
       out();
-      out(`  npm run probe:agent -- --kind ${kind} --provider <id> --model <id> --seed-source <path>`);
+      out(
+        `  npm run probe:agent -- --kind ${kind} --provider <id> --model <id> --seed-source <path>`,
+      );
       out();
       out("That runs one unseeded and one seeded attempt and compares them.");
     }

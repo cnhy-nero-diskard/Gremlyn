@@ -104,7 +104,10 @@ test("OpenCode omits --variant for the none effort tier", async () => {
   const root = mkdtempSync(join(tmpdir(), "gremlyn-opencode-"));
   await new OpenCodeExecutor("opencode-test", runner).run(options(root, { effort: "none" }));
   assert.equal(passedArgs.includes("--variant"), false);
-  assert.ok(passedArgs.includes("--thinking"), "bare --thinking must still be passed for the reasoning stream");
+  assert.ok(
+    passedArgs.includes("--thinking"),
+    "bare --thinking must still be passed for the reasoning stream",
+  );
 });
 
 test("OpenCode ignores provider entirely: no -P argument on the argv", async () => {
@@ -133,7 +136,9 @@ test("OpenCode's --thinking and --variant cannot be crossed with Cline's --think
     return okResult();
   };
   const root = mkdtempSync(join(tmpdir(), "gremlyn-cross-"));
-  await new OpenCodeExecutor("opencode-test", openCodeRunner).run(options(root, { effort: "xhigh" }));
+  await new OpenCodeExecutor("opencode-test", openCodeRunner).run(
+    options(root, { effort: "xhigh" }),
+  );
   await new ClineExecutor("cline-test", clineRunner).run(options(root, { effort: "xhigh" }));
 
   // OpenCode: --thinking is a bare flag, the tier lives on --variant.

@@ -170,10 +170,7 @@ function validateOptions(options: ArtifactRetentionOptions): void {
   if (!Number.isFinite(options.maximumAgeMs) || options.maximumAgeMs < 0) {
     throw new Error("maximumAgeMs must be a non-negative finite number");
   }
-  if (
-    !Number.isSafeInteger(options.maximumTotalBytes) ||
-    options.maximumTotalBytes < 0
-  ) {
+  if (!Number.isSafeInteger(options.maximumTotalBytes) || options.maximumTotalBytes < 0) {
     throw new Error("maximumTotalBytes must be a non-negative safe integer");
   }
 }
@@ -218,7 +215,11 @@ async function collectArtifacts(
   };
 
   for (const owner of owners.values()) {
-    add(join(dataDir, "output", `attempt-${owner.attemptId}.json`), owner.attemptId, "agent-output");
+    add(
+      join(dataDir, "output", `attempt-${owner.attemptId}.json`),
+      owner.attemptId,
+      "agent-output",
+    );
     add(
       join(dataDir, "output", `attempt-${owner.attemptId}.activity.json`),
       owner.attemptId,
@@ -323,9 +324,7 @@ async function measure(
   }
 }
 
-async function measureDirectory(
-  path: string,
-): Promise<{ sizeBytes: number } | undefined> {
+async function measureDirectory(path: string): Promise<{ sizeBytes: number } | undefined> {
   try {
     let sizeBytes = 0;
     for (const entry of await readdir(path, { withFileTypes: true })) {

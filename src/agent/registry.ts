@@ -11,7 +11,10 @@ import type { AgentExecutor } from "../types.js";
  * supplies its own recording runner to capture argv, so the factory accepts
  * one instead of always defaulting to the real process launcher.
  */
-export const EXECUTOR_FACTORIES: Record<string, (binary: string, runner?: ProcessRunner) => AgentExecutor> = {
+export const EXECUTOR_FACTORIES: Record<
+  string,
+  (binary: string, runner?: ProcessRunner) => AgentExecutor
+> = {
   cline: (binary, runner) => new ClineExecutor(binary, runner),
   opencode: (binary, runner) => new OpenCodeExecutor(binary, runner),
 };

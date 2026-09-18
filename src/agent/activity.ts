@@ -247,7 +247,10 @@ export function opencodeLineMapper(line: string, ctx: ActivityMapperContext): vo
     case "step_finish": {
       const part = event.part as Record<string, unknown> | undefined;
       if (part?.tokens !== undefined || event.cost !== undefined) {
-        ctx.recordUsage({ tokens: part?.tokens ?? null, cost: (part as { cost?: unknown })?.cost ?? null });
+        ctx.recordUsage({
+          tokens: part?.tokens ?? null,
+          cost: (part as { cost?: unknown })?.cost ?? null,
+        });
       }
       return;
     }

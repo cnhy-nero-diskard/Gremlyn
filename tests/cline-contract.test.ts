@@ -209,7 +209,10 @@ test(
   "a shim wrapping a native executable resolves to that executable directly",
   { skip: process.platform !== "win32" },
   () => {
-    const { dir, entryPath } = writeShimFixture("opencode", "node_modules/opencode-ai/bin/opencode.exe");
+    const { dir, entryPath } = writeShimFixture(
+      "opencode",
+      "node_modules/opencode-ai/bin/opencode.exe",
+    );
     const resolved = resolveWindowsShim(join(dir, "opencode.cmd"));
     assert.deepEqual(resolved, { binary: entryPath, prefix: [] });
   },
@@ -225,13 +228,9 @@ test(
   },
 );
 
-test(
-  "no shim on PATH falls back to undefined",
-  { skip: process.platform !== "win32" },
-  () => {
-    assert.equal(resolveWindowsShim("gremlyn-no-such-binary-anywhere"), undefined);
-  },
-);
+test("no shim on PATH falls back to undefined", { skip: process.platform !== "win32" }, () => {
+  assert.equal(resolveWindowsShim("gremlyn-no-such-binary-anywhere"), undefined);
+});
 
 test(
   "a shim whose final line has no regex match falls back to undefined",
@@ -276,7 +275,9 @@ test(
   { skip: process.platform !== "win32" },
   async () => {
     const env = Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
     );
     const oversized = "y".repeat(20_000);
     const result = await defaultRunner("cline", ["--version", oversized], { env });
@@ -310,7 +311,9 @@ test(
   { skip: !opencodeAvailable() },
   async () => {
     const env = Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
     );
     const oversized = "y".repeat(20_000);
     const result = await defaultRunner("opencode", ["--version", oversized], { env });
@@ -318,7 +321,10 @@ test(
       !/command line is too long/iu.test(result.stderr),
       `spawn hit the cmd.exe cap: ${result.stderr}`,
     );
-    assert.ok(!/SyntaxError/u.test(result.stderr), `native binary was parsed as JS: ${result.stderr}`);
+    assert.ok(
+      !/SyntaxError/u.test(result.stderr),
+      `native binary was parsed as JS: ${result.stderr}`,
+    );
     assert.equal(result.exitCode, 0);
   },
 );
@@ -330,7 +336,9 @@ test(
  */
 test("stdout lines are delivered while the process runs, and the buffer is unchanged", async () => {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   );
   const seen: string[] = [];
   const script =
@@ -347,7 +355,9 @@ test("stdout lines are delivered while the process runs, and the buffer is uncha
 
 test("a throwing line observer cannot fail the run it is watching", async () => {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   );
   const result = await defaultRunner(process.execPath, ["-e", "process.stdout.write('x\\n')"], {
     env,
