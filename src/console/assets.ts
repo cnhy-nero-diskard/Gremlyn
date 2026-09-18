@@ -576,6 +576,34 @@ label { gap: var(--space-2); }
 .state-on { color: var(--status-success-fg); background: var(--status-success-bg); border-color: var(--status-success-border); }
 .state-off { color: var(--status-neutral-fg); background: var(--status-neutral-bg); border-color: var(--status-neutral-border); }
 
+/* Semantic role matrix for current and sibling-owned projections. The
+   companion text/state label remains authoritative; these rules only add a
+   redundant foreground, surface, and boundary treatment. */
+[data-visual-role="success"], .semantic-success, .safety-step-passed, [data-safety-state="passed"] { color: var(--status-success-fg); background: var(--status-success-bg); border-color: var(--status-success-border); }
+[data-visual-role="progress"], .semantic-progress, .safety-step-active, [data-safety-state="active"] { color: var(--status-progress-fg); background: var(--status-progress-bg); border-color: var(--status-progress-border); }
+[data-visual-role="warning"], .semantic-warning, .attention-marker, [data-safety-state="skipped"], [data-safety-state="not-applicable"] { color: var(--status-warning-fg); background: var(--status-warning-bg); border-color: var(--status-warning-border); }
+[data-visual-role="cancelled"] { color: var(--status-cancelled-fg); background: var(--status-cancelled-bg); border-color: var(--status-cancelled-border); }
+[data-visual-role="interrupted"] { color: var(--status-interrupted-fg); background: var(--status-interrupted-bg); border-color: var(--status-interrupted-border); }
+[data-visual-role="failure"], .semantic-failure, .safety-step-failed, [data-safety-state="failed"] { color: var(--status-failure-fg); background: var(--status-failure-bg); border-color: var(--status-failure-border); }
+[data-visual-role="danger"], .semantic-danger, .danger { color: var(--status-danger-fg); background: var(--status-danger-bg); border-color: var(--status-danger-border); }
+[data-visual-role="neutral"], .semantic-neutral, .safety-step-pending, [data-safety-state="pending"] { color: var(--status-neutral-fg); background: var(--status-neutral-bg); border-color: var(--status-neutral-border); }
+.safety-rail, .job-safety-rail { display: grid; gap: var(--space-4); margin: var(--space-5) 0; padding: var(--space-5); border: var(--border-thin) solid var(--panel-peak-border); border-radius: var(--radius-lg); background: var(--surface-raised); box-shadow: var(--shadow-peak); }
+.safety-rail-list, .job-safety-rail ol { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.safety-step, .job-safety-step { min-width: 0; display: grid; gap: var(--space-2); align-content: start; padding: var(--space-3); border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); background: var(--surface-quiet); }
+.safety-step-name, .safety-step-state { font-size: var(--type-meta); font-weight: var(--weight-semibold); }
+.safety-step-evidence, .safety-step-detail { color: var(--text-muted); font-size: var(--type-meta); }
+.safety-step[aria-current="step"], .job-safety-step[aria-current="step"] { border-color: var(--status-progress-border); box-shadow: inset 0 0 0 var(--border-strong) var(--status-progress-border); }
+.outcome-banner, .job-outcome-banner, .recovery-advice { display: grid; gap: var(--space-2); padding: var(--space-4); border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); background: var(--surface-panel); }
+.outcome-success, .job-outcome-success .outcome-banner { color: var(--status-success-fg); background: var(--status-success-bg); border-color: var(--status-success-border); }
+.outcome-failure, .job-outcome-failure .outcome-banner { color: var(--status-failure-fg); background: var(--status-failure-bg); border-color: var(--status-failure-border); }
+.outcome-stopped, .job-outcome-stopped .outcome-banner { color: var(--status-cancelled-fg); background: var(--status-cancelled-bg); border-color: var(--status-cancelled-border); }
+.recovery-recommendation, .recovery-kind { color: var(--status-warning-fg); font-weight: var(--weight-semibold); }
+.attention-reason, [data-attention-reason] { display: inline-flex; gap: var(--space-2); align-items: center; color: var(--status-warning-fg); background: var(--status-warning-bg); border: var(--border-thin) solid var(--status-warning-border); border-radius: var(--radius-pill); padding: var(--space-1) var(--space-3); font-size: var(--type-meta); font-weight: var(--weight-semibold); }
+.event-category, [data-event-kind], [data-visual-role="event"] { color: var(--status-neutral-fg); background: var(--status-neutral-bg); border-color: var(--status-neutral-border); }
+.event-category-reasoning, [data-event-kind="reasoning"] { color: var(--event-reasoning); border-color: var(--event-reasoning); }
+.event-category-text, [data-event-kind="text"] { color: var(--event-text); border-color: var(--event-text); }
+.event-category-tool, [data-event-kind="tool"] { color: var(--event-tool); border-color: var(--event-tool); }
+
 .presentation-peak .status-succeeded, .job-outcome-success { border-color: var(--status-success-border); }
 .job-outcome-success { background: var(--status-success-bg); }
 .job-outcome-success .job-title h1 { color: var(--status-success-fg); }
@@ -675,6 +703,7 @@ details[open] > summary { color: var(--interactive); }
   .responsive-table td::before { color: var(--text-muted); font-size: var(--type-caption); }
   .presentation-peak, [data-presentation="peak"], .presentation-panel, [data-presentation="panel"] { padding: var(--space-4); }
   .job-page, .dash-page { gap: var(--space-5); }
+  .safety-rail-list, .job-safety-rail ol { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   .job-actions { margin-left: 0; width: 100%; }

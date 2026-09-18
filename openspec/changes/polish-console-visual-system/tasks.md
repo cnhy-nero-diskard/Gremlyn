@@ -18,10 +18,10 @@
 
 ## 4. Normalize semantic accents
 
-- [ ] 4.1 Apply foreground/background/border triplets and existing non-color cues to job statuses, safety-rail steps, health/connection state, feedback, attention reasons, and terminal outcomes; verify every semantic fixture retains visible state text or another non-color marker.
-- [ ] 4.2 Preserve and normalize the text-bearing recommended, free-tier, current, unavailable, mismatch, and validation model capsules in both themes; verify provider/model picker fixtures retain their labels, categories, and authoritative selection behavior.
-- [ ] 4.3 Separate danger, failure, warning, progress/success, event-category, and structural border roles and remove decorative side accents that imply the wrong state; verify a combined danger/failure/event fixture uses distinct tokens and failure red appears only on actual destructive or failed roles.
-- [ ] 4.4 Strengthen the evidenced successful job end state as the page Peak treatment without changing success semantics; verify successful, pushed-but-report-failed, local-unpushed, validation-failed, cancelled, interrupted, timed-out, and stalled fixtures remain visually and textually distinct.
+- [x] 4.1 Apply foreground/background/border triplets and existing non-color cues to job statuses, safety-rail steps, health/connection state, feedback, attention reasons, and terminal outcomes; verify every semantic fixture retains visible state text or another non-color marker.
+- [x] 4.2 Preserve and normalize the text-bearing recommended, free-tier, current, unavailable, mismatch, and validation model capsules in both themes; verify provider/model picker fixtures retain their labels, categories, and authoritative selection behavior.
+- [x] 4.3 Separate danger, failure, warning, progress/success, event-category, and structural border roles and remove decorative side accents that imply the wrong state; verify a combined danger/failure/event fixture uses distinct tokens and failure red appears only on actual destructive or failed roles.
+- [x] 4.4 Strengthen the evidenced successful job end state as the page Peak treatment without changing success semantics; verify successful, pushed-but-report-failed, local-unpushed, validation-failed, cancelled, interrupted, timed-out, and stalled fixtures remain visually and textually distinct.
 
 ## 5. Preserve theme, motion, and responsive behavior
 

@@ -13,7 +13,21 @@ export function escapeHtml(value: unknown): string {
 export function statusPill(status: string): string {
   const safe = escapeHtml(status);
   const className = status.replace(/[^a-z0-9_-]/gi, "-");
-  return `<span class="status-pill status-${className}" data-status-value="${safe}" aria-label="Status: ${safe}">${safe}</span>`;
+  const visualRole =
+    status === "succeeded"
+      ? "success"
+      : status === "failed"
+        ? "failure"
+        : status === "cancelled"
+          ? "cancelled"
+          : status === "interrupted"
+            ? "interrupted"
+          : ["queued", "preparing", "running", "validating", "publishing", "reporting"].includes(
+                status,
+              )
+            ? "progress"
+            : "neutral";
+  return `<span class="status-pill status-${className}" data-status-value="${safe}" data-visual-role="${visualRole}" aria-label="Status: ${safe}">${safe}</span>`;
 }
 
 export function duration(

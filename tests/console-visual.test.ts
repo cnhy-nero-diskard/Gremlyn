@@ -154,8 +154,15 @@ test("semantic status treatments retain visible text and non-color markers", () 
     const pill = statusPill(status);
     assert.match(pill, new RegExp(`>${status}<`));
     assert.match(pill, /data-status-value=/u);
+    assert.match(pill, /data-visual-role=/u);
   }
   assert.match(stylesheet, /\.status-pill::before/iu);
   assert.match(stylesheet, /\.status-failed::before/iu);
   assert.match(stylesheet, /\.status-cancelled::before/iu);
+  for (const role of ["success", "progress", "warning", "cancelled", "interrupted", "failure", "danger", "neutral"]) {
+    assert.match(stylesheet, new RegExp(`data-visual-role="${role}"`), role);
+  }
+  assert.match(stylesheet, /\.safety-rail, \.job-safety-rail/iu);
+  assert.match(stylesheet, /\.attention-reason, \[data-attention-reason\]/iu);
+  assert.match(stylesheet, /\.model-badge-unavailable, \.model-badge-mismatch/iu);
 });
