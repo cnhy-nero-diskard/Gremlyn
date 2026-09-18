@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { resolve } from "node:path";
 import { execa, ExecaError } from "execa";
 
 /**
@@ -50,6 +53,66 @@ export async function currentBranch(cwd: string): Promise<string> {
 export async function statusEntries(cwd: string): Promise<string[]> {
   const { stdout } = await git(["status", "--porcelain"], { cwd });
   return stdout.split("\n").filter((line) => line.length > 0);
+}
+
+/** Exact working-tree state used to guard a destructive refresh. */
+export interface WorkspaceSnapshot {
+  headSha: string;
+  status: string;
+  fingerprint: string;
+}
+
+/**
+ * Capture the exact working-tree state used to guard a destructive refresh.
+ *
+ * The porcelain status records paths and modes, but not the bytes of files that
+ * were already dirty. Include the tracked diff and every untracked file's
+ * path, mode, and content so a content-only edit cannot pass the guard.
+ */
+export async function workspaceSnapshot(cwd: string): Promise<WorkspaceSnapshot> {
+  const [head, status] = await Promise.all([
+    git(["rev-parse", "HEAD"], { cwd }),
+    git(["status", "--porcelain=v1", "-z", "-uall"], { cwd }),
+  ]);
+  const headSha = head.stdout.trim();
+  const fingerprint = createHash("sha256");
+  updateFingerprint(fingerprint, "gremlyn-workspace-snapshot-v1");
+  updateFingerprint(fingerprint, headSha);
+  updateFingerprint(fingerprint, status.stdout);
+  updateFingerprint(
+    fingerprint,
+    (await git(["diff", "--no-ext-diff", "--binary", "--patch", "HEAD"], { cwd })).stdout,
+  );
+
+  const untrackedFiles = status.stdout
+    .split("\0")
+    .filter((entry) => entry.startsWith("?? "))
+    .map((entry) => entry.slice(3))
+    .filter((name) => name.length > 0)
+    .sort();
+  for (const name of untrackedFiles) {
+    const absolute = resolve(cwd, name);
+    const entry = lstatSync(absolute);
+    updateFingerprint(fingerprint, name);
+    updateFingerprint(fingerprint, String(entry.mode));
+    if (entry.isSymbolicLink()) {
+      updateFingerprint(fingerprint, "symlink");
+      updateFingerprint(fingerprint, readlinkSync(absolute));
+    } else if (entry.isFile()) {
+      updateFingerprint(fingerprint, "file");
+      updateFingerprint(fingerprint, readFileSync(absolute));
+    } else {
+      updateFingerprint(fingerprint, "other");
+    }
+  }
+
+  return { headSha, status: status.stdout, fingerprint: fingerprint.digest("hex") };
+}
+
+function updateFingerprint(hash: ReturnType<typeof createHash>, value: string | Buffer): void {
+  const bytes = typeof value === "string" ? Buffer.from(value, "utf8") : value;
+  hash.update(Buffer.from(`${bytes.byteLength}:`, "ascii"));
+  hash.update(bytes);
 }
 
 const UNMERGED_CODES = new Set(["UU", "AA", "DD", "AU", "UA", "DU", "UD"]);

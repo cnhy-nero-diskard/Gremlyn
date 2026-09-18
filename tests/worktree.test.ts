@@ -5,13 +5,20 @@ import { join } from "node:path";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
 import {
+  collectStrandedDiff,
   isBeneath,
   prepareWorkspace,
   WorkspaceError,
   workspacePathFor,
 } from "../src/workspace/worktree.js";
-import { currentBranch, git, headSha, statusEntries } from "../src/workspace/gitops.js";
-import { resetWorkspace } from "../src/workspace/reset.js";
+import {
+  currentBranch,
+  git,
+  headSha,
+  statusEntries,
+  workspaceSnapshot,
+} from "../src/workspace/gitops.js";
+import { resetWorkspace, refreshWorkspaceTree } from "../src/workspace/reset.js";
 import { createTempRepo, pushCommit, remoteSha, type TempRepo } from "./helpers/gitrepo.js";
 
 const AUTHOR = ["-c", "user.name=Test", "-c", "user.email=test@example.com"];
@@ -186,6 +193,197 @@ test("dirty resume still refuses a workspace whose base head diverged", async ()
     }),
     (err: unknown) => err instanceof WorkspaceError && err.reason === "workspace-diverged",
   );
+});
+
+test("collectStrandedDiff pulls remote first and captures tracked and untracked work untouched", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 16,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "feature.txt"), "modified\n", "utf8");
+  const strandedName = "stranded space-é.txt";
+  writeFileSync(join(prepared.path, strandedName), "new work\n", "utf8");
+
+  const diff = await collectStrandedDiff(prepared.path);
+
+  assert.ok(
+    diff.files.some((file) => file.includes("feature.txt")),
+    "tracked modification is listed",
+  );
+  assert.ok(
+    diff.files.includes(strandedName),
+    "untracked addition is listed",
+  );
+  assert.match(diff.patch, /stranded space-é\.txt/u);
+  assert.match(diff.patch, /modified/);
+  // Non-destructive: the workspace still holds the work.
+  assert.ok((await statusEntries(prepared.path)).length > 0);
+  assert.equal(readFileSync(join(prepared.path, strandedName), "utf8"), "new work\n");
+});
+
+test("collectStrandedDiff uses a binary-capable patch for tracked binary changes", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 160,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  const binary = Buffer.from([0, 1, 2, 255, 254]);
+  writeFileSync(join(prepared.path, "feature.txt"), binary);
+
+  const diff = await collectStrandedDiff(prepared.path);
+
+  assert.match(diff.patch, /diff --git a\/feature\.txt b\/feature\.txt/);
+  assert.match(diff.patch, /GIT binary patch/);
+  assert.deepEqual(readFileSync(join(prepared.path, "feature.txt")), binary);
+});
+
+test("collectStrandedDiff refuses unsupported untracked bytes before destructive refresh", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 161,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  const binary = Buffer.from([255, 0, 3, 4]);
+  const oversized = Buffer.alloc(512 * 1024 + 1, 7);
+  const binaryPath = join(prepared.path, "stranded-binary.bin");
+  const oversizedPath = join(prepared.path, "stranded-oversized.bin");
+  writeFileSync(binaryPath, binary);
+  writeFileSync(oversizedPath, oversized);
+
+  await assert.rejects(
+    collectStrandedDiff(prepared.path),
+    /untracked (binary file cannot be captured|file exceeds capture limit)/u,
+  );
+  assert.deepEqual(readFileSync(binaryPath), binary);
+  assert.deepEqual(readFileSync(oversizedPath), oversized);
+});
+
+test("in-place refresh resets tracked and untracked work but keeps ignored dependencies", async () => {
+  const repo = await createTempRepo();
+  const withIgnore = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    ".gitignore",
+    "deps/\n",
+    "ignore deps",
+  );
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 17,
+    headBranch: repo.headBranch,
+    headSha: withIgnore,
+  });
+  mkdirSync(join(prepared.path, "deps"));
+  writeFileSync(join(prepared.path, "deps", "keep"), "installed\n", "utf8");
+  writeFileSync(join(prepared.path, "feature.txt"), "modified\n", "utf8");
+  writeFileSync(join(prepared.path, "junk.txt"), "discard\n", "utf8");
+  const movedHead = await pushCommit(
+    repo.sourcePath,
+    repo.headBranch,
+    "next.txt",
+    "next\n",
+    "advance",
+  );
+
+  await refreshWorkspaceTree({
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 17,
+    headSha: movedHead,
+  });
+
+  assert.equal(await headSha(prepared.path), movedHead);
+  assert.deepEqual(await statusEntries(prepared.path), []);
+  assert.equal(existsSync(join(prepared.path, "junk.txt")), false);
+  assert.equal(readFileSync(join(prepared.path, "feature.txt"), "utf8").trim(), "feature work");
+  assert.equal(readFileSync(join(prepared.path, "deps", "keep"), "utf8"), "installed\n");
+});
+
+test("in-place refresh audits a partial outcome when clean fails after reset", async () => {
+  const repo = await createTempRepo();
+  const sha = await remoteSha(repo.remotePath, repo.headBranch);
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 18,
+    headBranch: repo.headBranch,
+    headSha: sha,
+  });
+  writeFileSync(join(prepared.path, "feature.txt"), "discard this edit\n", "utf8");
+  writeFileSync(join(prepared.path, "leftover.txt"), "retain this file\n", "utf8");
+  const snapshot = await workspaceSnapshot(prepared.path);
+  const store = new Store({ dataDir: ":memory:", file: ":memory:" });
+  const actions = new OperatorActionStore(store.db);
+
+  try {
+    await assert.rejects(
+      refreshWorkspaceTree({
+        workspaceRoot: repo.workspaceRoot,
+        prNumber: 18,
+        headSha: sha,
+        expectedSnapshot: snapshot,
+        actions,
+        auditContext: {
+          jobId: 1,
+          priorAttemptId: 2,
+          priorHead: sha,
+          expectedHead: sha,
+          priorFailureReason: "validation-failed",
+          patchRef: join(repo.root, "stranded.patch"),
+        },
+        refreshContext: {
+          workspaceHead: snapshot.headSha,
+          files: ["feature.txt", "leftover.txt"],
+          stashSha: null,
+        },
+        runGit: async (args, options) => {
+          if (args[0] === "clean") throw new Error("simulated clean failure");
+          return git(args, options);
+        },
+      }),
+      /simulated clean failure/u,
+    );
+
+    assert.equal(
+      readFileSync(join(prepared.path, "feature.txt"), "utf8").replaceAll("\r\n", "\n"),
+      "feature work\n",
+    );
+    assert.equal(readFileSync(join(prepared.path, "leftover.txt"), "utf8"), "retain this file\n");
+    const recorded = actions.list()[0];
+    assert.ok(recorded, "the partial refresh is recorded");
+    assert.equal(recorded.action, "workspace-quarantine");
+    assert.equal(recorded.target, prepared.path);
+    assert.equal(recorded.effect, "partial");
+    assert.deepEqual(JSON.parse(recorded.detail ?? "{}"), {
+      jobId: 1,
+      priorAttemptId: 2,
+      priorHead: sha,
+      workspaceHead: sha,
+      expectedHead: sha,
+      priorFailureReason: "validation-failed",
+      patchRef: join(repo.root, "stranded.patch"),
+      reason: "validation-failed",
+      files: ["feature.txt", "leftover.txt"],
+      stashSha: null,
+      stage: "clean",
+      message: "simulated clean failure",
+    });
+  } finally {
+    store.close();
+  }
 });
 
 test("workspace path derives from root and PR number only", () => {

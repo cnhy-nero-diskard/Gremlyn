@@ -13,7 +13,21 @@ export function escapeHtml(value: unknown): string {
 export function statusPill(status: string): string {
   const safe = escapeHtml(status);
   const className = status.replace(/[^a-z0-9_-]/gi, "-");
-  return `<span class="status-pill status-${className}" data-status-value="${safe}" aria-label="Status: ${safe}">${safe}</span>`;
+  const visualRole =
+    status === "succeeded"
+      ? "success"
+      : status === "failed"
+        ? "failure"
+        : status === "cancelled"
+          ? "cancelled"
+          : status === "interrupted"
+            ? "interrupted"
+          : ["queued", "preparing", "running", "validating", "publishing", "reporting"].includes(
+                status,
+              )
+            ? "progress"
+            : "neutral";
+  return `<span class="status-pill status-${className}" data-status-value="${safe}" data-visual-role="${visualRole}" aria-label="Status: ${safe}">${safe}</span>`;
 }
 
 export function duration(
@@ -140,7 +154,7 @@ export function keyValueTable(
 
 export function dangerZone(repoId: number, defaultPr: number): string {
   const controls = `<div class="actions danger-controls"><label>Pull request <input name="reset-pr" type="number" min="1" value="${defaultPr}"></label><label>Confirmation <input data-reset-confirm name="reset-confirm" autocomplete="off" placeholder="RESET"></label><button class="danger" data-action="reset" data-reset-submit data-url="/workspaces/${repoId}/reset" data-body="{&quot;confirm&quot;:&quot;RESET&quot;,&quot;prNumber&quot;:${defaultPr}}" disabled>Reset workspace</button></div>`;
-  return `<section class="panel danger-zone span-all" id="danger-zone" data-action-scope="reset-${String(repoId)}"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></section>`;
+  return `<section class="panel danger-zone presentation-inset span-all" data-presentation="inset" id="danger-zone" data-action-scope="reset-${String(repoId)}"><h2>Destructive actions</h2><p class="muted">Workspace reset discards local work. Type RESET to arm the button.</p>${controls}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></section>`;
 }
 
 export function timelineStepper(

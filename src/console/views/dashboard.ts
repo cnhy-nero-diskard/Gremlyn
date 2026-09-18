@@ -229,7 +229,7 @@ function repositoryCard(
   const head = `<header class="repo-head"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><span class="state state-${on ? "on" : "off"}" data-enabled>${on ? "enabled" : "disabled"}</span><button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${on ? "Disable" : "Enable"}</button></header>`;
   const chips = `<p class="repo-chips"><span class="chip">agent <code>${escapeHtml(repo.agent ?? "unknown")}</code></span><span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
   const validation = `<div class="repo-validation"><h4>Validation commands</h4>${validationLabel(repo)}</div>`;
-  return `<article class="card repo-card" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
+  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
 }
 
 /**
@@ -253,7 +253,7 @@ export function jobLane(title: string, jobs: JobSummary[], regionId?: string): s
     ? `<ul class="job-rows">${jobs.map(jobItem).join("")}</ul>`
     : '<p class="lane-empty muted">No jobs in this lane.</p>';
   const lane = title.toLowerCase().split(" ")[0] ?? "lane";
-  const content = `<section class="panel lane lane-${escapeHtml(lane)}"><h2 data-focus-fallback tabindex="-1">${escapeHtml(title)} <span class="lane-count">${String(jobs.length)}</span></h2>${body}</section>`;
+  const content = `<section class="panel presentation-panel lane lane-${escapeHtml(lane)}" data-presentation="panel"><h2 data-focus-fallback tabindex="-1">${escapeHtml(title)} <span class="lane-count">${String(jobs.length)}</span></h2>${body}</section>`;
   return regionId ? `<div id="${regionId}">${content}</div>` : content;
 }
 
@@ -296,6 +296,6 @@ export function dashboardView(
   timeZone?: string,
 ): string {
   const regions = dashboardRegions(model, catalog, agents, timeZone);
-  const head = `<header class="page-head"><div class="page-title"><h1 data-focus-fallback tabindex="-1">Dashboard</h1></div><div id="health-region">${regions.health}</div></header>`;
-  return `<div class="dash-page">${head}<div id="job-lanes">${regions.jobs}</div><section class="panel" id="repositories">${regions.repositories}</section></div>`;
+  const head = `<header class="page-head presentation-peak" data-presentation="peak"><div class="page-title"><h1 data-focus-fallback tabindex="-1">Dashboard</h1></div><div id="health-region">${regions.health}</div></header>`;
+  return `<div class="dash-page">${head}<div id="job-lanes" class="presentation-panel" data-presentation="panel">${regions.jobs}</div><section class="panel presentation-panel" data-presentation="panel" id="repositories">${regions.repositories}</section></div>`;
 }
