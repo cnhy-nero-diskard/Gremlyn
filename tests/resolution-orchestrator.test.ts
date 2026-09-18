@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FakeExecutor, type FakeOutcome } from "../src/agent/fake.js";
@@ -888,6 +888,77 @@ test("retry after head-changed quarantines stranded work and refreshes to the mo
   data.store.close();
 });
 
+test("retry after head-changed preserves secret-bearing stranded patches byte-for-byte", async () => {
+  const data = await setup("files-modified");
+  const originalRun = data.executor.run.bind(data.executor);
+  const workspacePath = join(data.gitRepo.workspaceRoot, "pr-27");
+  const strandedContent = "stranded fixture-secret bytes\nsecond line\n";
+  let moved = false;
+  data.executor.run = async (options) => {
+    const result = await originalRun(options);
+    if (!moved) {
+      moved = true;
+      writeFileSync(join(workspacePath, "feature.txt"), strandedContent, "utf8");
+      const movedHead = await pushCommit(
+        data.gitRepo.sourcePath,
+        data.gitRepo.headBranch,
+        "concurrent.txt",
+        "remote update\n",
+        "concurrent update",
+      );
+      const pr = await data.github.getPullRequest("acme", "widgets", 27);
+      data.github.addPullRequest({ ...pr, headSha: movedHead });
+    }
+    return result;
+  };
+
+  await assert.rejects(() => resolveEvent(data));
+  const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
+  const first = data.store.db
+    .prepare("SELECT head_sha_at_prepare FROM attempts WHERE attempt_number = 1")
+    .get() as {
+    head_sha_at_prepare: string;
+  };
+  const retried = await completeRetry(data, job.id);
+  assert.equal(retried.kind, "completed");
+
+  const quarantine = data.store.db
+    .prepare("SELECT detail FROM operator_actions WHERE action = 'workspace-quarantine'")
+    .get() as { detail: string } | undefined;
+  assert.ok(quarantine, "the quarantine is recorded");
+  const patchRef = (JSON.parse(quarantine.detail) as { patchRef: string }).patchRef;
+  const patch = readFileSync(patchRef, "utf8");
+  assert.match(patch, /fixture-secret/);
+  assert.doesNotMatch(patch, /\[redacted\]/u);
+  if (process.platform !== "win32") assert.equal(statSync(patchRef).mode & 0o777, 0o600);
+
+  const restoreRoot = mkdtempSync(join(tmpdir(), "gremlyn-patch-restore-"));
+  const restorePath = join(restoreRoot, "workspace");
+  await git(
+    [
+      "-c",
+      "core.autocrlf=false",
+      "-c",
+      "core.eol=lf",
+      "worktree",
+      "add",
+      "--detach",
+      restorePath,
+      first.head_sha_at_prepare,
+    ],
+    {
+      cwd: data.gitRepo.sourcePath,
+    },
+  );
+  try {
+    await git(["-c", "core.autocrlf=false", "apply", patchRef], { cwd: restorePath });
+    assert.equal(readFileSync(join(restorePath, "feature.txt"), "utf8"), strandedContent);
+  } finally {
+    await git(["worktree", "remove", "--force", restorePath], { cwd: data.gitRepo.sourcePath });
+  }
+  data.store.close();
+});
+
 test("retry after head-changed refuses to refresh when stranded binary or oversized bytes cannot be captured", async () => {
   const data = await setup("files-modified");
   const originalRun = data.executor.run.bind(data.executor);
@@ -933,7 +1004,11 @@ test("retry after head-changed refuses to refresh when stranded binary or oversi
     ).failure_reason,
     "workspace-dirty",
   );
-  assert.equal(data.executor.runs.length, 1, "unsupported stranded bytes block destructive refresh");
+  assert.equal(
+    data.executor.runs.length,
+    1,
+    "unsupported stranded bytes block destructive refresh",
+  );
   assert.deepEqual(readFileSync(join(workspacePath, "feature.txt")), trackedBinary);
   assert.deepEqual(readFileSync(join(workspacePath, "stranded-binary.bin")), untrackedBinary);
   assert.deepEqual(readFileSync(join(workspacePath, "stranded-oversized.bin")), oversized);

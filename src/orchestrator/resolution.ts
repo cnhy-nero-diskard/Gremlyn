@@ -557,7 +557,7 @@ export class ResolutionOrchestrator {
       "",
     ].join("\n");
     try {
-      writeFileSync(patchRef, this.redact(`${header}${diff.patch}`), "utf8");
+      writeFileSync(patchRef, `${header}${diff.patch}`, { encoding: "utf8", mode: 0o600 });
     } catch (error) {
       this.options.logger.warn("stranded workspace patch write failed; keeping halt", {
         jobId: input.jobId,
