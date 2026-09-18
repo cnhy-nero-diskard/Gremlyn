@@ -397,8 +397,9 @@ export class ResolutionOrchestrator {
    *
    * `prepareWorkspace` already fetches before reasoning, but a retry wedged by
    * the fail-and-retry sequence needs more: a prior attempt blocked by
-   * `head-changed` leaves uncommitted work against a head the pull request no
-   * longer has, so the next preparation fails as `workspace-dirty` forever.
+   * `head-changed` — or by `validation-failed` on a head the pull request no
+   * longer has — leaves uncommitted work against a superseded head, so the
+   * next preparation fails as `workspace-dirty` forever.
    * When that exact wedge is detected the stranded work is quarantined to a
    * patch artifact, the workspace is reset to the current head through the
    * guarded reset path, and preparation continues clean. Anything else —
@@ -465,7 +466,7 @@ export class ResolutionOrchestrator {
   }
 
   /**
-   * Quarantine stranded `head-changed` work and reset to the moved head.
+   * Quarantine stranded publishing-block work and reset to the moved head.
    *
    * Returns the freshly prepared workspace, or `undefined` when this wedge
    * does not apply and the original `workspace-dirty` must stand.
@@ -498,8 +499,11 @@ export class ResolutionOrchestrator {
     } catch {
       return undefined;
     }
-    // Only a prior attempt of this job blocked by `head-changed` that retained
-    // uncommitted work qualifies: any other publishing failure keeps the halt.
+    // Only a prior attempt of this job that retained uncommitted work after a
+    // publishing block qualifies: `head-changed`, or `validation-failed`
+    // whose recorded head no longer matches (a same-head validation failure
+    // resumes instead and never reaches here with the head unmoved). Any other
+    // publishing failure keeps the halt.
     const attempts = this.jobs.listAttempts(input.jobId);
     let prior: AttemptRow | undefined;
     for (let index = attempts.length - 1; index >= 0; index -= 1) {
@@ -509,7 +513,8 @@ export class ResolutionOrchestrator {
         attempt.has_uncommitted_changes === 1 &&
         attempt.outcome === "failed" &&
         attempt.failure_stage === "publishing" &&
-        attempt.failure_reason === "head-changed" &&
+        (attempt.failure_reason === "head-changed" ||
+          attempt.failure_reason === "validation-failed") &&
         attempt.head_sha_at_prepare
       ) {
         prior = attempt;
@@ -571,7 +576,7 @@ export class ResolutionOrchestrator {
         priorHead: prior.head_sha_at_prepare,
         workspaceHead,
         expectedHead: input.expectedSha,
-        reason: "head-changed",
+        reason: prior.failure_reason,
         patchRef,
         files: diff.files,
         stashSha: diff.stashSha,

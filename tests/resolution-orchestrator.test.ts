@@ -789,7 +789,7 @@ test("a publishing failure other than validation does not admit a resume", async
   data.store.close();
 });
 
-test("a validation failure whose recorded head has moved is not resumed", async () => {
+test("a validation failure whose recorded head has moved quarantines and refreshes", async () => {
   const data = await setup("failure");
   await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
@@ -797,18 +797,38 @@ test("a validation failure whose recorded head has moved is not resumed", async 
     id: number;
     workspace_path: string;
   };
-  writeFileSync(join(attempt.workspace_path, "agent-progress.txt"), "retain this\n", "utf8");
+  const stranded = join(attempt.workspace_path, "agent-progress.txt");
+  writeFileSync(stranded, "retain this\n", "utf8");
   recordValidationFailure(data, attempt.id);
-  // A force-push between the attempts: the edits were made against a base the
-  // pull request no longer has.
-  data.store.db
-    .prepare(
-      "UPDATE attempts SET head_sha_at_prepare = 'f'||substr(head_sha_at_prepare, 2) WHERE id = ?",
-    )
-    .run(attempt.id);
+  // The pull request moves between the attempts: the edits were made against
+  // a base it no longer has, so resuming is unsafe — but the retry must not
+  // wedge on workspace-dirty either.
+  const movedHead = await pushCommit(
+    data.gitRepo.sourcePath,
+    data.gitRepo.headBranch,
+    "next.txt",
+    "next\n",
+    "advance",
+  );
+  const pr = await data.github.getPullRequest("acme", "widgets", 27);
+  data.github.addPullRequest({ ...pr, headSha: movedHead });
 
   await assert.rejects(() => completeRetry(data, job.id));
-  assert.equal(data.executor.runs.length, 1, "a moved head must close the resume off");
+  assert.equal(data.executor.runs.length, 2, "the retry runs instead of failing as dirty");
+
+  const quarantine = data.store.db
+    .prepare("SELECT * FROM operator_actions WHERE action = 'workspace-quarantine'")
+    .get() as { effect: string; detail: string } | undefined;
+  assert.ok(quarantine, "the quarantine is recorded");
+  assert.equal(quarantine.effect, "quarantined-and-recreated");
+  const detail = JSON.parse(quarantine.detail) as { reason: string; patchRef: string };
+  assert.equal(detail.reason, "validation-failed");
+  assert.equal(existsSync(detail.patchRef), true);
+  assert.match(readFileSync(detail.patchRef, "utf8"), /agent-progress\.txt/);
+
+  assert.equal(existsSync(stranded), false, "stranded work moves to the patch, not the tree");
+  assert.deepEqual(await statusEntries(attempt.workspace_path), []);
+  assert.equal(await headSha(attempt.workspace_path), movedHead);
   data.store.close();
 });
 
