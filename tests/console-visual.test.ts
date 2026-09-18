@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stylesheet } from "../src/console/assets.js";
-import { authLayout } from "../src/console/views/layout.js";
+import { authLayout, layout } from "../src/console/views/layout.js";
 import { auditView, commandsView } from "../src/console/views/commands.js";
 import { dashboardView } from "../src/console/views/dashboard.js";
 import { jobView } from "../src/console/views/job.js";
@@ -92,6 +92,11 @@ test("console stylesheet exposes primitive, semantic, component, and motion toke
   }
   assert.match(stylesheet, /prefers-color-scheme:\s*dark/iu);
   assert.match(stylesheet, /prefers-reduced-motion:\s*reduce/iu);
+  assert.match(stylesheet, /body\s*\{[^}]*font-size:\s*var\(--type-body\)/su);
+  assert.match(stylesheet, /h1\s*\{[^}]*font-size:\s*var\(--type-page\)/su);
+  assert.match(stylesheet, /\.grid, \.lanes, \.job-aside\s*\{[^}]*gap:\s*var\(--space-5\)/su);
+  assert.match(stylesheet, /overflow-wrap:\s*anywhere/iu);
+  assert.match(stylesheet, /minmax\(0,\s*1fr\)/iu);
 });
 
 test("migrated component selectors consume semantic status tokens instead of raw palette values", () => {
@@ -116,11 +121,28 @@ test("route fixtures expose one peak and identify forensic or inset content", ()
   for (const route of routes) {
     assert.ok((route.match(/data-presentation="peak"/gu) ?? []).length <= 1, route);
   }
+  assert.match(dashboardFixture(), /data-presentation="peak"/u);
+  assert.match(dashboardFixture(), /data-presentation="panel"/u);
   assert.match(jobFixture("succeeded"), /data-presentation="peak"[^>]*data-job-outcome="succeeded"/u);
   assert.match(jobFixture("succeeded"), /job-outcome-success/u);
+  assert.match(jobFixture("running"), /class="panel presentation-panel activity-panel"/u);
   assert.match(commandsView([], "UTC"), /data-presentation="inset"/u);
   assert.match(auditView([], "UTC"), /data-presentation="inset"/u);
   assert.match(jobFixture("running"), /data-presentation="inset"/u);
+});
+
+test("current navigation and interactive states have independent visual hooks", () => {
+  const page = layout("Commands", "<h1>Commands</h1>", { section: "commands" });
+  assert.match(page, /<a href="\/commands" aria-current="page">Commands<\/a>/u);
+  assert.equal((page.match(/aria-current="page"/gu) ?? []).length, 1);
+  assert.match(stylesheet, /nav a\[aria-current="page"\]\s*\{[^}]*background:/su);
+  assert.match(stylesheet, /button:hover\s*\{[^}]*border-color:\s*var\(--interactive\)/su);
+  assert.match(stylesheet, /button:active\s*\{[^}]*background:\s*var\(--surface-active\)/su);
+  assert.match(stylesheet, /button:disabled, input:disabled, select:disabled/iu);
+  assert.match(stylesheet, /\[data-picker-saving\][^}]*\{[^}]*cursor:\s*progress/su);
+  assert.match(stylesheet, /\[aria-busy="true"\]/u);
+  assert.match(stylesheet, /\.action-feedback\.is-error/iu);
+  assert.match(stylesheet, /data-connection-state="reconnecting"/u);
 });
 
 test("semantic status treatments retain visible text and non-color markers", () => {

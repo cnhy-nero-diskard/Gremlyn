@@ -477,6 +477,7 @@ main, .dash-page, .job-page, #job-lanes, #repositories, .page-head, .lanes, .rep
 .model-provider-picker, .job-aside, #commands-region, #audit-region { min-width: 0; }
 header.site-header { align-items: center; gap: var(--space-5); padding-bottom: var(--space-4); margin-bottom: var(--space-6); border-bottom: var(--border-thin) solid var(--divider); }
 header.site-header > strong { color: var(--text-secondary); font-size: var(--type-control); letter-spacing: .01em; }
+header.site-header.presentation-quiet { padding-bottom: var(--space-4); border-bottom-color: var(--divider); }
 nav { align-items: center; gap: var(--space-2); }
 nav a, nav button { min-height: 2.5rem; display: inline-flex; align-items: center; justify-content: center; padding: var(--space-2) var(--space-3); border: var(--border-thin) solid transparent; border-radius: var(--radius-sm); font-size: var(--type-control); font-weight: var(--weight-medium); text-decoration: none; }
 nav a:hover, nav button:hover { color: var(--interactive-hover); background: var(--surface-hover); border-color: var(--divider); }
@@ -491,6 +492,7 @@ nav form { margin: 0; }
 .presentation-panel, [data-presentation="panel"] { background: var(--surface-panel); border-color: var(--divider); box-shadow: var(--shadow-panel); }
 .presentation-quiet, [data-presentation="quiet"] { background: transparent; border-color: transparent; box-shadow: var(--shadow-none); padding: var(--space-2) 0; }
 .presentation-inset, [data-presentation="inset"] { background: var(--surface-inset); border-color: var(--panel-inset-border); box-shadow: var(--shadow-inset); }
+.repo-card[data-presentation="quiet"] { background: var(--surface-quiet); border-color: var(--divider); padding: var(--space-4); }
 .page-head { padding: var(--space-5) var(--space-6) var(--space-6); }
 .page-head.presentation-peak { border-width: var(--border-thin); }
 .page-title, .job-title { gap: var(--space-3); }

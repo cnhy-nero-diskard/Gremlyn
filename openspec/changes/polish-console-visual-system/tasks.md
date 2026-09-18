@@ -6,9 +6,9 @@
 
 ## 2. Apply hierarchy and rhythm
 
-- [ ] 2.1 Implement Peak, Panel, Quiet, and Inset presentation classes and map the current shell, dashboard, job detail, Commands, Audit, and sign-in regions to them; verify render tests show at most one Peak region per route fixture and the intended tier on forensic content.
-- [ ] 2.2 Normalize page titles, section titles, body copy, metadata, labels, controls, inline code, paths, and captured output to the shared type scale; verify representative render fixtures contain the expected presentation hooks and long content still wraps.
-- [ ] 2.3 Apply the spacing rhythm to page layout, panel stacks, fields, action groups, lists, rows, tables, and empty states; verify desktop and narrow route fixtures have no layout overlap or horizontal page overflow.
+- [x] 2.1 Implement Peak, Panel, Quiet, and Inset presentation classes and map the current shell, dashboard, job detail, Commands, Audit, and sign-in regions to them; verify render tests show at most one Peak region per route fixture and the intended tier on forensic content.
+- [x] 2.2 Normalize page titles, section titles, body copy, metadata, labels, controls, inline code, paths, and captured output to the shared type scale; verify representative render fixtures contain the expected presentation hooks and long content still wraps.
+- [x] 2.3 Apply the spacing rhythm to page layout, panel stacks, fields, action groups, lists, rows, tables, and empty states; verify desktop and narrow route fixtures have no layout overlap or horizontal page overflow.
 
 ## 3. Complete interactive visual states
 
