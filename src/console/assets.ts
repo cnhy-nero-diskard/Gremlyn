@@ -40,13 +40,10 @@ export const stylesheet = `
   --panel-peak-border: #b8c9e6; --panel-inset-border: #c6d1e1;
 
   /* Compatibility aliases keep existing markup readable during migration. */
-  --bg: var(--surface-canvas); --surface: var(--surface-panel); --surface-muted: var(--surface-quiet);
-  --text: var(--text-primary); --muted: var(--text-muted); --border: var(--divider);
-  --accent: var(--interactive); --accent-contrast: var(--interactive-contrast); --focus: var(--focus-ring);
-  --success: var(--status-success-fg); --success-bg: var(--status-success-bg);
-  --failure: var(--status-failure-fg); --failure-bg: var(--status-failure-bg);
-  --cancelled: var(--status-cancelled-fg); --cancelled-bg: var(--status-cancelled-bg);
-  --interrupted: var(--status-interrupted-fg); --interrupted-bg: var(--status-interrupted-bg);
+  --bg: #f5f7fb; --surface: #fff; --surface-muted: #eef2f7; --text: #172033;
+  --muted: #5e6a7e; --border: #d5dce8; --accent: #2457c5; --accent-contrast: #fff; --focus: #9a4406;
+  --success: #166534; --success-bg: #e7f8ed; --failure: #a61b15; --failure-bg: #fde9e7;
+  --cancelled: #8a4b08; --cancelled-bg: #fff1d6; --interrupted: #6941c6; --interrupted-bg: #eee8ff;
   --mono: var(--font-mono);
 }
 @media (prefers-color-scheme: dark) {
@@ -73,6 +70,10 @@ export const stylesheet = `
     --event-reasoning: #c5aaff; --event-text: #a8c4ff; --event-tool: #7ee2a7;
     --panel-peak-border: #5574a8; --panel-inset-border: #40526e;
     --focus-offset: var(--surface-canvas);
+    --bg: #0e1420; --surface: #172033; --surface-muted: #222d40; --text: #eef3fb;
+    --muted: #aebbd0; --border: #34435c; --accent: #9abaff; --accent-contrast: #0e1420; --focus: #ffd166;
+    --success: #7ee2a7; --success-bg: #123c2c; --failure: #ff9b93; --failure-bg: #4a201f;
+    --cancelled: #ffc46b; --cancelled-bg: #493516; --interrupted: #c5aaff; --interrupted-bg: #30245b;
   }
 }
 * { box-sizing: border-box; }
