@@ -1058,6 +1058,46 @@ test("client time refresh uses carried instants without a database update", () =
   assert.equal(nodes[0]!.textContent, "2s ago");
 });
 
+test("action announcements stay in the originating action scope", () => {
+  const feedback = (text: string) => ({
+    attributes: {} as Record<string, string>,
+    classList: { toggle: () => undefined },
+    setAttribute(name: string, value: string) {
+      this.attributes[name] = value;
+    },
+    textContent: text,
+  });
+  const first = feedback("First scope is unchanged.");
+  const second = feedback("");
+  const firstScope = {
+    dataset: { actionScope: "first" },
+    querySelector: (_selector: string) => first,
+  };
+  const secondScope = {
+    dataset: { actionScope: "second" },
+    querySelector: (_selector: string) => second,
+  };
+  const secondButton = { closest: () => secondScope };
+  const start = clientScript.indexOf("  const announcementKeys");
+  const end = clientScript.indexOf("  const safeActionError", start);
+  assert.ok(start >= 0 && end > start);
+  runInNewContext(
+    `${clientScript.slice(start, end)}\n  actionMessage(secondButton, "Second scope updated.");`,
+    {
+      document: {
+        querySelector: (selector: string) =>
+          selector === "[data-action-announcement]"
+            ? firstScope.querySelector(selector)
+            : undefined,
+      },
+      firstScope,
+      secondButton,
+    },
+  );
+  assert.equal(first.textContent, "First scope is unchanged.");
+  assert.equal(second.textContent, "Second scope updated.");
+});
+
 test("console shutdown drains every registered live-update stream", async () => {
   const data = fixture();
   const app = buildConsoleServer(data.options);

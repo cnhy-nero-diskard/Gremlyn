@@ -720,7 +720,7 @@ export const clientScript = `
     const text = node?.textContent?.replace(/\\s+/gu, ' ').trim() || 'record';
     return text.slice(0, 80);
   };
-  const announce = (channel, eventKey, message, priority = 'polite') => {
+  const announce = (channel, eventKey, message, priority = 'polite', target = null) => {
     const key = channel + '|' + eventKey + '|' + message;
     if (announcementKeys.has(key)) return false;
     announcementKeys.add(key);
@@ -734,7 +734,7 @@ export const clientScript = `
       : channel === 'action'
         ? '[data-action-announcement]'
         : '[data-operation-announcer]';
-    const node = document.querySelector(selector);
+    const node = target || document.querySelector(selector);
     if (!node) return false;
     node.setAttribute('aria-live', priority);
     node.textContent = message;
@@ -783,7 +783,7 @@ export const clientScript = `
     node.setAttribute('role', error ? 'alert' : 'status');
     node.setAttribute('aria-live', error ? 'assertive' : 'polite');
     node.textContent = message;
-    announce('action', eventKey || ((scope.dataset.actionScope || 'action') + ':' + message), message, error ? 'assertive' : 'polite');
+    announce('action', eventKey || ((scope.dataset.actionScope || 'action') + ':' + message), message, error ? 'assertive' : 'polite', node);
   };
   const safeActionError = (payload, fallback = 'Action refused. Try again.') => {
     const known = typeof payload?.error === 'string' ? payload.error : '';
