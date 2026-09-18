@@ -139,6 +139,9 @@ test("current navigation and interactive states have independent visual hooks", 
   assert.match(stylesheet, /button:hover\s*\{[^}]*border-color:\s*var\(--interactive\)/su);
   assert.match(stylesheet, /button:active\s*\{[^}]*background:\s*var\(--surface-active\)/su);
   assert.match(stylesheet, /button:disabled, input:disabled, select:disabled/iu);
+  assert.match(stylesheet, /input\[type="checkbox"\], input\[type="radio"\]/u);
+  assert.match(stylesheet, /button\[aria-pressed="true"\]/u);
+  assert.match(stylesheet, /\[aria-selected="true"\]/u);
   assert.match(stylesheet, /\[data-picker-saving\][^}]*\{[^}]*cursor:\s*progress/su);
   assert.match(stylesheet, /\[aria-busy="true"\]/u);
   assert.match(stylesheet, /\.action-feedback\.is-error/iu);

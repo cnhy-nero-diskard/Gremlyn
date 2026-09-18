@@ -12,9 +12,9 @@
 
 ## 3. Complete interactive visual states
 
-- [ ] 3.1 Add stable default, hover, active, focus-visible, disabled, and busy styling for links, buttons, native inputs/selects, selectable rows, and disclosure controls; verify the state fixture distinguishes each state without geometry changes or animation-only meaning.
-- [ ] 3.2 Style the existing sibling-owned current-navigation hook independently from hover and focus, then verify Monitor, Repositories, job detail context, Commands, and Audit fixtures highlight exactly the destination their shell marks current.
-- [ ] 3.3 Integrate staged settings, search/filter, shortcut, bulk-action, recovery-feedback, and connection-state hooks as their owning changes land; verify each fixture can enter busy/disabled/error/success presentation without adding workflow logic to this change.
+- [x] 3.1 Add stable default, hover, active, focus-visible, disabled, and busy styling for links, buttons, native inputs/selects, selectable rows, and disclosure controls; verify the state fixture distinguishes each state without geometry changes or animation-only meaning.
+- [x] 3.2 Style the existing sibling-owned current-navigation hook independently from hover and focus, then verify Monitor, Repositories, job detail context, Commands, and Audit fixtures highlight exactly the destination their shell marks current.
+- [x] 3.3 Integrate staged settings, search/filter, shortcut, bulk-action, recovery-feedback, and connection-state hooks as their owning changes land; verify each fixture can enter busy/disabled/error/success presentation without adding workflow logic to this change.
 
 ## 4. Normalize semantic accents
 

@@ -540,6 +540,9 @@ button[aria-busy="true"], [data-picker-saving] button, [data-picker-saving] inpu
 input, select { color: var(--text-primary); background: var(--surface-panel); border: var(--border-thin) solid var(--divider-strong); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
 input:hover, select:hover { border-color: var(--interactive); background: var(--surface-hover); }
 input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--status-failure-border); }
+input[type="checkbox"], input[type="radio"] { width: 1.1rem; min-height: 1.1rem; padding: 0; accent-color: var(--interactive); }
+button[aria-pressed="true"], [aria-expanded="true"] { color: var(--interactive); background: var(--interactive-subtle); border-color: var(--status-progress-border); }
+button[aria-disabled="true"], [aria-disabled="true"] { cursor: not-allowed; opacity: .55; }
 label { gap: var(--space-2); }
 .actions { gap: var(--space-3); }
 .repo-defaults { gap: var(--space-4); }
