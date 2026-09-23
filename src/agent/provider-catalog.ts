@@ -38,8 +38,8 @@
 export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models";
 
 /**
- * The OpenCode release whose `opencode models` output the three rosters below
- * were pasted from.
+ * The OpenCode release used as the reference for the three provider rosters
+ * below. Zen and Go publish their supported ids through live model endpoints.
  *
  * Deliberately a second constant rather than a reference to
  * EXPECTED_OPENCODE_VERSION, and deliberately absent from `pin.ts`'s
@@ -53,12 +53,12 @@ export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/
  *
  * Note that agreement is necessary, not sufficient: OpenCode serves these
  * rosters dynamically, so ids appear and disappear between releases too
- * (`opencode-go/omen-alpha` was withdrawn within an hour of this paste). That
- * is why the check is a human-owned marker rather than a test diffing the live
- * command, which would fail on OpenCode's schedule rather than on a change to
- * this repository.
+ * (`opencode-go/omen-alpha` has appeared and been withdrawn between refreshes).
+ * That is why the check is a human-owned marker rather than a test diffing the
+ * live catalogs, which would fail on OpenCode's schedule rather than on a
+ * change to this repository.
  */
-export const OPENCODE_ROSTER_VERSION = "1.18.31";
+export const OPENCODE_ROSTER_VERSION = "1.18.32";
 
 export interface ProviderModelOption {
   id: string;
@@ -115,9 +115,21 @@ interface FeaturedFeed {
 const FALLBACK_FEED: Required<FeaturedFeed> = {
   recommended: [
     {
+      id: "spacexai/grok-4.7",
+      name: "Grok 4.7",
+      description: "xAI's latest frontier model.",
+      tags: ["NEW"],
+    },
+    {
+      id: "openai/gpt-6-astra",
+      name: "GPT-6 Astra",
+      description: "OpenAI's flagship model for complex reasoning and coding.",
+      tags: ["NEW"],
+    },
+    {
       id: "moonshotai/kimi-k3",
       name: "Kimi K3",
-      description: "Moonshot AI's flagship model for agentic coding.",
+      description: "Kimi K3 is Moonshot AI's new flagship MoE model for agentic coding.",
       tags: ["NEW"],
     },
     {
@@ -126,91 +138,49 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
       description: "Anthropic's latest frontier model.",
       tags: ["NEW"],
     },
-    {
-      id: "x-ai/grok-4.5",
-      name: "Grok 4.5",
-      description: "Frontier performance for coding.",
-      tags: ["NEW"],
-    },
-    {
-      id: "openai/gpt-5.6-sol",
-      name: "GPT-5.6 Sol",
-      description: "OpenAI's latest frontier coding model.",
-      tags: ["NEW"],
-    },
   ],
   free: [
     {
-      id: "cline-free/longcat-2.0",
-      name: "LongCat 2.0",
-      description: "A next-generation model built for agentic coding.",
+      id: "cline-free/mimo-v2.6-flash",
+      name: "MiMo V2.6 Flash",
+      description: "Mixture-of-Experts architecture with 309B total parameters.",
     },
     {
-      id: "z-ai/glm-5.3-flash",
-      name: "GLM 5.3 Flash",
-      description: "A natively multimodal model in the GLM-5 series.",
-    },
-    {
-      id: "deepseek/deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
+      id: "cline-free/deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
       description: "Fast and efficient with a 1M context window.",
+    },
+    {
+      id: "cline-free/muse-spark-1.3-contributor",
+      name: "Muse Spark 1.3 Contributor",
+      description: "Meta's multimodal reasoning model for agentic and coding workflows.",
+    },
+    {
+      id: "cline-free/solar-pro4",
+      name: "Solar Pro 4",
+      description: "Strong model for office productivity, documents, and coding.",
     },
     {
       id: "poolside/laguna-s-2.1:free",
       name: "Laguna S 2.1",
-      description: "A coding-agent model from Poolside.",
+      description: "Latest coding-agent model from Poolside.",
     },
   ],
   clinePass: [
     {
-      id: "cline-pass/glm-5.3-flash",
-      name: "GLM 5.3 Flash",
-      description: "A natively multimodal model in the GLM-5 series.",
+      id: "cline-pass/mimo-v2.6-flash",
+      name: "MiMo V2.6 Flash",
+      description: "Fast MiMo model for coding and agent workflows.",
     },
     {
-      id: "cline-pass/kimi-k3",
-      name: "Kimi K3",
-      description: "A leading open-weights model for agentic coding.",
-    },
-    {
-      id: "cline-pass/kimi-k2.6",
-      name: "Kimi K2.6",
-      description: "A strong multimodal model for long-horizon agent tasks.",
-    },
-    {
-      id: "cline-pass/deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
-      description: "Fast and efficient with a 1M context window.",
-    },
-    {
-      id: "cline-pass/qwen3.8-max",
-      name: "Qwen3.8 Max",
-      description: "Qwen's latest coding model.",
-    },
-    {
-      id: "cline-pass/qwen3.7-plus",
-      name: "Qwen3.7 Plus",
-      description: "A fast multimodal agent model.",
-    },
-    {
-      id: "cline-pass/minimax-m3",
-      name: "MiniMax M3",
-      description: "A frontier coding and agent model with a 1M context window.",
-    },
-    {
-      id: "cline-pass/kimi-k2.7-code",
-      name: "Kimi K2.7 Code",
-      description: "A model specialized for agentic coding.",
+      id: "cline-pass/mimo-v2.6-pro",
+      name: "MiMo V2.6 Pro",
+      description: "MiMo's flagship model for long autonomous coding runs.",
     },
     {
       id: "cline-pass/glm-5.3",
       name: "GLM 5.3",
-      description: "A top open-weights model from Z.AI.",
-    },
-    {
-      id: "cline-pass/glm-5.2",
-      name: "GLM 5.2",
-      description: "A top open-weights model.",
+      description: "Z.AI's top open-weights model.",
     },
     {
       id: "cline-pass/deepseek-v4-pro",
@@ -218,26 +188,61 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
       description: "Frontier reasoning and coding with a 1M context window.",
     },
     {
+      id: "cline-pass/qwen3.8-max",
+      name: "Qwen3.8 Max",
+      description: "Qwen's latest SOTA coding model.",
+    },
+    {
+      id: "cline-pass/deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
+      description: "Fast and efficient with a 1M context window.",
+    },
+    {
+      id: "cline-pass/muse-spark-1.3-contributor",
+      name: "Muse Spark 1.3 Contributor",
+      description: "Meta's multimodal reasoning model for agentic and coding workflows.",
+    },
+    {
+      id: "cline-pass/kimi-k3",
+      name: "Kimi K3",
+      description: "Leading open-weights model for agentic coding.",
+    },
+    {
+      id: "cline-pass/glm-5.3-flash",
+      name: "GLM 5.3 Flash",
+      description: "Latest natively multimodal model in the GLM-5 series.",
+    },
+    {
+      id: "cline-pass/minimax-m3",
+      name: "MiniMax M3",
+      description: "Frontier coding and agent model with a 1M context window.",
+    },
+    {
       id: "cline-pass/qwen3.7-max",
       name: "Qwen3.7 Max",
-      description: "A flagship agent model.",
+      description: "Flagship agent model with a 1M context window.",
+    },
+    {
+      id: "cline-pass/qwen3.7-plus",
+      name: "Qwen3.7 Plus",
+      description: "Fast multimodal agent model with vision and video input.",
     },
     {
       id: "cline-pass/mimo-v2.5-pro",
       name: "MiMo V2.5 Pro",
-      description: "An open model for long autonomous coding runs.",
+      description: "Top open model for long autonomous coding runs.",
     },
     {
       id: "cline-pass/mimo-v2.5",
       name: "MiMo V2.5",
-      description: "Fast and efficient for everyday coding.",
+      description: "Fast and efficient MiMo for everyday coding.",
     },
   ],
 };
 
 /**
  * The `opencode/<model>` ids OpenCode's pay-as-you-go Zen gateway serves,
- * verbatim from `opencode models` on the pinned 1.18.31 (see
+ * verbatim from OpenCode's Zen model endpoint for the pinned 1.18.32 (see
  * EXPECTED_OPENCODE_VERSION). OpenCode also accepts other configured
  * providers folded into the same `-m` argument (e.g.
  * `anthropic/claude-opus-5`), but those depend on each installation's own
@@ -260,13 +265,16 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/claude-opus-4-7",
   "opencode/claude-opus-4-8",
   "opencode/claude-opus-5",
+  "opencode/claude-opus-5-5",
   "opencode/claude-sonnet-4",
   "opencode/claude-sonnet-4-5",
   "opencode/claude-sonnet-4-6",
   "opencode/claude-sonnet-5",
   "opencode/deepseek-v4-flash",
+  "opencode/deepseek-v4-flash-free",
   "opencode/deepseek-v4-flash-vision-exp",
   "opencode/deepseek-v4-pro",
+  "opencode/deepseek-v4.1-flash",
   "opencode/gemini-3-flash",
   "opencode/gemini-3.1-pro",
   "opencode/gemini-3.5-flash",
@@ -300,15 +308,21 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/gpt-5.6-sol",
   "opencode/gpt-5.6-terra",
   "opencode/gpt-6-astra",
+  "opencode/gpt-6-luna",
+  "opencode/gpt-6-sol",
   "opencode/grok-4.5",
   "opencode/grok-4.6",
+  "opencode/grok-4.7",
   "opencode/grok-build-0.1",
+  "opencode/jev-1.13",
+  "opencode/jev-1.13-free",
   "opencode/kimi-k2.5",
   "opencode/kimi-k2.6",
   "opencode/kimi-k2.7-code",
   "opencode/kimi-k3",
   "opencode/ling-3.0-flash-fin-free",
   "opencode/mimo-v2.5-free",
+  "opencode/mimo-v2.6-flash-free",
   "opencode/minimax-m2.5",
   "opencode/minimax-m2.7",
   "opencode/minimax-m3",
@@ -320,55 +334,64 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
   "opencode/nemotron-3.5-lightning-free",
   "opencode/qwen3.5-plus",
   "opencode/qwen3.6-plus",
-  "opencode/union-alpha",
+  "opencode/qwen3.8-flash",
 ];
 
 /**
  * The `opencode-go/<model>` ids the OpenCode Go subscription serves, verbatim
- * from `opencode models` on the pinned 1.18.31.
+ * from its model endpoint for the pinned 1.18.32.
  *
  * Go is its own provider, not a billing mode of Zen: `auth.json` carries a
- * distinct `opencode-go` credential beside the `opencode` one, and the two
- * rosters only partly overlap (Go alone serves longcat-2.0, the hy*
- * and qwen3.7/3.8 tiers; Zen alone serves the Anthropic and most GPT tiers).
- * Enumerating only Zen therefore left every Go model unreachable from the
- * picker, even though the executor passes `-m` through verbatim and the
- * seeded `auth.json` already authenticates both.
+ * distinct `opencode-go` credential beside the `opencode` one. The two
+ * rosters overlap but are not aliases; Go has subscription-only models such
+ * as `longcat-2.0`, `hy3`, and the Qwen 3.7/3.8 tiers.
  */
 const OPENCODE_GO_MODEL_IDS: readonly string[] = [
+  "opencode-go/deepseek-flash",
   "opencode-go/deepseek-v4-flash",
   "opencode-go/deepseek-v4-flash-vision-exp",
   "opencode-go/deepseek-v4-pro",
   "opencode-go/deepseek-v4.1-flash",
+  "opencode-go/glm-5",
   "opencode-go/glm-5.1",
   "opencode-go/glm-5.2",
   "opencode-go/glm-5.3",
   "opencode-go/glm-5.3-flash",
   "opencode-go/gpt-5.6-luna",
+  "opencode-go/grok-4.5",
   "opencode-go/grok-4.6",
+  "opencode-go/grok-4.7",
   "opencode-go/hy3",
+  "opencode-go/hy3-preview",
   "opencode-go/hy4-preview",
+  "opencode-go/kimi-k2.5",
   "opencode-go/kimi-k2.6",
   "opencode-go/kimi-k2.7-code",
   "opencode-go/kimi-k3",
   "opencode-go/longcat-2.0",
+  "opencode-go/mimo-v2-omni",
+  "opencode-go/mimo-v2-pro",
   "opencode-go/mimo-v2.5",
   "opencode-go/mimo-v2.5-pro",
+  "opencode-go/mimo-v2.6-flash",
+  "opencode-go/mimo-v2.6-pro",
+  "opencode-go/minimax-m2.5",
   "opencode-go/minimax-m2.7",
   "opencode-go/minimax-m3",
   "opencode-go/muse-spark-1.2-contributor",
   "opencode-go/muse-spark-1.3-contributor",
+  "opencode-go/omen-alpha",
+  "opencode-go/qwen3.5-plus",
   "opencode-go/qwen3.6-plus",
   "opencode-go/qwen3.7-max",
   "opencode-go/qwen3.7-plus",
   "opencode-go/qwen3.8-flash",
   "opencode-go/qwen3.8-max",
-  "opencode-go/union-alpha",
 ];
 
 /**
  * The `openai/<model>` ids OpenCode serves from the operator's own OpenAI
- * account, verbatim from `opencode models` on the pinned 1.18.31.
+ * account, aligned with OpenCode's current OpenAI model catalog for 1.18.32.
  *
  * Unlike Zen and Go, this namespace is not an OpenCode gateway: OpenCode logs
  * into OpenAI directly ("OpenAI (ChatGPT Plus/Pro or API key)" in its login
@@ -376,8 +399,7 @@ const OPENCODE_GO_MODEL_IDS: readonly string[] = [
  * Because one namespace covers both auth modes, no tier badge is derived here
  * — marking these "subscribed" the way Go's roster is would misdescribe an
  * API-key installation, and OpenCode reports nothing that distinguishes the
- * two. The `-fast` ids are OpenAI's own priority-processing variants and are
- * listed as the CLI reports them rather than folded into their base model.
+ * two. Fast-mode variants are listed separately as OpenCode exposes them.
  */
 const OPENCODE_OPENAI_MODEL_IDS: readonly string[] = [
   "openai/gpt-5.3-codex-spark",
@@ -395,6 +417,10 @@ const OPENCODE_OPENAI_MODEL_IDS: readonly string[] = [
   "openai/gpt-5.6-terra-fast",
   "openai/gpt-6-astra",
   "openai/gpt-6-astra-fast",
+  "openai/gpt-6-luna",
+  "openai/gpt-6-luna-fast",
+  "openai/gpt-6-sol",
+  "openai/gpt-6-sol-fast",
 ];
 
 /**
@@ -420,40 +446,42 @@ function opencodeModels(
 
 const CODEX_MODELS: ProviderModelOption[] = [
   {
+    id: "gpt-6-astra",
+    name: "GPT-6 Astra",
+    description: "OpenAI's most capable model for complex reasoning and coding.",
+    tags: ["FLAGSHIP", "NEW"],
+  },
+  {
+    id: "gpt-6-sol",
+    name: "GPT-6 Sol",
+    description: "Built for complex coding and agentic workflows.",
+    tags: ["NEW"],
+  },
+  {
+    id: "gpt-6-luna",
+    name: "GPT-6 Luna",
+    description: "Efficient model for focused, high-volume coding tasks.",
+    tags: ["NEW"],
+  },
+  {
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
-    description: "Flagship GPT-5.6 tier for the hardest coding and reasoning work.",
-    tags: ["FLAGSHIP"],
+    description: "High-capability GPT-5.6 model for coding and reasoning.",
   },
   {
     id: "gpt-5.6-terra",
     name: "GPT-5.6 Terra",
-    description: "Balanced GPT-5.6 tier for cost, latency, and quality.",
+    description: "Balanced GPT-5.6 model for everyday coding and reasoning.",
   },
   {
     id: "gpt-5.6-luna",
     name: "GPT-5.6 Luna",
-    description: "High-throughput GPT-5.6 tier for simpler or latency-sensitive work.",
-  },
-  {
-    id: "gpt-5.6",
-    name: "GPT-5.6",
-    description: "The latest GPT-5.6 alias; routes to Sol.",
+    description: "Efficient GPT-5.6 model for focused, high-volume tasks.",
   },
   {
     id: "gpt-5.5",
     name: "GPT-5.5",
-    description: "Previous-generation text and reasoning model.",
-  },
-  {
-    id: "gpt-5.4",
-    name: "GPT-5.4",
-    description: "Previous-generation default text and reasoning model.",
-  },
-  {
-    id: "gpt-5.4-mini",
-    name: "GPT-5.4 Mini",
-    description: "Lower-cost model for lighter workflows and testing.",
+    description: "Previous-generation flagship model for coding and professional work.",
   },
 ];
 
@@ -555,7 +583,7 @@ function makeCatalog(
         "OpenAI Codex",
         "ChatGPT subscription access through Cline's OpenAI Codex provider.",
         "Sign in with ChatGPT Subscription",
-        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         CODEX_MODELS.map((model) => ({ ...model })),
       ),
       provider(

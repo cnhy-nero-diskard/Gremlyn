@@ -22,27 +22,38 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.ok(opencode);
   assert.ok(opencodeGo);
   assert.ok(openai);
+  assert.ok(cline.models.some((model) => model.id === "spacexai/grok-4.7"));
+  assert.ok(cline.models.some((model) => model.id === "openai/gpt-6-astra"));
   assert.ok(cline.models.some((model) => model.id === "moonshotai/kimi-k3"));
+  assert.ok(!cline.models.some((model) => model.id === "x-ai/grok-4.5"));
   assert.ok(pass.models.some((model) => model.id === "cline-pass/kimi-k3"));
+  assert.ok(pass.models.some((model) => model.id === "cline-pass/mimo-v2.6-pro"));
+  assert.ok(!pass.models.some((model) => model.id === "cline-pass/kimi-k2.6"));
   assert.deepEqual(
     codex.models.map((model) => model.id),
     [
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.6",
       "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
     ],
   );
+  assert.ok(!codex.models.some((model) => model.id === "gpt-5.4"));
+  assert.ok(!codex.models.some((model) => model.id === "gpt-5.4-mini"));
+  assert.equal(codex.defaultModelId, "gpt-5.6-terra");
   assert.equal(opencode.defaultModelId, "opencode/claude-sonnet-5");
   assert.ok(opencode.models.every((model) => model.id.startsWith("opencode/")));
   assert.ok(opencode.models.some((model) => model.id === "opencode/claude-sonnet-5"));
   // The whole `opencode models opencode` surface, not a shortlist: a repo can
   // be pointed at any Zen model without falling back to "Custom provider".
-  assert.equal(opencode.models.length, 70);
-  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 70);
+  assert.equal(opencode.models.length, 79);
+  assert.equal(new Set(opencode.models.map((model) => model.id)).size, 79);
+  assert.ok(opencode.models.some((model) => model.id === "opencode/gpt-6-sol"));
+  assert.ok(opencode.models.some((model) => model.id === "opencode/deepseek-v4.1-flash"));
+  assert.ok(!opencode.models.some((model) => model.id === "opencode/union-alpha"));
   // Zen's `-free` suffix is the one badge derived from the id.
   assert.ok(
     opencode.models
@@ -62,14 +73,24 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   // The whole `opencode models` Go surface, on the pinned release.
   assert.equal(opencodeGo.defaultModelId, "opencode-go/kimi-k3");
   assert.ok(opencodeGo.models.every((model) => model.id.startsWith("opencode-go/")));
-  assert.equal(opencodeGo.models.length, 28);
-  assert.equal(new Set(opencodeGo.models.map((model) => model.id)).size, 28);
+  assert.equal(opencodeGo.models.length, 40);
+  assert.equal(new Set(opencodeGo.models.map((model) => model.id)).size, 40);
+  assert.ok(opencodeGo.models.some((model) => model.id === "opencode-go/grok-4.7"));
+  assert.ok(opencodeGo.models.some((model) => model.id === "opencode-go/omen-alpha"));
+  assert.ok(!opencodeGo.models.some((model) => model.id === "opencode-go/union-alpha"));
   // Go's roster is not Zen's: models reachable only through the subscription
   // are exactly what the Zen-only catalog left unselectable. (glm-5.3 used to
   // be Go-only; since the 1.18.29 roster Zen serves it too, so it is no longer
   // in this list.)
   const zenIds = new Set(opencode.models.map((model) => model.id.split("/").at(-1)));
-  for (const goOnly of ["longcat-2.0", "hy3", "qwen3.7-max", "qwen3.8-max"]) {
+  for (const goOnly of [
+    "deepseek-flash",
+    "longcat-2.0",
+    "hy3",
+    "omen-alpha",
+    "qwen3.7-max",
+    "qwen3.8-max",
+  ]) {
     assert.ok(
       opencodeGo.models.some((model) => model.id === `opencode-go/${goOnly}`),
       `expected Go to serve ${goOnly}`,
@@ -86,8 +107,10 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.deepEqual(openai.kinds, ["opencode"]);
   assert.equal(openai.defaultModelId, "openai/gpt-5.6-sol");
   assert.ok(openai.models.every((model) => model.id.startsWith("openai/")));
-  assert.equal(openai.models.length, 15);
-  assert.equal(new Set(openai.models.map((model) => model.id)).size, 15);
+  assert.equal(openai.models.length, 19);
+  assert.equal(new Set(openai.models.map((model) => model.id)).size, 19);
+  assert.ok(openai.models.some((model) => model.id === "openai/gpt-6-sol"));
+  assert.ok(openai.models.some((model) => model.id === "openai/gpt-6-luna-fast"));
   // One namespace serves both ChatGPT-subscription and API-key installations,
   // so no tier may be asserted for either: Go's uniform "subscribed" badge
   // would misdescribe a key, and Zen's `-free` rule has nothing to match.
@@ -116,10 +139,10 @@ test("OpenCode namespaces survive a live Cline feed refresh", async () => {
   assert.equal(snapshot.source, "cline-api");
   const go = snapshot.providers.find((provider) => provider.id === "opencode-go");
   assert.ok(go);
-  assert.equal(go.models.length, 28);
+  assert.equal(go.models.length, 40);
   const openai = snapshot.providers.find((provider) => provider.id === "openai");
   assert.ok(openai);
-  assert.equal(openai.models.length, 15);
+  assert.equal(openai.models.length, 19);
 });
 
 test("model names humanize dashed version suffixes and known initialisms", () => {
@@ -133,6 +156,7 @@ test("model names humanize dashed version suffixes and known initialisms", () =>
   assert.equal(nameOf("opencode/claude-opus-4-8"), "Claude Opus 4.8");
   assert.equal(nameOf("opencode/glm-5.2"), "GLM 5.2");
   assert.equal(nameOf("opencode/gpt-5.6-sol"), "GPT 5.6 Sol");
+  assert.equal(nameOf("opencode/gpt-6-astra"), "GPT 6 Astra");
   // A hyphen between a digit and a letter is still a word break.
   assert.equal(nameOf("opencode/gpt-5-codex"), "GPT 5 Codex");
 });
@@ -155,6 +179,7 @@ test("OpenAI model names humanize the same way, including the -fast variants", (
   assert.equal(nameOf("openai/gpt-5.6-sol-fast"), "GPT 5.6 Sol Fast");
   assert.equal(nameOf("openai/gpt-5.4-mini-fast"), "GPT 5.4 Mini Fast");
   assert.equal(nameOf("openai/gpt-6-astra"), "GPT 6 Astra");
+  assert.equal(nameOf("openai/gpt-6-sol-fast"), "GPT 6 Sol Fast");
   assert.equal(nameOf("openai/gpt-5.3-codex-spark"), "GPT 5.3 Codex Spark");
 });
 
@@ -167,19 +192,19 @@ test("OpenAI model names humanize the same way, including the -fast variants", (
  * simply unreachable except by typing it into the custom path.
  *
  * So the marker is human-owned and this test is the gate: a pin bump goes red
- * until someone re-pastes `opencode models` and re-dates the roster. It is
+ * until someone refreshes the live model rosters and re-dates the marker. It is
  * deliberately not a diff against the live command, which would fail on
  * OpenCode's release schedule rather than on a change to this repository —
- * these rosters are served dynamically, and `opencode-go/omen-alpha` was
- * withdrawn upstream within an hour of the current paste.
+ * these rosters are served dynamically, and `opencode-go/omen-alpha` has
+ * appeared and disappeared between refreshes.
  */
-test("the OpenCode rosters were pasted for the pinned release", () => {
+test("the OpenCode roster marker matches the pinned release", () => {
   assert.equal(
     OPENCODE_ROSTER_VERSION,
     EXPECTED_OPENCODE_VERSION,
-    `the OpenCode rosters were pasted for ${OPENCODE_ROSTER_VERSION} but the pin is now ` +
-      `${EXPECTED_OPENCODE_VERSION}: re-run \`opencode models\`, re-paste the OPENCODE_* id ` +
-      `lists in src/agent/provider-catalog.ts, and set OPENCODE_ROSTER_VERSION to match`,
+    `the OpenCode rosters were refreshed for ${OPENCODE_ROSTER_VERSION} but the pin is now ` +
+      `${EXPECTED_OPENCODE_VERSION}: refresh the Zen, Go, and OpenAI model lists in ` +
+      `src/agent/provider-catalog.ts, and set OPENCODE_ROSTER_VERSION to match`,
   );
 });
 
