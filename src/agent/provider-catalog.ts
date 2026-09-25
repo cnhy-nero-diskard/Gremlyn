@@ -39,20 +39,20 @@ export const CLINE_FEATURED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/
 
 /**
  * The OpenCode release used as the reference for the three provider rosters
- * below. Zen and Go publish their supported ids through live model endpoints.
+ * below. This is intentionally independent from the executor's CLI pin: model
+ * availability depends on provider catalogs and local project configuration.
  *
  * Deliberately a second constant rather than a reference to
  * EXPECTED_OPENCODE_VERSION, and deliberately absent from `pin.ts`'s
  * `docPins`: an automated pin bump must not re-date this claim, because only a
- * human re-pasting the lists can make it true again. `pin:sync` carries the
- * pin across the patch releases OpenCode ships weekly, and that is exactly
- * when a roster goes stale unnoticed — `opencode-go/deepseek-flash` was
- * missing from the picker from the 1.18.30 bump until it was found by hand.
- * A test asserts the two constants agree, so a bump stays red until the
- * rosters are refreshed.
+ * human re-pasting the lists can make it true again. `pin:sync` only verifies
+ * the executor surface and never changes this snapshot marker. The last
+ * refreshed roster was captured for 1.18.32; OpenCode 2.0.16 returned no model
+ * ids in the current checkout, so the old snapshot remains explicitly dated.
  *
- * Note that agreement is necessary, not sufficient: OpenCode serves these
- * rosters dynamically, so ids appear and disappear between releases too
+ * The source version records when each snapshot was refreshed, not a guarantee
+ * that every id remains available: OpenCode serves these rosters dynamically,
+ * so ids appear and disappear between releases too
  * (`opencode-go/omen-alpha` has appeared and been withdrawn between refreshes).
  * That is why the check is a human-owned marker rather than a test diffing the
  * live catalogs, which would fail on OpenCode's schedule rather than on a
@@ -242,9 +242,9 @@ const FALLBACK_FEED: Required<FeaturedFeed> = {
 
 /**
  * The `opencode/<model>` ids OpenCode's pay-as-you-go Zen gateway serves,
- * verbatim from OpenCode's Zen model endpoint for the pinned 1.18.32 (see
- * EXPECTED_OPENCODE_VERSION). OpenCode also accepts other configured
- * providers folded into the same `-m` argument (e.g.
+ * verbatim from OpenCode's Zen model endpoint for OPENCODE_ROSTER_VERSION.
+ * OpenCode also accepts other configured providers folded into the same `-m`
+ * argument (e.g.
  * `anthropic/claude-opus-5`), but those depend on each installation's own
  * `opencode auth login` state, so only the namespaces OpenCode's own login
  * menu offers are enumerated here (see OPENCODE_GO_MODEL_IDS and
@@ -339,7 +339,7 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
 
 /**
  * The `opencode-go/<model>` ids the OpenCode Go subscription serves, verbatim
- * from its model endpoint for the pinned 1.18.32.
+ * from its model endpoint for OPENCODE_ROSTER_VERSION.
  *
  * Go is its own provider, not a billing mode of Zen: `auth.json` carries a
  * distinct `opencode-go` credential beside the `opencode` one. The two
@@ -391,7 +391,7 @@ const OPENCODE_GO_MODEL_IDS: readonly string[] = [
 
 /**
  * The `openai/<model>` ids OpenCode serves from the operator's own OpenAI
- * account, aligned with OpenCode's current OpenAI model catalog for 1.18.32.
+ * account, aligned with OpenCode's OpenAI model catalog for OPENCODE_ROSTER_VERSION.
  *
  * Unlike Zen and Go, this namespace is not an OpenCode gateway: OpenCode logs
  * into OpenAI directly ("OpenAI (ChatGPT Plus/Pro or API key)" in its login

@@ -47,8 +47,9 @@ export type CredentialSeedFile = (typeof CREDENTIAL_SEED_FILES)[number];
 /**
  * OpenCode's credential seed set (design D-opencode). `opencode debug paths`
  * keeps the operator's authenticated credential in a single file under its
- * data root, unlike Cline's two-file split — probe-verified against opencode
- * 1.18.27: a paid model fails unseeded (`UnknownError`) and succeeds seeded.
+ * data root, unlike Cline's two-file split. The v1.18.27 credential probe
+ * confirmed the seed is required; v2.0.16 `debug paths` confirms the data root
+ * still follows the isolated XDG override.
  */
 export const OPENCODE_CREDENTIAL_FILES = ["auth.json"] as const;
 
@@ -56,7 +57,7 @@ export const OPENCODE_CREDENTIAL_FILES = ["auth.json"] as const;
  * Where a seeded credential file must live *inside the attempt data dir*,
  * relative to it, keyed by executor kind. Source-relative and attempt-relative
  * layouts differ for OpenCode: `OpenCodeExecutor.additionalEnvironment` points
- * `XDG_DATA_HOME` at `<attempt>/xdg-data`, and OpenCode 1.18.27 reads auth at
+ * `XDG_DATA_HOME` at `<attempt>/xdg-data`, and OpenCode 2.0.16 reads auth at
  * `<XDG_DATA_HOME>/opencode/auth.json` — so seeding `auth.json` at the attempt
  * root would leave the agent unauthenticated and write-back looking in the
  * wrong root. The operator's credential source keeps the file at its own root.

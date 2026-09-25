@@ -63,7 +63,7 @@ function okResult(stdout = "") {
   return Promise.resolve({ stdout, stderr: "", exitCode: 0, timedOut: false, isCanceled: false });
 }
 
-test("OpenCode executor builds the probed argv with --variant carrying the effort tier", async () => {
+test("OpenCode executor builds the v2 argv with #variant carrying the effort tier", async () => {
   const calls: Parameters<ProcessRunner>[] = [];
   const runner: ProcessRunner = (binary, args, runOptions) => {
     calls.push([binary, args, runOptions]);
@@ -78,16 +78,13 @@ test("OpenCode executor builds the probed argv with --variant carrying the effor
   assert.equal(binary, "opencode-test");
   assert.deepEqual(args, [
     "run",
-    "--dir",
-    opts.cwd,
+    "--standalone",
     "-m",
-    opts.model,
+    `${opts.model}#high`,
     "--format",
     "json",
     "--auto",
     "--thinking",
-    "--variant",
-    "high",
     opts.prompt,
   ]);
   assert.equal(runOptions.cwd, opts.cwd);
@@ -95,15 +92,16 @@ test("OpenCode executor builds the probed argv with --variant carrying the effor
   assert.equal(result.sessionId, "ses_f9a8db611ffebnXFRCbFX8r5qf");
 });
 
-test("OpenCode omits --variant for the none effort tier", async () => {
+test("OpenCode omits #variant for the none effort tier", async () => {
   let passedArgs: readonly string[] = [];
   const runner: ProcessRunner = (_binary, args) => {
     passedArgs = args;
     return okResult();
   };
   const root = mkdtempSync(join(tmpdir(), "gremlyn-opencode-"));
-  await new OpenCodeExecutor("opencode-test", runner).run(options(root, { effort: "none" }));
-  assert.equal(passedArgs.includes("--variant"), false);
+  const opts = options(root, { effort: "none" });
+  await new OpenCodeExecutor("opencode-test", runner).run(opts);
+  assert.equal(passedArgs[passedArgs.indexOf("-m") + 1], opts.model);
   assert.ok(
     passedArgs.includes("--thinking"),
     "bare --thinking must still be passed for the reasoning stream",
@@ -124,7 +122,7 @@ test("OpenCode ignores provider entirely: no -P argument on the argv", async () 
   assert.equal(passedArgs.includes("some-provider-that-must-not-appear"), false);
 });
 
-test("OpenCode's --thinking and --variant cannot be crossed with Cline's --thinking <tier>", async () => {
+test("OpenCode's #variant and bare --thinking cannot be crossed with Cline's --thinking <tier>", async () => {
   const openCodeArgs: string[][] = [];
   const openCodeRunner: ProcessRunner = (_binary, args) => {
     openCodeArgs.push([...args]);
@@ -141,10 +139,10 @@ test("OpenCode's --thinking and --variant cannot be crossed with Cline's --think
   );
   await new ClineExecutor("cline-test", clineRunner).run(options(root, { effort: "xhigh" }));
 
-  // OpenCode: --thinking is a bare flag, the tier lives on --variant.
+  // OpenCode: --thinking is a bare flag, the tier is appended to the model.
   const openCode = openCodeArgs[0]!;
-  assert.equal(openCode[openCode.indexOf("--thinking") + 1], "--variant");
-  assert.equal(openCode[openCode.indexOf("--variant") + 1], "xhigh");
+  assert.equal(openCode[openCode.indexOf("-m") + 1], "opencode/big-pickle#xhigh");
+  assert.equal(openCode.includes("--variant"), false);
 
   // Cline: --thinking is unaffected and still carries the tier directly.
   const cline = clineArgs[0]!;

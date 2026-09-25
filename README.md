@@ -189,7 +189,7 @@ attribution.
 
 ### OpenCode
 
-Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **1.18.32**),
+Gremlyn can also run [OpenCode](https://opencode.ai) (pinned to **2.0.16**),
 registered alongside or instead of Cline. Each configured agent declares an
 executor `kind` (`cline` or `opencode`), defaulting to the agent's own key —
 `agents.opencode` resolves to the OpenCode executor with no extra field
@@ -205,6 +205,9 @@ change beyond `agent: opencode`:
   `opencode debug paths` reports it (typically
   `C:/Users/<you>/.local/share/opencode`). Isolation, seeding, owner-only
   permissions, and teardown per attempt all work identically to Cline.
+- **Isolation**: OpenCode 2 defaults to a shared background server. Gremlyn
+  passes `--standalone` so the server uses each attempt's isolated credentials,
+  data, and state directories.
 - **Provider**: OpenCode has no separate provider argument — it is folded into
   the model id as `<namespace>/<model>` (`opencode models` lists every id the
   installation can reach). A repository naming an OpenCode agent does not need
@@ -231,16 +234,12 @@ change beyond `agent: opencode`:
   instead (shared with Cline) still works for any other `provider/model`
   OpenCode understands — an installation-specific one you authenticated
   yourself, say — and whatever is typed there is accepted and ignored by the
-  executor either way. Bumping the pinned OpenCode version means re-pasting
-  that command's output into `OPENCODE_ZEN_MODEL_IDS`,
-  `OPENCODE_GO_MODEL_IDS`, and `OPENCODE_OPENAI_MODEL_IDS` in
-  `src/agent/provider-catalog.ts`, then setting `OPENCODE_ROSTER_VERSION`
-  there to the new pin. `pin:sync` bumps the pin on its own but cannot refresh
-  a hand-pasted roster, so that constant is what a test compares against
-  `EXPECTED_OPENCODE_VERSION` — a bump stays red until the lists are
-  refreshed. Note the rosters are served dynamically, so ids also come and go
-  between releases; re-paste, do not assume the previous list is still
-  current.
+  executor either way. OpenCode 2 adds reasoning effort as a `#variant` suffix
+  to the model id; Gremlyn appends the repository's configured effort when it
+  invokes the CLI. The bundled picker roster is a separate snapshot last
+  refreshed for OpenCode 1.18.32. `opencode models` currently returns no
+  entries in this checkout, so that roster has not been refreshed for v2;
+  custom provider entries remain available for model ids you know are enabled.
 - **Provider/executor pairing**: A Cline repository configured with the
   `opencode` provider is refused per attempt, before its workspace is prepared.
   Cline's OpenCode provider runs tools inside a long-lived server whose working
@@ -305,12 +304,13 @@ executor actually depends on before doing anything:
   outcome: a flag the executor passes has been renamed or dropped.
 
 The surface checks are the same commands the pin's own bump note names —
-`opencode run --help`, `opencode debug paths`, `opencode export --help`, and
-`cline --help` — asserting each flag the executor passes (`--dir`, `-m`,
-`--format json`, `--auto`, `--thinking`, `--variant`, the `sessionID`
-positional, and Cline's `--data-dir`/`--auto-approve`/`--retries`/`-t`). It also
-reports when `opencode models` no longer matches the bundled picker roster,
-which never blocks a run but does leave the console's model list stale.
+`opencode run --help`, `opencode debug paths`,
+`opencode session export --help`, and `cline --help` — asserting each flag the
+executor passes (`--standalone`, `-m` with the `provider/model#variant` format,
+`--format json`, `--auto`, `--thinking`, the `session` positional, and Cline's
+`--data-dir`/`--auto-approve`/`--retries`/`-t`). It also
+reports when `opencode models` returns ids that differ from the bundled picker
+roster. An empty model response skips comparison; roster drift never blocks a run.
 
 ```powershell
 npm run pin:sync    # sync now, writing any verified bump
@@ -345,7 +345,7 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `missing validation-commands` or `pass --yes to accept the proposal`: use `--yes` for inferred values in automation, or provide explicit flags such as `--validation-command` and `--workspace-root`.
 - `github token missing` or `console token missing`: define the named environment variable in the same PowerShell process before starting.
 - `token authenticates as ..., expected ...`: correct `github.orchestrator_login` or use the dedicated account's token.
-- `unsupported Cline version` or `unsupported OpenCode version`: run `npm run pin:sync` — when the newer CLI still exposes the probed surface it bumps the pin for you, and `npm start` does this automatically. Seeing this error after a sync means the surface really moved: reinstall the pinned release (Cline 3.0.62, OpenCode 1.18.32) with `npm install -g opencode-ai@1.18.32`, then re-probe before pinning forward. Startup refuses a drifting CLI surface rather than failing during a job.
+- `unsupported Cline version` or `unsupported OpenCode version`: run `npm run pin:sync` — when the newer CLI still exposes the probed surface it bumps the pin for you, and `npm start` does this automatically. Seeing this error after a sync means the surface really moved: reinstall the pinned release (Cline 3.0.62, OpenCode 2.0.16) with `npm install -g @opencode/cli@2.0.16`, then re-probe before pinning forward. Startup refuses a drifting CLI surface rather than failing during a job.
 - `no production executor is registered for agent "..." (kind "...")`: the agent's `kind` (or its id, when `kind` is omitted) does not match a registered executor — use `cline` or `opencode`.
 - `credential source for agent "cline" not found` or `is not readable`: set `agents.cline.credential_source` to the authenticated `~/.cline/data` directory (e.g. `C:/Users/<you>/.cline/data`) and confirm `secrets.json` exists; startup checks this before accepting jobs. For an OpenCode agent, the equivalent is `auth.json` under its data root (`opencode debug paths`).
 - `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` (or `opencode auth`) and that the credential source still contains its declared files, then retry; this is distinct from `agent-nonzero-exit`.

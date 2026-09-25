@@ -19,8 +19,8 @@
  * changed) while still stopping at the release that actually moves a flag.
  *
  * The surface checks are deliberately the same commands `opencode.ts` names in
- * its own bump note — `run --help`, `debug paths`, `export --help` — so this
- * automates the review that comment asks for instead of substituting for it.
+ * its own bump note — `run --help`, `debug paths`, `session export --help` —
+ * so this automates the review that comment asks for instead of substituting for it.
  * It is not a replacement for `npm run probe:agent`, which exercises a real
  * authenticated invocation; a bump made here is still worth a probe before it
  * is trusted for a long run.
@@ -84,14 +84,14 @@ function req(what: string, pattern: RegExp): { what: string; pattern: RegExp } {
 
 /**
  * The surface each executor actually depends on, per kind. Every entry
- * corresponds to an argument the executor's `run` builds, or to state its
- * `additionalEnvironment` relocates; nothing is listed for completeness.
+ * corresponds to an argument the executor's `run` builds, state its
+ * `additionalEnvironment` relocates, or the captured session id supports.
  */
 const PINNED_AGENTS: readonly PinnedAgent[] = [
   {
     kind: "opencode",
     binary: "opencode",
-    packageName: "opencode-ai",
+    packageName: "@opencode/cli",
     sourceFile: "src/agent/opencode.ts",
     constantName: "EXPECTED_OPENCODE_VERSION",
     surface: [
@@ -99,13 +99,13 @@ const PINNED_AGENTS: readonly PinnedAgent[] = [
         label: "run --help",
         args: ["run", "--help"],
         requires: [
-          req("--dir (workspace)", flag("--dir")),
           req("-m (provider/model)", flag("-m")),
+          req("provider/model#variant (reasoning effort)", /provider\/model#variant/u),
+          req("--standalone (per-attempt state)", flag("--standalone")),
           req("--format (structured stream)", flag("--format")),
           req('--format choice "json"', /\bjson\b/u),
           req("--auto (permission auto-approve)", flag("--auto")),
           req("--thinking", flag("--thinking")),
-          req("--variant (reasoning effort)", flag("--variant")),
         ],
       },
       {
@@ -117,15 +117,15 @@ const PINNED_AGENTS: readonly PinnedAgent[] = [
         ],
       },
       {
-        label: "export --help",
-        args: ["export", "--help"],
-        requires: [req("sessionID positional (transcript export)", /sessionID/u)],
+        label: "session export --help",
+        args: ["session", "export", "--help"],
+        requires: [req("session id positional (transcript export)", /\[<session>\]/u)],
       },
     ],
     docPins: [
       { file: "README.md", template: "pinned to **{version}**" },
       { file: "README.md", template: "OpenCode {version}" },
-      { file: "README.md", template: "opencode-ai@{version}" },
+      { file: "README.md", template: "@opencode/cli@{version}" },
     ],
   },
   {
@@ -332,6 +332,10 @@ async function reportRosterDrift(input: {
       .map((line) => line.trim())
       .filter((line) => /^opencode(-go)?\//u.test(line)),
   );
+  if (live.size === 0) {
+    input.out("  models       no OpenCode-hosted model ids returned — roster comparison skipped");
+    return;
+  }
   const bundled = new Set(
     [...catalog.matchAll(/"(opencode(?:-go)?\/[^"]+)"/gu)].flatMap((match) =>
       match[1] === undefined ? [] : [match[1]],

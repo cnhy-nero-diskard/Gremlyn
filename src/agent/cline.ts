@@ -111,7 +111,7 @@ export function extractVersion(output: string): string | undefined {
  * Verified against opencode 1.18.27: every event on the stream carries
  * `sessionID` (capital ID, distinct from the `sessionId`/`session_id` shapes
  * checked for other agents) at the top level, and it *is* a real export
- * handle (`opencode export <sessionID>`).
+ * handle (`opencode session export <session>`).
  */
 export function extractSessionId(output: string): string | undefined {
   for (const line of output.split(/\r?\n/u)) {

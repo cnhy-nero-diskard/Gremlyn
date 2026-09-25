@@ -17,22 +17,23 @@ import { join } from "node:path";
 import type { ProcessRunner } from "../src/agent/launcher.js";
 import { syncAgentPins } from "../src/agent/pin.js";
 
-/** Captured verbatim from `opencode run --help` on 1.18.30 (abridged to the flags Gremlyn passes). */
+/** Captured from `opencode run --help` on 2.0.16 (abridged to Gremlyn's surface). */
 const OPENCODE_RUN_HELP = [
-  "opencode run [message..]",
+  "DESCRIPTION",
+  "  Run OpenCode with a message",
   "",
-  "Options:",
-  "  -h, --help         show help                                     [boolean]",
-  "  -m, --model        model to use in the format of provider/model   [string]",
-  "      --format       format: default (formatted) or json (raw JSON events)",
-  '                             [string] [choices: "default", "json"] [default: "default"]',
-  "      --dir          directory to run in                            [string]",
-  "      --variant      model variant (provider-specific reasoning effort)      ",
-  "      --thinking     show thinking blocks                          [boolean]",
-  "      --auto         auto-approve permissions that are not explicitly denied",
+  "USAGE",
+  "  opencode run [flags] [<message...>]",
+  "",
+  "FLAGS",
+  "  --standalone            Run with a private server instead of the background service",
+  "  --model, -m string    Model to use in the format provider/model#variant",
+  "  --format choice       Output format (choices: default, json)",
+  "  --thinking            Show thinking blocks",
+  "  --auto                Auto-approve permissions that are not explicitly denied",
 ].join("\n");
 
-/** Captured verbatim from `opencode debug paths` on 1.18.30. */
+/** Captured from `opencode debug paths` on 2.0.16. */
 const OPENCODE_DEBUG_PATHS = [
   "home       C:\\Users\\someone",
   "data       C:\\Users\\someone\\.local\\share\\opencode",
@@ -41,12 +42,16 @@ const OPENCODE_DEBUG_PATHS = [
   "state      C:\\Users\\someone\\.local\\state\\opencode",
 ].join("\n");
 
-/** Captured verbatim from `opencode export --help` on 1.18.30. */
-const OPENCODE_EXPORT_HELP = [
-  "opencode export [sessionID]",
+/** Captured verbatim from `opencode session export --help` on 2.0.16. */
+const OPENCODE_SESSION_EXPORT_HELP = [
+  "DESCRIPTION",
+  "  Export session data as JSON",
   "",
-  "Positionals:",
-  "  sessionID  session id to export                                   [string]",
+  "USAGE",
+  "  opencode session export [flags] [<session>]",
+  "",
+  "ARGUMENTS",
+  "  session string    Session ID to export (optional)",
 ].join("\n");
 
 /** Captured verbatim from `cline --help` on 3.0.61 (abridged the same way). */
@@ -119,7 +124,7 @@ const intactRunner =
     if (binary === "opencode") {
       if (key === "run --help") return Promise.resolve(ok(OPENCODE_RUN_HELP));
       if (key === "debug paths") return Promise.resolve(ok(OPENCODE_DEBUG_PATHS));
-      if (key === "export --help") return Promise.resolve(ok(OPENCODE_EXPORT_HELP));
+      if (key === "session export --help") return Promise.resolve(ok(OPENCODE_SESSION_EXPORT_HELP));
       if (key === "models") return Promise.resolve(ok("opencode/big-pickle\nopencode-go/qwen3.8"));
     }
     if (binary === "cline" && key === "--help") return Promise.resolve(ok(CLINE_HELP));
@@ -131,12 +136,12 @@ const silent = () => {
 };
 
 test("a CLI already at its pin is left completely alone", async () => {
-  const root = fixture({ opencodePin: "1.18.30", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.16", clinePin: "3.0.61" });
   const before = readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8");
   const outcomes = await syncAgentPins({
     root,
     out: silent,
-    runner: intactRunner({ opencode: "1.18.30", cline: "3.0.61" }),
+    runner: intactRunner({ opencode: "2.0.16", cline: "3.0.61" }),
   });
 
   assert.deepEqual(
@@ -150,71 +155,68 @@ test("a CLI already at its pin is left completely alone", async () => {
 });
 
 test("a newer CLI with the probed surface intact bumps the pin and its documented mentions", async () => {
-  const root = fixture({ opencodePin: "1.18.29", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.15", clinePin: "3.0.61" });
   const outcomes = await syncAgentPins({
     root,
     out: silent,
-    today: "2026-09-09",
-    runner: intactRunner({ opencode: "1.18.30", cline: "3.0.61" }),
+    today: "2026-09-22",
+    runner: intactRunner({ opencode: "2.0.16", cline: "3.0.61" }),
   });
 
   const opencode = outcomes.find((outcome) => outcome.kind === "opencode");
   assert.equal(opencode?.status, "bumped");
   assert.deepEqual(opencode?.status === "bumped" ? [opencode.from, opencode.to] : [], [
-    "1.18.29",
-    "1.18.30",
+    "2.0.15",
+    "2.0.16",
   ]);
 
   const source = readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8");
-  assert.match(source, /EXPECTED_OPENCODE_VERSION = "1\.18\.30"/u);
-  assert.doesNotMatch(source, /EXPECTED_OPENCODE_VERSION = "1\.18\.29"/u);
+  assert.match(source, /EXPECTED_OPENCODE_VERSION = "2\.0\.16"/u);
+  assert.doesNotMatch(source, /EXPECTED_OPENCODE_VERSION = "2\.0\.15"/u);
   // The provenance line records what was verified, inside the existing block.
-  assert.match(source, /^ \* @pin-sync 1\.18\.29 -> 1\.18\.30 on 2026-09-09; surface verified/mu);
+  assert.match(source, /^ \* @pin-sync 2\.0\.15 -> 2\.0\.16 on 2026-09-22; surface verified/mu);
   assert.equal(source.split("/**").length - 1, 1, "no second doc comment was opened");
 
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  assert.match(readme, /pinned to \*\*1\.18\.30\*\*/u);
-  assert.match(readme, /OpenCode 1\.18\.30/u);
+  assert.match(readme, /pinned to \*\*2\.0\.16\*\*/u);
+  assert.match(readme, /OpenCode 2\.0\.16/u);
   // Prose about which release introduced something is a historical claim, not
   // a pin: rewriting it would make the README say something untrue.
-  assert.match(readme, /A historical note: 1\.18\.29 also brought Zen/u);
+  assert.match(readme, /A historical note: 2\.0\.15 also brought Zen/u);
   assert.match(readme, /Cline 3\.0\.61/u, "the in-sync agent's own mention is untouched");
 });
 
 test("a second bump replaces the provenance line instead of stacking another", async () => {
   const root = fixture({
-    opencodePin: "1.18.30",
+    opencodePin: "2.0.16",
     clinePin: "3.0.61",
-    opencodeDoc: " * @pin-sync 1.18.29 -> 1.18.30 on 2026-09-09; surface verified via x.",
+    opencodeDoc: " * @pin-sync 2.0.15 -> 2.0.16 on 2026-09-22; surface verified via x.",
   });
   await syncAgentPins({
     root,
     out: silent,
-    today: "2026-09-16",
-    runner: intactRunner({ opencode: "1.18.31", cline: "3.0.61" }),
+    today: "2026-09-23",
+    runner: intactRunner({ opencode: "2.0.17", cline: "3.0.61" }),
   });
 
   const source = readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8");
   assert.equal(source.match(/@pin-sync/gu)?.length, 1);
-  assert.match(source, /@pin-sync 1\.18\.30 -> 1\.18\.31 on 2026-09-16/u);
-  assert.match(source, /EXPECTED_OPENCODE_VERSION = "1\.18\.31"/u);
+  assert.match(source, /@pin-sync 2\.0\.16 -> 2\.0\.17 on 2026-09-23/u);
+  assert.match(source, /EXPECTED_OPENCODE_VERSION = "2\.0\.17"/u);
 });
 
 test("a newer CLI that moved a flag is refused, and the pin is left where it was", async () => {
-  const root = fixture({ opencodePin: "1.18.29", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.15", clinePin: "3.0.61" });
   const before = readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8");
   const outcomes = await syncAgentPins({
     root,
     out: silent,
-    // A release that renamed --variant to --effort and dropped --dir: exactly
-    // the case the version gate exists to catch before a job starts.
+    // A release that changes the v2 model-variant syntax is refused before a
+    // job starts.
     runner: intactRunner(
-      { opencode: "2.0.0", cline: "3.0.61" },
+      { opencode: "2.1.0", cline: "3.0.61" },
       {
-        "run --help": OPENCODE_RUN_HELP.replace("--variant", "--effort").replace(
-          "      --dir          directory to run in                            [string]\n",
-          "",
-        ),
+        "run --help": OPENCODE_RUN_HELP.replace("provider/model#variant", "provider/model#reasoning"),
       },
     ),
   });
@@ -222,25 +224,25 @@ test("a newer CLI that moved a flag is refused, and the pin is left where it was
   const opencode = outcomes.find((outcome) => outcome.kind === "opencode");
   assert.equal(opencode?.status, "drifted");
   const missing = opencode?.status === "drifted" ? opencode.missing.map((entry) => entry.what) : [];
-  assert.deepEqual(missing, ["--dir (workspace)", "--variant (reasoning effort)"]);
+  assert.deepEqual(missing, ["provider/model#variant (reasoning effort)"]);
   assert.equal(
     readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8"),
     before,
     "a refused bump writes nothing",
   );
-  assert.match(readFileSync(join(root, "README.md"), "utf8"), /pinned to \*\*1\.18\.29\*\*/u);
+  assert.match(readFileSync(join(root, "README.md"), "utf8"), /pinned to \*\*2\.0\.15\*\*/u);
 });
 
 test("--auto's surface check is not satisfied by a lookalike flag", async () => {
-  const root = fixture({ opencodePin: "1.18.29", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.15", clinePin: "3.0.61" });
   const outcomes = await syncAgentPins({
     root,
     out: silent,
     runner: intactRunner(
-      { opencode: "1.18.31", cline: "3.0.61" },
+      { opencode: "2.0.17", cline: "3.0.61" },
       // `--auto` replaced by `--auto-approve` is a real surface change, and a
       // substring check would have called it intact.
-      { "run --help": OPENCODE_RUN_HELP.replace("--auto  ", "--auto-approve  ") },
+      { "run --help": OPENCODE_RUN_HELP.replace("--auto", "--auto-approve") },
     ),
   });
 
@@ -253,13 +255,13 @@ test("--auto's surface check is not satisfied by a lookalike flag", async () => 
 });
 
 test("--check reports the bump it would make without touching a file", async () => {
-  const root = fixture({ opencodePin: "1.18.29", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.15", clinePin: "3.0.61" });
   const before = readFileSync(join(root, "README.md"), "utf8");
   const outcomes = await syncAgentPins({
     root,
     out: silent,
     dryRun: true,
-    runner: intactRunner({ opencode: "1.18.30", cline: "3.0.61" }),
+    runner: intactRunner({ opencode: "2.0.16", cline: "3.0.61" }),
   });
 
   const opencode = outcomes.find((outcome) => outcome.kind === "opencode");
@@ -277,26 +279,26 @@ test("a bump in a CRLF checkout does not leave a lone LF behind", async () => {
       "/**",
       " * Probed surface.",
       " */",
-      'export const EXPECTED_OPENCODE_VERSION = "1.18.29";',
+      'export const EXPECTED_OPENCODE_VERSION = "2.0.15";',
       "",
     ].join("\r\n"),
     "utf8",
   );
-  writeFileSync(join(root, "README.md"), "pinned to **1.18.29**\r\n", "utf8");
+  writeFileSync(join(root, "README.md"), "pinned to **2.0.15**\r\n", "utf8");
   await syncAgentPins({
     root,
     out: silent,
     kinds: ["opencode"],
-    runner: intactRunner({ opencode: "1.18.30" }),
+    runner: intactRunner({ opencode: "2.0.16" }),
   });
 
   const source = readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8");
-  assert.match(source, /@pin-sync 1\.18\.29 -> 1\.18\.30/u);
+  assert.match(source, /@pin-sync 2\.0\.15 -> 2\.0\.16/u);
   assert.equal(source.match(/(?<!\r)\n/gu), null, "every inserted line kept the file's CRLF");
 });
 
 test("a CLI that is not installed is reported, not treated as drift", async () => {
-  const root = fixture({ opencodePin: "1.18.29", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.15", clinePin: "3.0.61" });
   const outcomes = await syncAgentPins({
     root,
     out: silent,
@@ -314,7 +316,7 @@ test("a CLI that is not installed is reported, not treated as drift", async () =
 });
 
 test("a version the CLI reports but cannot be parsed never becomes the pin", async () => {
-  const root = fixture({ opencodePin: "1.18.29", clinePin: "3.0.61" });
+  const root = fixture({ opencodePin: "2.0.15", clinePin: "3.0.61" });
   const outcomes = await syncAgentPins({
     root,
     out: silent,
@@ -323,5 +325,5 @@ test("a version the CLI reports but cannot be parsed never becomes the pin", asy
   });
 
   assert.equal(outcomes[0]?.status, "unavailable");
-  assert.match(readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8"), /"1\.18\.29"/u);
+  assert.match(readFileSync(join(root, "src", "agent", "opencode.ts"), "utf8"), /"2\.0\.15"/u);
 });

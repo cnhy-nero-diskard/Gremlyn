@@ -6,23 +6,25 @@ import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 /**
  * The single OpenCode release whose argv surface design D-opencode was probed
  * against. OpenCode releases often; a bump here should re-run the probe
- * rather than only editing the constant. Bumped 1.18.27 -> 1.18.29 after
- * verifying the 1.18.28/1.18.29 changelogs touch only Copilot headers and
- * Codex model filtering (no CLI surface change) plus `opencode run --help`,
- * `opencode debug paths`, and `opencode export --help` still showing the
- * probed surface (`run --dir -m --format json --auto --thinking [--variant]`,
- * auth under data, `export [sessionID]`).
- * @pin-sync 1.18.31 -> 1.18.32 on 2026-09-22; surface verified via opencode run --help, opencode debug paths, opencode export --help.
+ * rather than only editing the constant. OpenCode 2 moved workspace selection
+ * to the process cwd and reasoning variants into the model id (`#variant`),
+ * and its shared server requires `--standalone` to honor per-attempt state.
+ * The CLI and paths were checked locally on 2.0.16; transcript export moved
+ * to `opencode session export`.
+ * @pin-sync 1.18.32 -> 2.0.16 on 2026-09-25; surface verified via opencode run --help, opencode debug paths, opencode session export --help.
  */
-export const EXPECTED_OPENCODE_VERSION = "1.18.32";
+export const EXPECTED_OPENCODE_VERSION = "2.0.16";
 
 /**
  * Real OpenCode CLI executor over the probed non-interactive argv surface:
  *
- *   run --dir <cwd> -m <model> --format json --auto --thinking [--variant <effort>] <prompt>
+ *   run --standalone -m <provider/model[#variant]> --format json --auto --thinking <prompt>
  *
  * `provider` has no OpenCode argument — it is folded into the `provider/model`
- * form of `-m`, so it is accepted on the common payload and ignored here.
+ * form of `-m`, so it is accepted on the common payload and ignored here. The
+ * subprocess cwd selects the workspace; `--standalone` makes the attempt's
+ * XDG directories authoritative instead of connecting to the user's shared
+ * server; reasoning effort is the optional `#variant` suffix in the model.
  * `retries` and `timeoutSec` have no OpenCode flag either: `timeoutSec` is
  * already enforced by the process timeout in `defaultRunner`, and `retries` is
  * bounded by the orchestrator itself (see `honorsRetries`).
@@ -78,21 +80,17 @@ export class OpenCodeExecutor implements AgentExecutor {
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const startedAt = new Date().toISOString();
     const hasTimeout = opts.timeoutSec !== undefined && opts.timeoutSec > 0;
+    const modelId = opts.model.split("#", 1)[0] ?? opts.model;
+    const model = opts.effort === "none" ? modelId : `${modelId}#${opts.effort}`;
     const args = [
       "run",
-      "--dir",
-      opts.cwd,
+      "--standalone",
       "-m",
-      opts.model,
+      model,
       "--format",
       "json",
       "--auto",
       "--thinking",
-      // OpenCode accepts any --variant value silently (verified: an unknown
-      // tier exits 0 rather than being rejected), so "none" — the tier with
-      // no OpenCode analogue — is the one case left unpassed, matching a
-      // model with no reasoning-variant concept at all.
-      ...(opts.effort === "none" ? [] : ["--variant", opts.effort]),
       opts.prompt,
     ];
     const result = await this.runProcess(this.binary, args, {
