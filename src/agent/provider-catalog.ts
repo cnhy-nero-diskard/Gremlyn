@@ -12,12 +12,12 @@
  * hosted gateways: `opencode/<model>` is the pay-as-you-go Zen gateway every
  * installation can reach, and `opencode-go/<model>` is the OpenCode Go
  * subscription — a *separate* namespace with its own credential entry in
- * `auth.json` and its own model roster, not an alias of Zen's. The third,
- * `openai/<model>`, is not an OpenCode gateway at all: it is the operator's
+ * OpenCode's credential store and its own model roster, separate from Zen's.
+ * The `openai/<model>` namespace is the operator's
  * own OpenAI account, which OpenCode logs into directly (its login menu
  * offers "OpenAI (ChatGPT Plus/Pro or API key)"), billed by OpenAI rather
- * than by OpenCode. All three land in the same seeded `auth.json`. They exist
- * purely to save typing for the common cases; picking "Custom provider" and
+ * than by OpenCode. All three use the same configured OpenCode service. They
+ * exist to save typing for common cases; picking "Custom provider" and
  * typing any `provider/model` OpenCode itself understands (per `opencode
  * models`) still works, per config.example.yaml.
  *
@@ -341,9 +341,9 @@ const OPENCODE_ZEN_MODEL_IDS: readonly string[] = [
  * The `opencode-go/<model>` ids the OpenCode Go subscription serves, verbatim
  * from its model endpoint for OPENCODE_ROSTER_VERSION.
  *
- * Go is its own provider, not a billing mode of Zen: `auth.json` carries a
- * distinct `opencode-go` credential beside the `opencode` one. The two
- * rosters overlap but are not aliases; Go has subscription-only models such
+ * Go is its own provider, not a billing mode of Zen: OpenCode's credential
+ * store carries a distinct `opencode-go` credential beside the `opencode` one.
+ * The rosters overlap, and Go has subscription-only models such
  * as `longcat-2.0`, `hy3`, and the Qwen 3.7/3.8 tiers.
  */
 const OPENCODE_GO_MODEL_IDS: readonly string[] = [

@@ -45,32 +45,16 @@ export const CREDENTIAL_SEED_FILES = ["secrets.json", "settings/providers.json"]
 export type CredentialSeedFile = (typeof CREDENTIAL_SEED_FILES)[number];
 
 /**
- * OpenCode's credential seed set (design D-opencode). `opencode debug paths`
- * keeps the operator's authenticated credential in a single file under its
- * data root, unlike Cline's two-file split. The v1.18.27 credential probe
- * confirmed the seed is required; v2.0.16 `debug paths` confirms the data root
- * still follows the isolated XDG override.
+ * OpenCode's legacy credential file, retained as the profile marker and for
+ * older installations. OpenCode 2 keeps active provider connections in its
+ * database, so the executor uses the configured OpenCode service instead of
+ * copying this file into each attempt.
  */
 export const OPENCODE_CREDENTIAL_FILES = ["auth.json"] as const;
 
-/**
- * Where a seeded credential file must live *inside the attempt data dir*,
- * relative to it, keyed by executor kind. Source-relative and attempt-relative
- * layouts differ for OpenCode: `OpenCodeExecutor.additionalEnvironment` points
- * `XDG_DATA_HOME` at `<attempt>/xdg-data`, and OpenCode 2.0.16 reads auth at
- * `<XDG_DATA_HOME>/opencode/auth.json` — so seeding `auth.json` at the attempt
- * root would leave the agent unauthenticated and write-back looking in the
- * wrong root. The operator's credential source keeps the file at its own root.
- * Kinds without an entry seed (and persist) at the attempt root directly.
- */
-const CREDENTIAL_ATTEMPT_ROOTS: Record<string, string> = {
-  opencode: "xdg-data/opencode",
-};
-
 /** Attempt-relative path for a seeded credential file of the given kind. */
-export function attemptCredentialPath(kind: string | undefined, file: string): string {
-  const root = kind === undefined ? undefined : CREDENTIAL_ATTEMPT_ROOTS[kind];
-  return root === undefined ? file : join(root, file);
+export function attemptCredentialPath(_kind: string | undefined, file: string): string {
+  return file;
 }
 
 /**

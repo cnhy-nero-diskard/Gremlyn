@@ -10,10 +10,9 @@
  *
  * It answers three questions the inferred CLI contract leaves open:
  *   1. Is the installed CLI the version its executor was probed against?
- *   2. Does provider authentication survive a fresh per-attempt isolated state
- *      directory? (Isolation is per attempt; the operator's own `auth`
- *      persists it somewhere else. If those coincide, every attempt starts
- *      unauthenticated.)
+ *   2. Does provider authentication survive the executor's configured state
+ *      boundary? OpenCode uses the authenticated OpenCode service; Cline uses
+ *      credentials seeded into an isolated data directory.
  *   3. Does the structured stream actually carry a session id in the shape
  *      `extractSessionId` expects? A mismatch is silent: the console simply
  *      never gets an export handle.
@@ -122,6 +121,7 @@ async function runOnce(input: {
   effort: ReasoningEffort;
   timeoutSec: number;
   scratch: string;
+  credentialSource: string | undefined;
   seedSource: string | undefined;
   seedFiles: readonly string[] | undefined;
 }): Promise<ProbeRun> {
@@ -134,12 +134,12 @@ async function runOnce(input: {
   heading(`Run: ${input.label}`);
   out(`data-dir     ${dataDir}`);
   out(`cwd          ${cwd}`);
-  const isolationEnv = executor.additionalEnvironment(dataDir);
-  if (Object.keys(isolationEnv).length > 0) {
-    out(`state env    ${JSON.stringify(isolationEnv)}`);
+  const additionalEnv = executor.additionalEnvironment(dataDir, input.credentialSource);
+  if (Object.keys(additionalEnv).length > 0) {
+    out(`agent env    ${JSON.stringify(additionalEnv)}`);
   }
   let seeded: readonly string[] | undefined;
-  if (input.seedSource) {
+  if (input.seedSource && !executor.usesSharedCredentials) {
     const files =
       input.seedFiles ?? DEFAULT_SEED_FILES_BY_KIND[input.kind] ?? CREDENTIAL_SEED_FILES;
     try {
@@ -152,6 +152,13 @@ async function runOnce(input: {
       out(`seed failed  ${describe(error)}`);
       throw error;
     }
+  } else if (executor.usesSharedCredentials) {
+    out(
+      input.credentialSource
+        ? `credentials  configured OpenCode profile at ${input.credentialSource}`
+        : "credentials  configured OpenCode service",
+    );
+    out("             OpenCode uses its shared service; no attempt copy is made");
   } else {
     out(`seeded       (none — fresh isolated dir)`);
   }
@@ -163,7 +170,7 @@ async function runOnce(input: {
     provider: input.provider,
     effort: input.effort,
     prompt: PROBE_PROMPT,
-    env: buildAgentEnvironment(process.env, isolationEnv),
+    env: buildAgentEnvironment(process.env, additionalEnv),
     timeoutSec: input.timeoutSec,
     retries: 1,
     dataDir,
@@ -264,8 +271,8 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
   const absent = AGENT_ENV_ALLOWLIST.filter((key) => env[key] === undefined);
   out(`passed       ${present.join(", ")}`);
   out(`unset        ${absent.length > 0 ? absent.join(", ") : "(none)"}`);
-  out("note         no provider API keys are in the allowlist; the agent must find");
-  out("             credentials via HOME/APPDATA/USERPROFILE or its own state directory");
+  out("note         provider API keys are not added to Gremlyn's child environment;");
+  out("             each executor uses its configured credential store");
 
   heading("Version");
   const versionSink: { argv?: readonly string[] } = {};
@@ -306,11 +313,16 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     return 0;
   }
 
-  // Seeded-run mode: if a credential source is supplied, run one unseeded
-  // and one seeded isolated dir to verify the declared file set suffices.
-  // This directly exercises design D3's empirical claim.
+  // Seeded-run comparison applies to executors that use per-attempt files.
+  // OpenCode's source path selects its configured shared service instead.
   const defaultSeedFiles = DEFAULT_SEED_FILES_BY_KIND[kind] ?? CREDENTIAL_SEED_FILES;
-  if (seedSource) {
+  const sharedCredentials =
+    EXECUTOR_FACTORIES[kind]?.(binary, recordingRunner({})).usesSharedCredentials === true;
+  if (seedSource && sharedCredentials) {
+    heading("Credential source");
+    out(`source       ${seedSource}`);
+    out("mode         shared OpenCode service; no per-attempt file seeding");
+  } else if (seedSource) {
     heading(`Seed configuration`);
     out(`source       ${seedSource}`);
     out(`files        ${(seedFiles ?? [...defaultSeedFiles]).join(", ")}`);
@@ -320,7 +332,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
 
   const scratch = mkdtempSync(join(tmpdir(), "gremlyn-probe-"));
   try {
-    if (seedSource) {
+    if (seedSource && !sharedCredentials) {
       const first = await runOnce({
         label: "first — fresh data dir (unseeded)",
         kind,
@@ -330,6 +342,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
         effort,
         timeoutSec,
         scratch,
+        credentialSource: undefined,
         seedSource: undefined,
         seedFiles: undefined,
       });
@@ -344,6 +357,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
         effort,
         timeoutSec,
         scratch,
+        credentialSource: seedSource,
         seedSource: seedSource,
         seedFiles: seedFiles,
       });
@@ -416,8 +430,9 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       return seededModeOk ? 0 : 1;
     }
 
+    const profileSource = sharedCredentials ? seedSource : undefined;
     const first = await runOnce({
-      label: "first — fresh data dir",
+      label: sharedCredentials ? "first — configured service" : "first — fresh data dir",
       kind,
       binary,
       model,
@@ -425,13 +440,14 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       effort,
       timeoutSec,
       scratch,
+      credentialSource: profileSource,
       seedSource: undefined,
       seedFiles: undefined,
     });
     reportRun(first);
 
     const second = await runOnce({
-      label: "second — a different fresh data dir",
+      label: sharedCredentials ? "second — configured service" : "second — a different fresh data dir",
       kind,
       binary,
       model,
@@ -439,6 +455,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       effort,
       timeoutSec,
       scratch,
+      credentialSource: profileSource,
       seedSource: undefined,
       seedFiles: undefined,
     });
@@ -448,12 +465,20 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     const bothOk = first.result.exitCode === 0 && second.result.exitCode === 0;
     out(
       bothOk
-        ? "auth         both runs succeeded on independent data dirs — per-attempt"
+        ? sharedCredentials
+          ? "auth         both runs succeeded through the configured OpenCode service"
+          : "auth         both runs succeeded on independent data dirs — per-attempt"
         : "auth         at least one run failed; compare stderr above",
     );
-    if (bothOk) {
+    if (bothOk && !sharedCredentials) {
       out("             --data-dir isolation does not strand credentials");
-    } else if (first.result.exitCode === 0 && second.result.exitCode !== 0) {
+    } else if (bothOk) {
+      out("             OpenCode sessions and provider credentials stay in its configured service");
+    } else if (
+      !sharedCredentials &&
+      first.result.exitCode === 0 &&
+      second.result.exitCode !== 0
+    ) {
       out("             NOTE: run 1 passed and run 2 failed on an identical setup.");
       out("             That is the signature of state cached in the first data dir.");
     }
@@ -461,7 +486,11 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       /Unauthorized/iu.test(`${run.result.stdout}
 ${run.result.stderr}`),
     );
-    if (bothUnauthorized) {
+    if (bothUnauthorized && sharedCredentials) {
+      out();
+      out("The configured OpenCode service rejected its provider credentials.");
+      out("Check the account with `opencode auth list` and models with `opencode models`.");
+    } else if (bothUnauthorized) {
       // Without --seed-source this mode IS the control: it reproduces the
       // original defect on purpose. Say so, or the expected result reads as
       // a regression.

@@ -199,15 +199,14 @@ agents can run concurrently, each job using its own repository's agent.
 Differences from the Cline path, all handled without any repository-level
 change beyond `agent: opencode`:
 
-- **Credential**: a single `auth.json`, holding whatever OpenCode's own
-  `opencode auth login` (or `opencode auth` / `providers`) stored. The
-  `credential_source` for an OpenCode agent is that installation's data root —
-  `opencode debug paths` reports it (typically
-  `C:/Users/<you>/.local/share/opencode`). Isolation, seeding, owner-only
-  permissions, and teardown per attempt all work identically to Cline.
-- **Isolation**: OpenCode 2 defaults to a shared background server. Gremlyn
-  passes `--standalone` so the server uses each attempt's isolated credentials,
-  data, and state directories.
+- **Credential**: OpenCode 2 stores provider connections in its data database.
+  Set `credential_source` to that installation's data root — `opencode debug
+  paths` reports it (typically `C:/Users/<you>/.local/share/opencode`).
+- **Service**: OpenCode 2.0.16's `--standalone` mode returned an empty model
+  catalog on the configured profile, while the default service exposed the
+  selected models. Gremlyn uses the configured service and the attempt's
+  working directory. OpenCode conversation and session data remain in that
+  service's database rather than Gremlyn's per-attempt directory.
 - **Provider**: OpenCode has no separate provider argument — it is folded into
   the model id as `<namespace>/<model>` (`opencode models` lists every id the
   installation can reach). A repository naming an OpenCode agent does not need
@@ -216,7 +215,7 @@ change beyond `agent: opencode`:
   authenticate: **OpenCode Zen** (`opencode/<model>`, pay-as-you-go),
   **OpenCode Go** (`opencode-go/<model>`, the Go subscription), and **OpenAI**
   (`openai/<model>`, your own OpenAI account). They are genuinely separate
-  providers, not billing modes of one: `auth.json` holds a distinct credential
+  providers, not billing modes of one: OpenCode keeps a distinct credential
   for each, and their model rosters only partly overlap — Go alone serves
   `longcat-2.0`, the `hy*` tiers and `qwen3.7`/`3.8`, while Zen
   alone serves the Anthropic and most GPT tiers (1.18.29 also brought Zen
@@ -228,7 +227,7 @@ change beyond `agent: opencode`:
   Cline's **OpenAI Codex** provider, which is Cline's own
   ChatGPT-subscription OAuth driven by the Cline binary; neither executor can
   use the other's credential, so each is offered only to repositories running
-  its own agent. All three are covered by the same seeded `auth.json`, so
+  its own agent. All three use the configured OpenCode credential store, so
   selecting a Go or OpenAI model needs no configuration beyond having run
   `opencode auth login` for that plan. Picking "Custom provider"
   instead (shared with Cline) still works for any other `provider/model`
@@ -306,7 +305,7 @@ executor actually depends on before doing anything:
 The surface checks are the same commands the pin's own bump note names —
 `opencode run --help`, `opencode debug paths`,
 `opencode session export --help`, and `cline --help` — asserting each flag the
-executor passes (`--standalone`, `-m` with the `provider/model#variant` format,
+executor passes (`-m` with the `provider/model#variant` format,
 `--format json`, `--auto`, `--thinking`, the `session` positional, and Cline's
 `--data-dir`/`--auto-approve`/`--retries`/`-t`). It also
 reports when `opencode models` returns ids that differ from the bundled picker

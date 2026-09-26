@@ -101,7 +101,6 @@ const PINNED_AGENTS: readonly PinnedAgent[] = [
         requires: [
           req("-m (provider/model)", flag("-m")),
           req("provider/model#variant (reasoning effort)", /provider\/model#variant/u),
-          req("--standalone (per-attempt state)", flag("--standalone")),
           req("--format (structured stream)", flag("--format")),
           req('--format choice "json"', /\bjson\b/u),
           req("--auto (permission auto-approve)", flag("--auto")),

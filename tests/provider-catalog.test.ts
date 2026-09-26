@@ -101,8 +101,8 @@ test("bundled provider catalog exposes current Cline, Codex, and OpenCode choice
   assert.ok(opencodeGo.models.every((model) => model.tier === "subscribed"));
   assert.ok(!opencodeGo.models.some((model) => model.id.endsWith("-free")));
   // OpenCode logs into the operator's own OpenAI account as a third namespace
-  // on the same executor and the same seeded auth.json, so it shares the kind
-  // for the same reason Go does.
+  // on the same configured service, so it shares the kind for the same reason
+  // Go does.
   assert.deepEqual(openai.kinds, ["opencode"]);
   assert.equal(openai.defaultModelId, "openai/gpt-5.6-sol");
   assert.ok(openai.models.every((model) => model.id.startsWith("openai/")));

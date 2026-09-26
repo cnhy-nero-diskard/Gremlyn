@@ -10,10 +10,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { ClineExecutor, extractSessionId } from "../src/agent/cline.js";
 import type { ProcessRunner } from "../src/agent/launcher.js";
-import { OPENCODE_CREDENTIAL_FILES, attemptCredentialPath } from "../src/agent/credentials.js";
 import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "../src/agent/opencode.js";
 import type { AgentRunOptions } from "../src/types.js";
 import { AgentVersionError } from "../src/agent/cline.js";
@@ -76,9 +75,9 @@ test("OpenCode executor builds the v2 argv with #variant carrying the effort tie
   assert.equal(calls.length, 1);
   const [binary, args, runOptions] = calls[0]!;
   assert.equal(binary, "opencode-test");
+  assert.equal(new OpenCodeExecutor().usesSharedCredentials, true);
   assert.deepEqual(args, [
     "run",
-    "--standalone",
     "-m",
     `${opts.model}#high`,
     "--format",
@@ -149,61 +148,25 @@ test("OpenCode's #variant and bare --thinking cannot be crossed with Cline's --t
   assert.equal(cline[cline.indexOf("--thinking") + 1], "xhigh");
 });
 
-test("OpenCode contributes isolated, absolute XDG data/state directories and no credential value", () => {
-  const dataDir = join("D:", "attempts", "42");
-  const env = new OpenCodeExecutor().additionalEnvironment(dataDir);
-  assert.ok(env.XDG_DATA_HOME, "XDG_DATA_HOME must be set");
-  assert.ok(env.XDG_STATE_HOME, "XDG_STATE_HOME must be set");
-  assert.notEqual(env.XDG_DATA_HOME, env.XDG_STATE_HOME);
-  for (const value of Object.values(env)) {
-    assert.ok(join(value) === value || value.length > 0);
-    // Absolute: starts inside the given attempt data dir.
-    assert.ok(value.startsWith(dataDir), `expected ${value} to be rooted under ${dataDir}`);
-  }
-  const serialized = JSON.stringify(env);
-  assert.doesNotMatch(serialized, /sk-|token|secret|api[_-]?key/iu);
-});
-
-/**
- * The orchestrator builds an attempt data dir from its configured `data_dir`,
- * which is customarily relative (`.gremlyn`), and creates and seeds it from
- * its own process cwd. The agent, however, runs with the *workspace* as cwd:
- * a relative XDG_DATA_HOME would resolve there instead, putting OpenCode's
- * session database inside the repository under review — where the publish
- * step commits it — and leaving the seeded auth.json unread. The executor
- * must therefore absolutise whatever it is handed.
- */
-test("a relative attempt data dir still yields absolute OpenCode state directories", () => {
-  const relative = join(".gremlyn", "attempts", "77");
-  const env = new OpenCodeExecutor().additionalEnvironment(relative);
-  assert.ok(isAbsolute(env.XDG_DATA_HOME!), `expected ${env.XDG_DATA_HOME} to be absolute`);
-  assert.ok(isAbsolute(env.XDG_STATE_HOME!), `expected ${env.XDG_STATE_HOME} to be absolute`);
-  assert.equal(env.XDG_DATA_HOME, join(resolve(relative), "xdg-data"));
-  assert.equal(env.XDG_STATE_HOME, join(resolve(relative), "xdg-state"));
-});
-
-test("two attempts get independent OpenCode state directories", () => {
+test("OpenCode uses the configured data profile and preserves service discovery paths", () => {
   const executor = new OpenCodeExecutor();
-  const first = executor.additionalEnvironment(join("D:", "attempts", "1"));
-  const second = executor.additionalEnvironment(join("D:", "attempts", "2"));
-  assert.notEqual(first.XDG_DATA_HOME, second.XDG_DATA_HOME);
-  assert.notEqual(first.XDG_STATE_HOME, second.XDG_STATE_HOME);
+  const profile = join(mkdtempSync(join(tmpdir(), "gremlyn-opencode-profile-")), "opencode");
+  const env = executor.additionalEnvironment(join("D:", "attempts", "42"), profile);
+  assert.ok(isAbsolute(env.XDG_DATA_HOME!), `expected ${env.XDG_DATA_HOME} to be absolute`);
+  assert.equal(env.XDG_DATA_HOME, dirname(resolve(profile)));
+  for (const key of ["XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] as const) {
+    assert.equal(env[key], process.env[key]);
+  }
+  assert.doesNotMatch(JSON.stringify(env), /sk-|token|secret|api[_-]?key/iu);
 });
 
-test("seeded OpenCode credentials land where the executor's XDG_DATA_HOME exposes them", () => {
-  // The seed layout and the executor's environment cannot drift apart: the
-  // seeded file's attempt-relative path must resolve to
-  // <XDG_DATA_HOME>/opencode/auth.json, where OpenCode 1.18.27 reads auth.
-  const dataDir = join("D:", "attempts", "7");
-  const env = new OpenCodeExecutor().additionalEnvironment(dataDir);
-  for (const file of OPENCODE_CREDENTIAL_FILES) {
-    const seeded = attemptCredentialPath("opencode", file);
-    assert.equal(
-      join(env.XDG_DATA_HOME!, "opencode", file),
-      join(dataDir, seeded),
-      `seeded ${file} must be readable at <XDG_DATA_HOME>/opencode/${file}`,
-    );
-  }
+test("OpenCode profile roots do not vary with the attempt data directory", () => {
+  const executor = new OpenCodeExecutor();
+  const profile = join(mkdtempSync(join(tmpdir(), "gremlyn-opencode-profile-")), "opencode");
+  const first = executor.additionalEnvironment(join("D:", "attempts", "1"), profile);
+  const second = executor.additionalEnvironment(join("D:", "attempts", "2"), profile);
+  assert.equal(first.XDG_DATA_HOME, second.XDG_DATA_HOME);
+  assert.equal(first.XDG_STATE_HOME, second.XDG_STATE_HOME);
 });
 
 test("OpenCode declares it does not honor the retry allowance itself", () => {

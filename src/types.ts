@@ -126,6 +126,8 @@ export interface AgentRunOptions {
  */
 export interface AgentExecutor {
   readonly id: string;
+  /** True when the CLI must use the user's authenticated service instead of per-attempt credentials. */
+  readonly usesSharedCredentials?: boolean;
   /**
    * True when the executor's own CLI bounds retries itself (e.g. Cline's
    * `--retries`). When false, the orchestrator bounds whole invocations of
@@ -138,11 +140,7 @@ export interface AgentExecutor {
    * version rather than the caller supplying one.
    */
   checkVersion(env: Record<string, string>): Promise<void>;
-  /**
-   * Environment entries this executor needs for the given attempt beyond the
-   * allowlisted host variables — e.g. an isolated state directory pointed to
-   * by environment rather than by argument. Defaults to none.
-   */
-  additionalEnvironment(dataDir: string): Record<string, string>;
+  /** Additional per-executor environment, such as an XDG profile root. */
+  additionalEnvironment(dataDir: string, credentialSource?: string): Record<string, string>;
   run(opts: AgentRunOptions): Promise<AgentResult>;
 }

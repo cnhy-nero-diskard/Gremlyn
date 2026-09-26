@@ -122,11 +122,31 @@ export function isAgentBillingFailure(result: Pick<AgentResult, "stdout" | "stde
   return false;
 }
 
+/** Detect OpenCode's structured model/provider route failure. */
+export function isAgentModelUnavailable(
+  result: Pick<AgentResult, "stdout" | "stderr">,
+): boolean {
+  const combined = `${result.stdout}\n${result.stderr}`;
+  for (const line of combined.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let value: { type?: unknown; error?: { type?: unknown } };
+    try {
+      value = JSON.parse(trimmed) as typeof value;
+    } catch {
+      continue;
+    }
+    if (value.type === "error" && value.error?.type === "provider.no-route") return true;
+  }
+  return false;
+}
+
 export function agentFailureReason(result: AgentResult): FailureReason {
   // Ordering matters: a billing refusal's payload also matches the
   // unauthorized wording the auth check looks for.
   if (isAgentBillingFailure(result)) return "agent-billing-failed";
   if (isAgentAuthenticationFailure(result)) return "agent-auth-failed";
+  if (isAgentModelUnavailable(result)) return "model-unavailable";
   return "agent-nonzero-exit";
 }
 

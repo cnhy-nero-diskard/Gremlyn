@@ -141,10 +141,7 @@ test("seeding fails loudly when a declared file is absent", () => {
   );
 });
 
-test("OpenCode seeds auth.json into the executor's XDG data layout, not the attempt root", () => {
-  // OpenCodeExecutor points XDG_DATA_HOME at <attempt>/xdg-data, and OpenCode
-  // 1.18.27 reads auth at <XDG_DATA_HOME>/opencode/auth.json — seeding to the
-  // attempt root would leave the agent unauthenticated.
+test("legacy OpenCode auth.json uses the generic source-relative seed path", () => {
   const source = mkdtempSync(join(tmpdir(), "gremlyn-occredsrc-"));
   writeFileSync(join(source, "auth.json"), SECRET, "utf8");
   const dest = makeAttemptDir();
@@ -152,21 +149,21 @@ test("OpenCode seeds auth.json into the executor's XDG data layout, not the atte
     const seeded = seedAgentCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
 
     assert.deepEqual(seeded, ["auth.json"]);
-    const seededPath = join(dest, "xdg-data", "opencode", "auth.json");
+    const seededPath = join(dest, "auth.json");
     assert.equal(readFileSync(seededPath, "utf8"), SECRET);
-    assert.equal(existsSync(join(dest, "auth.json")), false);
+    assert.equal(existsSync(join(dest, "xdg-data", "opencode", "auth.json")), false);
   } finally {
     removeAttemptDataDir(dest);
   }
 });
 
-test("OpenCode rotated credentials are read back from the XDG layout and persisted to the source", () => {
+test("legacy OpenCode auth.json can be persisted by the generic rotation helper", () => {
   const source = mkdtempSync(join(tmpdir(), "gremlyn-occredsrc-"));
   writeFileSync(join(source, "auth.json"), SECRET, "utf8");
   const dest = makeAttemptDir();
   seedAgentCredentials(source, dest, OPENCODE_CREDENTIAL_FILES, "opencode");
   const rotated = '{"opencode":{"accessToken":"rotated-token"}}';
-  writeFileSync(join(dest, "xdg-data", "opencode", "auth.json"), rotated, "utf8");
+  writeFileSync(join(dest, "auth.json"), rotated, "utf8");
   try {
     const persisted = persistRotatedCredentials(
       source,

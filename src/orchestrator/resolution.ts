@@ -60,6 +60,7 @@ import {
   agentFailureReason,
   isAgentAuthenticationFailure,
   isAgentBillingFailure,
+  isAgentModelUnavailable,
   StageFailure,
   classifyFailure,
 } from "./failures.js";
@@ -855,10 +856,10 @@ export class ResolutionOrchestrator {
       if (!executor) throw new StageFailure(stage, "agent-cli-missing");
       attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
       mkdirSync(attemptDataDir, { recursive: true });
-      // 4.1: seed credential source into the isolated data dir with owner-only perms.
+      // 4.1: seed credentials only for executors that use per-attempt state.
       // The source is read-only; the destination is the per-attempt ephemeral dir.
       const credentialSource = this.options.credentialSources?.get(repository.agent);
-      if (credentialSource) {
+      if (credentialSource && !executor.usesSharedCredentials) {
         // Seeding failures are a configuration/environment fault, not the
         // agent rejecting a credential. They must not fall through to the
         // generic classifier, which reads any "unauthorized" wording as a
@@ -869,8 +870,7 @@ export class ResolutionOrchestrator {
             attemptDataDir,
             this.options.credentialFiles?.get(repository.agent),
             // The executor's kind decides where inside the attempt dir each
-            // seeded file must land (OpenCode reads auth under its XDG data
-            // root, not at the attempt root).
+            // seeded file must land.
             executor.id,
           );
         } catch (error) {
@@ -881,6 +881,13 @@ export class ResolutionOrchestrator {
           );
         }
         this.options.logger.info("credential seeded", {
+          jobId,
+          attemptId,
+          agent: repository.agent,
+          source: credentialSource,
+        });
+      } else if (credentialSource) {
+        this.options.logger.info("using shared agent credentials", {
           jobId,
           attemptId,
           agent: repository.agent,
@@ -912,7 +919,10 @@ export class ResolutionOrchestrator {
           provider: repository.provider,
           effort: repository.effort,
           prompt: buildResolutionPrompt(context, this.options.orchestratorLogin, inheritedFailure),
-          env: buildAgentEnvironment(process.env, executor.additionalEnvironment(attemptDataDir!)),
+          env: buildAgentEnvironment(
+            process.env,
+            executor.additionalEnvironment(attemptDataDir!, credentialSource),
+          ),
           ...((repository.timeoutSec ?? this.options.timeoutSec) === undefined
             ? {}
             : { timeoutSec: repository.timeoutSec ?? this.options.timeoutSec }),
@@ -934,12 +944,13 @@ export class ResolutionOrchestrator {
       // instead, by re-running the whole invocation up to the same allowance.
       // The units differ deliberately — this counts whole invocations.
       const maxInvocations = executor.honorsRetries ? 1 : Math.max(1, this.options.retries);
-      // A billing or auth failure is a terminal account condition, not the
-      // transient "mistake" a retry allowance exists to recover from — the
-      // same reason Cline's own internal retry would not run through one.
-      // Retrying it would only spend more of a budget that is already spent.
+      // Billing, authentication, and model-route failures are terminal for an
+      // invocation: another identical launch cannot repair them, so only
+      // transient agent failures consume the retry allowance.
       const isTerminalFailure = (result: AgentResult): boolean =>
-        isAgentBillingFailure(result) || isAgentAuthenticationFailure(result);
+        isAgentBillingFailure(result) ||
+        isAgentAuthenticationFailure(result) ||
+        isAgentModelUnavailable(result);
       let agentResult = await runOnce();
       let invocation = 1;
       while (
@@ -1180,7 +1191,7 @@ export class ResolutionOrchestrator {
   ): void {
     if (!attemptDataDir) return;
     const credentialSource = this.options.credentialSources?.get(agent);
-    if (credentialSource) {
+    if (credentialSource && !this.options.executors.get(agent)?.usesSharedCredentials) {
       try {
         const rotated = persistRotatedCredentials(
           credentialSource,
