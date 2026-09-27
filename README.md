@@ -282,6 +282,8 @@ Then add `!RESOLVE` as a reply in an inline PR review thread authored by an allo
 
 Stop with `Ctrl+C`. Gremlyn marks jobs left in transient states as interrupted on the next startup; it does not silently rerun them. Retrying that interrupted job may resume its retained PR workspace when the recorded head and deterministic path still match; unrelated dirty workspaces remain blocked.
 
+If a previous run was interrupted by a reboot or power loss, Gremlyn reclaims its abandoned data-directory claim at startup, even when the old process ID has been reused. A claim from a running instance still prevents a second instance from starting. If a claim cannot be reclaimed automatically, run `npm run setup -- unlock .gremlyn` from the Gremlyn directory after checking the reported owner.
+
 ### Keeping the agent CLI pins current
 
 Both agent CLIs are pinned to one release (`EXPECTED_CLINE_VERSION`,

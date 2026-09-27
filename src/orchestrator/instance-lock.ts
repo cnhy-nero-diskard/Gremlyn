@@ -1,4 +1,14 @@
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { uptime } from "node:os";
 import { join } from "node:path";
 
 export class InstanceLockError extends Error {
@@ -10,6 +20,7 @@ export class InstanceLockError extends Error {
 
 export interface InstanceLockClaim {
   pid: number;
+  claimedAtMs?: number;
 }
 
 export interface DataDirectoryLockInspection {
@@ -33,7 +44,17 @@ export function parseLockClaim(contents: string): InstanceLockClaim | undefined 
     ) {
       return undefined;
     }
-    return { pid: (value as { pid: number }).pid };
+    const claimedAtMs = (value as { claimedAtMs?: unknown }).claimedAtMs;
+    if (
+      claimedAtMs !== undefined &&
+      (typeof claimedAtMs !== "number" || !Number.isSafeInteger(claimedAtMs) || claimedAtMs < 0)
+    ) {
+      return undefined;
+    }
+    return {
+      pid: (value as { pid: number }).pid,
+      ...(claimedAtMs === undefined ? {} : { claimedAtMs }),
+    };
   } catch {
     return undefined;
   }
@@ -52,7 +73,7 @@ export function inspectDataDirectoryLock(dataDir: string): DataDirectoryLockInsp
       path,
       exists: true,
       ...(owner === undefined ? {} : { owner }),
-      ownerAlive: owner !== undefined && isLockOwnerAlive(owner.pid),
+      ownerAlive: owner !== undefined && isDataDirectoryLockOwnerAlive(owner, path),
     };
   } catch (error) {
     if (isMissingError(error)) return { path, exists: false, ownerAlive: false };
@@ -95,7 +116,7 @@ export class DataDirectoryLock {
         }
 
         const owner = readLockOwner(path);
-        if (owner !== undefined && isLockOwnerAlive(owner.pid)) {
+        if (owner !== undefined && isDataDirectoryLockOwnerAlive(owner, path)) {
           throw new InstanceLockError(
             `another Gremlyn instance is already using data directory ${dataDir} (pid ${owner.pid})`,
           );
@@ -114,7 +135,11 @@ export class DataDirectoryLock {
         }
         continue;
       }
-      writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid })}\n`, "utf8");
+      writeFileSync(
+        descriptor,
+        `${JSON.stringify({ pid: process.pid, claimedAtMs: Date.now() })}\n`,
+        "utf8",
+      );
       return new DataDirectoryLock(path, descriptor);
     }
   }
@@ -158,6 +183,45 @@ export function isLockOwnerAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** A PID from an interrupted run may already belong to an unrelated live process. */
+function isDataDirectoryLockOwnerAlive(owner: InstanceLockClaim, path: string): boolean {
+  if (!isLockOwnerAlive(owner.pid)) return false;
+  try {
+    const claimedAtMs = owner.claimedAtMs ?? statSync(path).mtimeMs;
+    const startedAtMs = processStartTimeMs(owner.pid);
+    // Allow timestamp rounding, but reject a PID now belonging to a newer process.
+    if (startedAtMs !== undefined && startedAtMs > claimedAtMs + 2_000) return false;
+    // Windows Fast Startup can preserve uptime, so the process check above is
+    // essential there. The boot check also covers other hosts and query failures.
+    if (claimedAtMs < currentBootTimeMs() - 30_000) return false;
+  } catch {
+    // If the file cannot be inspected, retain the live-PID protection.
+  }
+  return true;
+}
+
+function processStartTimeMs(pid: number): number | undefined {
+  if (pid === process.pid) return Date.now() - process.uptime() * 1_000;
+  if (process.platform !== "win32") return undefined;
+  const result = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
+    ],
+    { encoding: "utf8", timeout: 3_000, windowsHide: true },
+  );
+  if (result.status !== 0) return undefined;
+  const startedAtMs = Date.parse(result.stdout.trim());
+  return Number.isNaN(startedAtMs) ? undefined : startedAtMs;
+}
+
+function currentBootTimeMs(): number {
+  return Date.now() - uptime() * 1_000;
 }
 
 function isAlreadyExistsError(error: unknown): boolean {

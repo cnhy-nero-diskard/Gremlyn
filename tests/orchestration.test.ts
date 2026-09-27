@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { tmpdir, uptime } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FakeExecutor } from "../src/agent/fake.js";
@@ -311,6 +311,11 @@ test("second instance using the same data directory refuses to start", () => {
 
 test("lock claims use a parseable owner record and reject legacy or garbage claims", () => {
   assert.deepEqual(parseLockClaim(JSON.stringify({ pid: process.pid })), { pid: process.pid });
+  assert.deepEqual(parseLockClaim(JSON.stringify({ pid: process.pid, claimedAtMs: 123 })), {
+    pid: process.pid,
+    claimedAtMs: 123,
+  });
+  assert.equal(parseLockClaim(JSON.stringify({ pid: process.pid, claimedAtMs: "old" })), undefined);
   assert.equal(parseLockClaim(`${process.pid}\n`), undefined);
   assert.equal(parseLockClaim("garbage"), undefined);
 });
@@ -321,7 +326,12 @@ test("dead lock claims are reclaimed while the current process remains protected
   writeFileSync(claimPath, JSON.stringify({ pid: 999_999_999 }) + "\n", "utf8");
   const reclaimed = DataDirectoryLock.acquire(dataDir);
   try {
-    assert.deepEqual(JSON.parse(readFileSync(claimPath, "utf8")), { pid: process.pid });
+    const claim = JSON.parse(readFileSync(claimPath, "utf8")) as {
+      pid: number;
+      claimedAtMs: number;
+    };
+    assert.equal(claim.pid, process.pid);
+    assert.ok(Math.abs(claim.claimedAtMs - Date.now()) < 30_000);
     assert.throws(
       () => DataDirectoryLock.acquire(dataDir),
       (error: unknown) =>
@@ -332,6 +342,65 @@ test("dead lock claims are reclaimed while the current process remains protected
     reclaimed.release();
   }
 });
+
+test("a claim from a previous boot is reclaimed even when its PID is live again", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-lock-reboot-"));
+  const claimPath = join(dataDir, ".gremlyn.lock");
+  writeFileSync(
+    claimPath,
+    JSON.stringify({ pid: process.pid, claimedAtMs: Date.now() - uptime() * 1_000 - 3_600_000 }),
+    "utf8",
+  );
+  const lock = DataDirectoryLock.acquire(dataDir);
+  try {
+    assert.equal(JSON.parse(readFileSync(claimPath, "utf8")).pid, process.pid);
+  } finally {
+    lock.release();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a legacy PID-only claim from a previous boot is reclaimed", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-lock-legacy-reboot-"));
+  const claimPath = join(dataDir, ".gremlyn.lock");
+  writeFileSync(claimPath, JSON.stringify({ pid: process.pid }), "utf8");
+  const oldTime = new Date(Date.now() - uptime() * 1_000 - 3_600_000);
+  utimesSync(claimPath, oldTime, oldTime);
+  const lock = DataDirectoryLock.acquire(dataDir);
+  try {
+    assert.equal(JSON.parse(readFileSync(claimPath, "utf8")).pid, process.pid);
+  } finally {
+    lock.release();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "a reused Windows PID is reclaimed even when system uptime has not reset",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+    const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-lock-reused-pid-"));
+    try {
+      assert.ok(child.pid);
+      const claimPath = join(dataDir, ".gremlyn.lock");
+      writeFileSync(claimPath, JSON.stringify({ pid: child.pid, claimedAtMs: Date.now() }), "utf8");
+      assert.throws(() => DataDirectoryLock.acquire(dataDir), InstanceLockError);
+      writeFileSync(
+        claimPath,
+        JSON.stringify({ pid: child.pid, claimedAtMs: Date.now() - 60_000 }),
+        "utf8",
+      );
+      const lock = DataDirectoryLock.acquire(dataDir);
+      lock.release();
+    } finally {
+      child.kill();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("a second shutdown request releases ownership before escalating to exit", async () => {
   const events: string[] = [];
