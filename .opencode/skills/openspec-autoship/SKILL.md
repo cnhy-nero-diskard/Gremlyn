@@ -7,12 +7,13 @@ description: >-
   `$openspec-autoship`, asks to "apply and ship" or "implement and push" an
   OpenSpec change, or wants hands-free execution on the current non-detached
   branch, including main.
+slash: false
 allowed-tools: Bash(openspec:*), Bash(git:*), Bash(powershell:*)
 license: MIT
 compatibility: Requires openspec CLI and Git.
 metadata:
   author: auto-commit-agent
-  version: "1.0"
+  version: "1.1"
 ---
 
 # OpenSpec Autoship
@@ -137,6 +138,18 @@ After each completed task (or tightly-coupled task group), run the commit-push
 sequence. This replaces `auto-commit-agent`'s "ask when in doubt" with
 "proceed when the gate passes".
 
+When this skill runs in OpenCode, delegate the commit and push operations to
+the `shipper` subagent after the parent has staged and verified the checkpoint.
+Pass the requested mode (`commit-only`, `commit-and-push`, or `push-only`),
+current branch, upstream state, and the `$openspec-autoship` authorization
+context. For commit modes, also pass the exact staged path allowlist and exact
+commit message. The parent owns implementation, task checkboxes, checks,
+staging, and scope review; the shipper only verifies staged checkpoints,
+commits them, and pushes when requested. Wait for the shipper's commit hash
+and push result before continuing. If `shipper` is unavailable, or stops
+because its checks fail, report the blocker instead of bypassing its boundary.
+The parent handles push rejections under step 5.
+
 ### 1. Stage explicit paths only
 
 ```bash
@@ -160,9 +173,8 @@ git diff --cached --stat
 
 ### 3. Commit
 
-```bash
-git commit -m "<type>: <lowercase imperative description>"
-```
+In OpenCode, ask `shipper` to commit the already staged files using the exact
+message and path allowlist. The parent must not run `git commit` directly.
 
 Conventional, lowercase imperative. Derive the type from the task:
 
@@ -177,20 +189,21 @@ Scope is optional: `feat(orchestrator): add reaction ingestion`.
 
 ### 4. Push immediately
 
-```bash
-git push                      # upstream exists
-git push -u origin <branch>   # no upstream yet
-```
+For OpenCode, tell `shipper` whether to push to the configured upstream or set
+`origin` as upstream for the supplied current branch. The parent must not run
+`git push` directly.
 
-With `--no-push`, skip. With `--dry-run`, skip both commit and push and report intent.
+With `--no-push`, ask `shipper` for `commit-only`. With `--dry-run`, do not call
+`shipper`; skip both commit and push and report intent.
 
 ### 5. Push rejection handling
 
-If `git push` is rejected because the remote is ahead:
+If `shipper` reports that `git push` was rejected because the remote is ahead:
 
 1. Run `git pull --no-rebase` (merge, never rebase — history must not be rewritten).
 2. If the merge auto-resolves cleanly: re-run any affected checks, commit the
-   merge, and push again. Continue autonomously.
+   merge, stage and verify the merge checkpoint, then delegate its commit and
+   push to `shipper` again. Continue autonomously.
 3. If conflicts require judgment: hard blocker — report exactly which files
    conflict and stop. **Never** `git push --force` or `--force-with-lease`.
 
@@ -200,7 +213,9 @@ After the last task (or when `instructions apply` reports `all_done`):
 
 1. Ensure the working tree contains no unstaged task work (unrelated
    pre-existing files may remain untouched).
-2. Do a final `git push` (no-op if already pushed at the last checkpoint).
+2. If a push is still needed and `--no-push` or `--dry-run` was not specified,
+   delegate a `push-only` request to `shipper` (a no-op if already pushed at
+   the last checkpoint).
 3. Report using the template below, then suggest
    `openspec-archive-change` — do **not** archive automatically; archiving is a
    separate user decision.
