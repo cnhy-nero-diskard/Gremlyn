@@ -1,6 +1,6 @@
 ## 1. Confirm the pinned OpenCode contract and UI baseline
 
-- [ ] 1.1 Probe OpenCode 2.0.16 with temporary nested `.opencode/agents/` primary and child definitions; record how `debug agents`, `run --agent`, model inheritance, and ordered `subagent` permissions behave, and verify the generated IDs are discoverable before a model run.
+- [x] 1.1 Probe OpenCode 2.0.16 with temporary nested `.opencode/agents/` primary and child definitions; record how `debug agents`, `run --agent`, model inheritance, and ordered `subagent` permissions behave, and verify the generated IDs are discoverable before a model run.
 - [ ] 1.2 Probe foreground and background child sessions on the pinned CLI; identify a reliable status and interrupt surface, and verify a cancelled child can no longer edit the workspace before implementing the publication gate.
 - [ ] 1.3 Reconcile the current repository settings surface with `stage-repository-settings-edits` and `separate-console-monitoring-and-configuration`; verify the OpenCode editor is added to one full settings surface with a direct dashboard entry point.
 
