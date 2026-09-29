@@ -26,6 +26,11 @@ import {
   type StreamRegistrar,
   type StreamChange,
 } from "./stream.js";
+import {
+  OPENCODE_EXECUTOR_ID,
+  readOpenCodeProfile,
+  saveOpenCodeAgentProfile,
+} from "../store/opencode-profiles.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 import { CONSOLE_SESSION_COOKIE, ConsoleSessionStore, constantTimeEqual } from "./session.js";
 
@@ -75,6 +80,22 @@ function agentOptionsFor(
     efforts: definition?.efforts ?? REASONING_EFFORTS,
     providerRequired: definition ? KINDS_REQUIRING_PROVIDER.has(definition.kind) : true,
   };
+}
+
+/**
+ * The executor kind a repository's configured agent runs as. An agent id is a
+ * free operator label; its definition's kind selects the registered executor,
+ * defaulting to the id itself — matching the config loader and the dashboard
+ * view. This is the gate for the OpenCode profile editor routes.
+ */
+function resolvedExecutorKind(
+  db: Database.Database,
+  repoId: number,
+  agents: Record<string, AgentDefinition> | undefined,
+): string | undefined {
+  const agent = repositoryAgent(db, repoId);
+  if (agent === undefined) return undefined;
+  return agents?.[agent]?.kind ?? agent;
 }
 export function consoleListenOptions(input: { host?: string; port: number }): {
   host: string;
@@ -546,6 +567,92 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       });
       await options.actions?.repositorySettingsChanged?.(id);
       return reply.send({ ok: true, timeoutSeconds: result.timeoutSeconds });
+    },
+  );
+  // Authenticated editor access to the full OpenCode agent profile. The full
+  // document — including the operators' private instruction text — is never
+  // projected in ordinary dashboard HTML or live SSE fragments; it is read
+  // here only when the operator explicitly opens the repository-local editor.
+  app.get<{ Params: { id: string } }>("/repos/:id/opencode-profile", async (request, reply) => {
+    const id = positiveInteger(request.params.id);
+    const executorKind = resolvedExecutorKind(options.db, id, options.agents);
+    if (executorKind === undefined) return reply.code(404).send({ error: "repository-not-found" });
+    if (executorKind !== OPENCODE_EXECUTOR_ID)
+      return reply.code(404).send({ error: "not-opencode" });
+    const record = readOpenCodeProfile(options.db, id);
+    if (!record) return reply.code(404).send({ error: "repository-not-found" });
+    return reply
+      .header("cache-control", "no-store")
+      .send({ ok: true, repoId: id, revision: record.revision, profile: record.profile });
+  });
+  // Compare-and-set save for one whole agent profile. `expectedRevision` is the
+  // revision the operator's edit began from; a stale write conflicts with HTTP
+  // 409 and the current revision, an invalid candidate returns HTTP 400 with
+  // every field issue, and a successful save applies exactly one revision and
+  // records exactly one operator action inside the store transaction. The live
+  // SSE ticker observes that audit row and refreshes the persisted summary.
+  app.post<{ Params: { id: string }; Body: { expectedRevision?: unknown; candidate?: unknown } }>(
+    "/repos/:id/opencode-profile",
+    async (request, reply) => {
+      const id = positiveInteger(request.params.id);
+      const executorKind = resolvedExecutorKind(options.db, id, options.agents);
+      if (executorKind === undefined)
+        return reply.code(404).send({ error: "repository-not-found" });
+      if (executorKind !== OPENCODE_EXECUTOR_ID)
+        return reply.code(404).send({ error: "not-opencode" });
+      const expectedRevision = request.body?.expectedRevision;
+      if (
+        typeof expectedRevision !== "number" ||
+        !Number.isInteger(expectedRevision) ||
+        expectedRevision < 0
+      ) {
+        return reply.code(400).send({
+          error: "invalid-request",
+          issues: [
+            {
+              path: "expectedRevision",
+              message: "expectedRevision must be a non-negative integer",
+            },
+          ],
+        });
+      }
+      const candidate = request.body?.candidate;
+      if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+        return reply.code(400).send({
+          error: "invalid-request",
+          issues: [{ path: "candidate", message: "candidate must be an object" }],
+        });
+      }
+      const result = saveOpenCodeAgentProfile(options.db, {
+        repoId: id,
+        expectedRevision,
+        candidate,
+        executorKind,
+      });
+      if (result.ok) {
+        return reply.send({
+          ok: true,
+          repoId: id,
+          revision: result.revision,
+        });
+      }
+      switch (result.reason) {
+        case "not-found":
+          return reply.code(404).send({ error: "repository-not-found" });
+        case "not-opencode":
+          return reply.code(404).send({ error: "not-opencode" });
+        case "validation":
+          return reply.code(400).send({
+            error: "validation",
+            currentRevision: result.currentRevision,
+            issues: result.issues,
+          });
+        case "conflict":
+          return reply
+            .code(409)
+            .send({ error: "conflict", currentRevision: result.currentRevision });
+      }
+      return reply.code(500).send({ error: "save-failed" });
     },
   );
   app.post<{ Params: { id: string }; Body: { confirm?: string; prNumber?: number } }>(

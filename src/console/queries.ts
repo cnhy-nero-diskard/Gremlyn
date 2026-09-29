@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
 import { activityPath, type AgentActivity } from "../agent/activity.js";
+import { type OpenCodePermission, parseOpenCodeAgentProfile } from "../config/opencode-profile.js";
 import { createRedactor, type Redactor } from "../log/redact.js";
 import type { CommandOutcome, JobStatus } from "../types.js";
 
@@ -34,6 +35,49 @@ export interface RepositorySummary {
   validationCommands?: string[][];
   /** Parsed allowed-models list for views that do not want to parse JSON. */
   allowedModels?: string[];
+  /**
+   * The repository's dashboard-managed OpenCode agent team, or null when no
+   * profile is saved. Only OpenCode-executor repositories project one at the
+   * presentation layer; instructions never appear in this projection.
+   */
+  opencodeProfile?: OpenCodeProfileSummary | null;
+}
+
+/**
+ * One dashboard-managed subagent in the readable OpenCode projection.
+ * Identifiers, purpose, model data, and tool preset only — the child's private
+ * instructions are deliberately never projected here.
+ */
+export interface OpenCodeSubagentSummary {
+  id: string;
+  /** Whether the managed primary may invoke this child. */
+  enabled: boolean;
+  /** The child's purpose; never its private instructions. */
+  description: string;
+  /** Explicit `provider/model[#variant]` override, or null to inherit the primary session model. */
+  model: string | null;
+  /** Supported tool permissions; an empty list means read-only. */
+  permissions: OpenCodePermission[];
+  /** Optional positive step limit. */
+  stepLimit: number | null;
+}
+
+/**
+ * Privacy-safe dashboard projection of a saved OpenCode agent profile. The
+ * active primary, its permission preset, model resolution data, and the
+ * ordered subagents with their callable state — never the operators' private
+ * instruction text. The full profile is read separately by the dedicated edit
+ * route when the operator opens the editor.
+ */
+export interface OpenCodeProfileSummary {
+  revision: number;
+  primaryId: string;
+  /** The primary's purpose; never its private instructions. */
+  primaryDescription: string;
+  primaryPermissions: OpenCodePermission[];
+  primaryStepLimit: number | null;
+  /** Ordered subagent projections; enabled children are callable. */
+  subagents: OpenCodeSubagentSummary[];
 }
 
 export interface JobSummary {
@@ -284,6 +328,12 @@ export function readDashboard(
   options: DashboardReadOptions = {},
 ): DashboardModel {
   const redact = asRedactor(redaction);
+  const opencodeProfiles = new Map<number, { revision: number; profileJson: string | null }>();
+  for (const row of db
+    .prepare("SELECT repo_id, revision, profile_json FROM opencode_agent_profiles")
+    .all() as Array<{ repo_id: number; revision: number; profile_json: string | null }>) {
+    opencodeProfiles.set(row.repo_id, { revision: row.revision, profileJson: row.profile_json });
+  }
   const repositories = db
     .prepare(
       `SELECT id, owner, name, enabled, source_path, workspace_root, agent,
@@ -292,13 +342,16 @@ export function readDashboard(
        FROM repositories ORDER BY owner, name`,
     )
     .all()
-    .map((row) => {
-      const safe = redactRow(
-        row as Record<string, unknown>,
-        redact,
-      ) as unknown as RepositorySummary;
+    .map((raw) => {
+      const row = raw as Record<string, unknown>;
+      const safe = redactRow(row, redact) as unknown as RepositorySummary;
+      const profile = opencodeProfiles.get(row.id as number);
       return {
         ...safe,
+        opencodeProfile:
+          profile === undefined || profile.profileJson === null
+            ? null
+            : summarizeOpenCodeProfile(profile.profileJson, profile.revision, redact),
         validationCommands: parseValidationCommands(safe.validation_commands),
         allowedModels: parseAllowedModels(safe.allowed_models),
       };
@@ -321,6 +374,35 @@ export function readDashboard(
     options.now,
   );
   return { repositories, jobs, running, queued, recent, health };
+}
+
+/**
+ * Build the privacy-safe dashboard projection of a saved OpenCode profile.
+ * Identifiers, purposes, model data, and permission presets only; instruction
+ * text is deliberately never read out here — the dedicated edit route
+ * retrieves the full profile when the operator opens the editor.
+ */
+function summarizeOpenCodeProfile(
+  profileJson: string,
+  revision: number,
+  redact: Redactor,
+): OpenCodeProfileSummary {
+  const profile = parseOpenCodeAgentProfile(JSON.parse(profileJson));
+  return {
+    revision,
+    primaryId: profile.primary.id,
+    primaryDescription: redact(profile.primary.description),
+    primaryPermissions: [...profile.primary.permissions],
+    primaryStepLimit: profile.primary.stepLimit ?? null,
+    subagents: profile.subagents.map((agent) => ({
+      id: agent.id,
+      enabled: agent.enabled,
+      description: redact(agent.description),
+      model: agent.model === undefined ? null : redact(agent.model),
+      permissions: [...agent.permissions],
+      stepLimit: agent.stepLimit ?? null,
+    })),
+  };
 }
 
 /** Read and redact a complete job diagnostic projection. */
