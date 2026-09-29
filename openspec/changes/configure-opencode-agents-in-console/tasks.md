@@ -29,6 +29,6 @@
 
 ## 5. Document and validate the integrated behavior
 
-- [ ] 5.1 Document the dashboard workflow, profile defaults, child model inheritance, permissions, job snapshot timing, and generated-file cleanup; verify the documented labels and route match the implemented console.
+- [x] 5.1 Document the dashboard workflow, profile defaults, child model inheritance, permissions, job snapshot timing, and generated-file cleanup; verify the documented labels and route match the implemented console.
 - [ ] 5.2 Run a real OpenCode 2.0.16 resolution fixture with a callable subagent and an isolated Git workspace; verify a child is invoked, completion precedes validation, and the final diff contains only the intended review fix.
 - [ ] 5.3 Run the relevant repository checks and `openspec validate configure-opencode-agents-in-console --strict`; verify the change is valid and report any live-agent acceptance that remains unverified rather than marking it complete.

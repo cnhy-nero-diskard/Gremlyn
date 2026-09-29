@@ -268,6 +268,104 @@ about Go:
 npm run probe:agent -- --kind opencode --provider "" --model opencode-go/kimi-k3 --seed-source C:/Users/<you>/.local/share/opencode
 ```
 
+#### Managed agent teams for OpenCode repositories
+
+Gremlyn can also manage the agent team an OpenCode repository runs with, from
+the browser console. A **profile** is one optional, per-repository document: a
+single **primary agent** and an ordered list of named **subagents**. Each
+definition has an agent id, a required purpose, optional private instructions,
+an optional positive step limit, and explicit tool permissions; each subagent
+also carries an enabled flag and an optional model override.
+
+- **No profile is the default.** An OpenCode repository without a saved profile
+  keeps its existing invocation — OpenCode's normal project and global
+  configuration — and no agent team is synthesized. Saving a profile only changes
+  later-created jobs, never work already queued or running.
+- **The primary runs the repository's selected model.** The profile never names
+  the primary's model, so changing the repository model picker changes the
+  primary session model. A subagent with no **Model override** inherits that
+  same model; an explicit override must be a validated `provider/model[#variant]`
+  value (for example `opencode-go/kimi-k3#high`).
+- **Children default to read-only.** The supported permissions are **edit
+  workspace**, **run shell**, **browse web**, and **load skills**; an empty list
+  grants no tools. External-directory access and nested child delegation are
+  always denied for managed agents — they are not part of the supported
+  vocabulary, a profile that names one is rejected, and the generated
+  definitions carry explicit denies. Only enabled subagents are callable by the
+  primary; disabled or unlisted agents are never invocable.
+- **Agent ids** must be unique case-insensitively within a profile and are
+  restricted to a safe single path segment: letters, digits, `.`, `_`, or `-`,
+  starting and ending with a letter or digit (a leading dash could otherwise be
+  misread as a CLI flag, and reserved Windows names are refused).
+- **Step limits** are optional positive integers; a description (the purpose
+  field) is required for the primary and every subagent.
+
+##### Configuring agents in the dashboard
+
+Each OpenCode repository card shows an **OpenCode agents** section: the active
+primary, every configured subagent with its callable state, the model a child
+runs with (its explicit override, or that it inherits the repository's selected
+model), its tool preset, and the profile revision. The section's **Configure
+agents** link opens the repository-local editor over the authenticated profile
+route (`/repos/<id>/opencode-profile`). A repository using another executor
+(for example Cline) shows no OpenCode controls at all, even when a dormant
+profile is stored.
+
+In the editor you can change the primary; add, edit, enable, disable, or remove
+subagents; and enter purposes, instructions, model overrides, step limits, and
+permission checkboxes (including **Callable by the primary**). **Review and
+apply** shows the whole changed team — names, models, and permissions — for
+confirmation; **Save agent team** applies it; **Cancel** discards only the
+draft; **Keep editing** returns to the form. Invalid names, missing purposes,
+malformed model ids, non-positive step limits, and unsupported permissions are
+reported beside the relevant control, and the save is refused as a whole,
+leaving the previously saved profile active. A successful save is atomic
+(compare-and-set against the profile revision), records exactly one **Audit**
+entry naming the primary, the subagent ids, and the new revision — never the
+private instruction text — and updates the persisted dashboard summary.
+
+If another session changes the profile while you are editing, the save reports a
+conflict with the newer revision, keeps your draft, and never overwrites the
+newer team. Live dashboard updates refresh the persisted summary without
+disturbing a draft in progress.
+
+Applied profiles govern only jobs created after the save: each job captures its
+profile — primary and subagents plus the exact revision — in the same
+transaction that creates it, so queued jobs and their retries keep the team they
+were created with even after you save a different profile. An OpenCode job's
+detail page shows the captured team as `agent <primary> · revision <n>` beside
+the triggering command and a **Managed OpenCode agent** panel listing the parent
+session, each delegated child session with its terminal outcome, and any
+specific configuration or quiescence failure.
+
+##### How a managed team runs and is cleaned up
+
+For a job with a saved profile, Gremlyn writes pinned OpenCode V2 Markdown agent
+definitions (`mode: primary` and `mode: subagent`) beneath an attempt-owned
+directory inside the disposable PR worktree (`.opencode/agents/<namespace>/…`)
+— never in your source checkout — and selects the generated primary with
+`--agent <namespace>/<primary>`, still passing the repository's model through
+`-m`. Before `run`, a preflight reads the effective agent inventory
+(`opencode debug agents`) under the attempt's exact cwd and environment and
+fails the attempt with a distinct configuration reason rather than ever falling
+back to OpenCode's default `build` agent.
+
+After agent work finishes — on success, failure, and cancellation alike — Gremlyn
+first settles every foreground and background child session (waiting for them to
+finish and interrupting them on timeout or cancel), then removes only the
+generated files its attempt manifest owns, preserving any agent-edited bytes in
+private evidence outside the worktree. Tracked OpenCode files must be
+byte-identical to their pre-run state. Cleanup runs before validation and
+publication, so generated configuration never reaches a published diff or a
+later run. A child that cannot be proven stopped fails the attempt without
+validation or publication and keeps specific diagnostic evidence in the job
+detail.
+
+On restart, Gremlyn removes stale generated files only for attempts whose owner
+is known inactive and whose child tree is provably quiescent; anything uncertain
+is quarantined — its manifest, files, and evidence are preserved and the
+workspace is barred from reuse and publication until resolved.
+
 ## Start and verify connectivity
 
 ```powershell
@@ -276,7 +374,7 @@ npm start -- .\gremlyn.yaml
 
 Startup validates the configuration, the GitHub bot identity, every configured agent's CLI version, data-directory exclusivity, and console bind. A successful start logs `orchestrator started` and begins polling.
 
-Open `http://127.0.0.1:4780/auth`, enter `GREMLYN_CONSOLE_TOKEN`, and sign in. The redesigned dashboard shows a health strip with the latest poll, freshness/staleness, queue depth, and active-versus-configured concurrency, followed by repository cards (agent, model, effort, timeout, validation commands, and an enable/disable control) and running, queued, and recent job lanes. Leave timeout blank for no limit, or enter seconds for that repository; the setting is live and persisted in SQLite. Each job has a structured detail page with a timeline, attempt diagnostics, validation output, status-specific actions, pull-request/comment links, and a separately confirmed danger zone for workspace reset. The **Commands** view explains every observed command, including authorization refusals and their reasons; the **Audit** view lists manual actions and their effects. Console wall-clock values use the host timezone by default; set `console.timezone` to an IANA timezone such as `Asia/Taipei` when the operator is remote. Stored instants remain UTC and are retained on each time element.
+Open `http://127.0.0.1:4780/auth`, enter `GREMLYN_CONSOLE_TOKEN`, and sign in. The redesigned dashboard shows a health strip with the latest poll, freshness/staleness, queue depth, and active-versus-configured concurrency, followed by repository cards (agent, model, effort, timeout, validation commands, and an enable/disable control; an OpenCode repository also carries an **OpenCode agents** section with a **Configure agents** link) and running, queued, and recent job lanes. Leave timeout blank for no limit, or enter seconds for that repository; the setting is live and persisted in SQLite. Each job has a structured detail page with a timeline, attempt diagnostics, validation output, status-specific actions, pull-request/comment links, a managed OpenCode agent-team panel when the job captured a profile, and a separately confirmed danger zone for workspace reset. The **Commands** view explains every observed command, including authorization refusals and their reasons; the **Audit** view lists manual actions and their effects. Console wall-clock values use the host timezone by default; set `console.timezone` to an IANA timezone such as `Asia/Taipei` when the operator is remote. Stored instants remain UTC and are retained on each time element.
 
 Then add `!RESOLVE` as a reply in an inline PR review thread authored by an allowlisted login. The console should show the job progressing through queued, preparing, running, validating, publishing, reporting, and a terminal state without requiring a page reload; live updates replace only the affected dashboard or job regions, preserving expanded sections and typed confirmation text. Use the retry/cancel controls when their current-state rules allow them, and use the repository toggle when ingestion should be paused.
 
@@ -352,8 +450,10 @@ Tests use fixture GitHub clients, a fake agent, and temporary real git repositor
 - `agent-auth-failed` (or `Unauthorized` in job detail/GitHub reply): the agent could not authenticate with its provider — verify `cline auth` (or `opencode auth`) and that the credential source still contains its declared files, then retry; this is distinct from `agent-nonzero-exit`.
 - `provider-executor-mismatch`: the provider cannot be driven by the configured agent, so tool execution would leave the attempt's workspace; Gremlyn refuses the attempt before preparing that workspace. Change the provider/agent pairing — re-authenticating will not help. This is distinct from both `agent-auth-failed` and `agent-billing-failed`.
 - `agent-billing-failed`: the credential was accepted but the provider refused the request for lack of credit or a payment method — add a payment method or credit to the account; re-authenticating will not help. Distinct from `agent-auth-failed`.
+- `managed-profile-corrupt`, `managed-materialize-failed`, or `managed-preflight-failed`: the captured OpenCode agent team could not be loaded, written into the attempt worktree, or proven effective before agent work — check the profile in the repository's **OpenCode agents** editor (dashboard **Configure agents**) and re-queue after fixing an invalid name, model, limit, or permission; a preflight failure means the generated primary or an enabled child did not become effective in the attempt's worktree. These are configuration failures, distinct from `agent-auth-failed`/`agent-billing-failed`: retrying the same invalid profile will not fix it.
+- `managed-session-discovery-failed`, `managed-child-unsettled`, or `managed-cleanup-failed`: a delegated child session could not be proven stopped, or generated agent files could not be removed — the attempt failed without validating or publishing, and the job detail shows the specific child session ids, outcomes, or failure detail; resolve the workspace via the console before reuse. A child Gremlyn could not confirm stopped is never treated as quiet.
 - `another Gremlyn instance is already using data directory`: stop the other process before starting a second instance against the same `data_dir`.
-- `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console, except that a retry may resume the attempt's own deterministic workspace when its recorded PR head still matches. That applies to an interrupted, cancelled, timed-out, or crashed-nonzero-exit agent, and to an attempt blocked at publication by a failing validation command — a retry of that last case resumes the edits and tells the agent which command rejected them, so there is no need to clean the workspace by hand first. Every other publication block (`no-changes`, `head-changed`, `pull-request-closed`, a conflicted or invalid workspace) still requires the manual route.
+- `workspace-dirty`, `workspace-conflicted`, or `workspace-corrupted`: inspect the per-PR workspace. Gremlyn preserves evidence and requires an explicit confirmed reset from the console, except that a retry may resume the attempt's own deterministic workspace when its recorded PR head still matches. That applies to an interrupted, cancelled, timed-out, or crashed-nonzero-exit agent, and to an attempt blocked at publication by a failing validation command — a retry of that last case resumes the edits and tells the agent which command rejected them, so there is no need to clean the workspace by hand first. Every other publication block (`no-changes`, `head-changed`, `pull-request-closed`, a conflicted or invalid workspace) still requires the manual route. A workspace quarantined by managed-attempt recovery at startup (its `recovery.json` names the attempt and workspace) is likewise barred from reuse and publication until the operator resolves or resets it.
 - `pull-request-closed`, `head-changed`, or `push-rejected`: refresh the PR state and retry deliberately. Gremlyn never force-pushes.
 - Console returns `401`: sign in again at `/auth`; every job-data and action route requires the console token.
 - No command is detected: `!RESOLVE` must be at the start of a line (text after it on that line is ignored) in an inline review-comment thread, not a top-level PR conversation comment or quoted code.
