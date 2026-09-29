@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { lstat, readdir, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isManagedAttemptDataDir } from "./orchestrator/attempt-recovery.js";
 import type { OperatorActionStore } from "./store/actions.js";
 import { TERMINAL_STATUSES } from "./types.js";
 
@@ -225,7 +226,16 @@ async function collectArtifacts(
       owner.attemptId,
       "agent-output",
     );
-    add(join(dataDir, "attempts", String(owner.attemptId)), owner.attemptId, "attempt-state");
+    // A managed attempt dir (one that journals a manifest, or already carries a
+    // recovery record) holds the manifest, generated-file evidence, and
+    // quarantine record that start-up recovery and the admission gates rely
+    // on; it must survive age/size trimming even before recovery has written a
+    // record, or the only record of what the attempt owned would be lost
+    // (task 3.6).
+    const attemptState = join(dataDir, "attempts", String(owner.attemptId));
+    if (!isManagedAttemptDataDir(attemptState)) {
+      add(attemptState, owner.attemptId, "attempt-state");
+    }
     if (owner.outputRef !== null) add(owner.outputRef, owner.attemptId, "agent-output");
   }
 
@@ -262,9 +272,10 @@ async function collectArtifacts(
   for (const entry of await directoryEntries(join(dataDir, "attempts"))) {
     if (!entry.isDirectory() || !/^\d+$/u.test(entry.name)) continue;
     const attemptId = Number(entry.name);
-    if (Number.isSafeInteger(attemptId) && attemptId > 0) {
-      add(join(dataDir, "attempts", entry.name), attemptId, "attempt-state");
-    }
+    if (!Number.isSafeInteger(attemptId) || attemptId <= 0) continue;
+    const attemptState = join(dataDir, "attempts", entry.name);
+    if (isManagedAttemptDataDir(attemptState)) continue;
+    add(attemptState, attemptId, "attempt-state");
   }
 
   const records: ArtifactRecord[] = [];

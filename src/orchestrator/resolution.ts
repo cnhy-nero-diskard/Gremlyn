@@ -54,6 +54,11 @@ import type { OperatorActionStore } from "../store/actions.js";
 import { publishIfEligible } from "../publish/policy.js";
 import { reportAttemptOutcome } from "../publish/report.js";
 import { JobStore, type AttemptRow } from "../store/jobs.js";
+import {
+  attemptDataDirFor,
+  isAttemptQuarantined,
+  quarantineRecordsForWorkspace,
+} from "./attempt-recovery.js";
 import type {
   AgentExecutor,
   AgentResult,
@@ -165,8 +170,15 @@ function canResumeRetainedWorkspace(
   attempt: AttemptRow | undefined,
   workspaceRoot: string,
   prNumber: number,
+  dataDir: string,
 ): boolean {
-  if (!attempt?.workspace_path || !attempt.head_sha_at_prepare) return false;
+  if (!attempt) return false;
+  // A managed attempt that start-up recovery could not prove quiescent for is
+  // quarantined: its workspace may still hold generated agent files (private
+  // instructions) and a later run must never resume over them. Its durable
+  // recovery record is the admission gate (task 3.6).
+  if (isAttemptQuarantined(attemptDataDirFor(dataDir, attempt.id))) return false;
+  if (!attempt.workspace_path || !attempt.head_sha_at_prepare) return false;
   if (!samePath(attempt.workspace_path, workspacePathFor(workspaceRoot, prNumber))) return false;
   if (attempt.outcome === "interrupted") return true;
   if (attempt.has_uncommitted_changes !== 1) return false;
@@ -200,12 +212,15 @@ function retainedWorkspaceAttempt(
   attempts: readonly AttemptRow[],
   workspaceRoot: string,
   prNumber: number,
+  dataDir: string,
 ): AttemptRow | undefined {
   for (let index = attempts.length - 1; index >= 0; index -= 1) {
     const attempt = attempts[index];
     if (!attempt) continue;
     if (!attempt.workspace_path) continue;
-    return canResumeRetainedWorkspace(attempt, workspaceRoot, prNumber) ? attempt : undefined;
+    return canResumeRetainedWorkspace(attempt, workspaceRoot, prNumber, dataDir)
+      ? attempt
+      : undefined;
   }
   return undefined;
 }
@@ -417,6 +432,7 @@ export class ResolutionOrchestrator {
       this.jobs.listAttempts(jobId),
       repository.workspaceRoot,
       job.pr_number,
+      this.options.dataDir,
     );
     const attempt = this.jobs.retryJob({
       jobId,
@@ -433,7 +449,12 @@ export class ResolutionOrchestrator {
       job.comment_id,
       repository.model,
       { name: job.command },
-      canResumeRetainedWorkspace(priorAttempt, repository.workspaceRoot, job.pr_number)
+      canResumeRetainedWorkspace(
+        priorAttempt,
+        repository.workspaceRoot,
+        job.pr_number,
+        this.options.dataDir,
+      )
         ? {
             attemptId: priorAttempt!.id,
             workspacePath: priorAttempt!.workspace_path!,
@@ -529,6 +550,25 @@ export class ResolutionOrchestrator {
       resumeDirtyWorkspace,
       adoptExistingCheckout,
     } = input;
+    // A workspace quarantined by startup recovery (task 3.6) may still hold the
+    // crashed attempt's generated agent files — including paths git ignores, so
+    // a clean-tree check would never see them. Every admission is gated BEFORE
+    // preparation so the stale old profile can never be discovered or published
+    // by a later run, whether that run is a fresh job or a retry.
+    const quarantineRecords = quarantineRecordsForWorkspace(
+      this.options.dataDir,
+      workspacePathFor(repository.workspaceRoot, prNumber),
+    );
+    if (quarantineRecords.length > 0) {
+      const record = quarantineRecords[0]!;
+      throw new StageFailure(
+        "preparing",
+        "workspace-quarantined",
+        `workspace ${workspacePathFor(repository.workspaceRoot, prNumber)} is quarantined by ` +
+          `start-up recovery (attempt ${record.attemptId}, ${record.reason}); its owned ` +
+          "generated files cannot be accounted for safely, so this attempt is refused",
+      );
+    }
     try {
       return await prepareWorkspace({
         sourcePath: repository.sourcePath,
@@ -592,6 +632,12 @@ export class ResolutionOrchestrator {
     }
     const workspacePath = workspacePathFor(input.repository.workspaceRoot, input.prNumber);
     if (!existsSync(workspacePath)) return undefined;
+    // A managed attempt that start-up recovery could not prove quiescent for is
+    // quarantined. Its workspace may still hold generated agent files that are
+    // evidence; the guarded reset path must never discard them (task 3.6).
+    if (quarantineRecordsForWorkspace(this.options.dataDir, workspacePath).length > 0) {
+      return undefined;
+    }
     try {
       if ((await currentBranch(workspacePath)) !== input.headBranch) return undefined;
       if ((await unmergedEntries(workspacePath)).length > 0) return undefined;
@@ -622,6 +668,9 @@ export class ResolutionOrchestrator {
       break;
     }
     if (!prior?.head_sha_at_prepare) return undefined;
+    // A prior attempt quarantined by start-up recovery must not be reset into:
+    // generated content it owned is evidence, and this reset would discard it.
+    if (isAttemptQuarantined(attemptDataDirFor(this.options.dataDir, prior.id))) return undefined;
     let workspaceSnapshotAtCollection: WorkspaceSnapshot;
     try {
       workspaceSnapshotAtCollection = await workspaceSnapshot(workspacePath);

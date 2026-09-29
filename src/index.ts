@@ -1,8 +1,12 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { removeAttemptDataDir, verifyCredentialSource } from "./agent/credentials.js";
 import { buildAgentEnvironment } from "./agent/environment.js";
+import {
+  persistRotatedCredentials,
+  removeAttemptDataDir,
+  verifyCredentialSource,
+} from "./agent/credentials.js";
 import { EXECUTOR_FACTORIES } from "./agent/registry.js";
 import { buildConsoleServer, consoleListenOptions } from "./console/server.js";
 import { loadConfig } from "./config/loader.js";
@@ -11,6 +15,11 @@ import { createDefaultCommandRegistry } from "./ingest/commands.js";
 import { PollingEventSource } from "./ingest/polling.js";
 import { Logger } from "./log/logger.js";
 import { DataDirectoryLock } from "./orchestrator/instance-lock.js";
+import {
+  attemptDataDirFor,
+  isManagedAttemptDataDir,
+  recoverStaleManagedAttempts,
+} from "./orchestrator/attempt-recovery.js";
 import { ResolutionOrchestrator } from "./orchestrator/resolution.js";
 import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
@@ -84,7 +93,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       store.close();
     };
     const interrupted = new JobStore(store.db).interruptIncompleteJobs();
-    cleanupStaleAttemptDirs(config.dataDir, store.db, interrupted);
     for (const definition of Object.values(config.agents)) {
       verifyCredentialSource(
         definition.id,
@@ -118,9 +126,70 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       executors.set(definition.id, executor);
     }
 
+    const credentialSources = new Map(
+      Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
+    );
+    const credentialFiles = new Map(
+      Object.values(config.agents).map((def) => [def.id, def.credentialFiles]),
+    );
+    // Legacy startup sweep for Cline/legacy attempt dirs. Managed OpenCode
+    // attempts (dirs journaling a manifest) are skipped here and handled by the
+    // dedicated recovery below. Before a legacy dir is removed, rotated
+    // credentials are written back — the crash skipped the runtime path that
+    // normally rescues them.
+    cleanupStaleAttemptDirs(config.dataDir, store.db, interrupted, {
+      onRemoveAttempt: ({ attemptId, agent, attemptDataDir }) => {
+        if (agent === null) return;
+        const executor = executors.get(agent);
+        const source = credentialSources.get(agent);
+        if (executor === undefined || source === undefined || executor.usesSharedCredentials) {
+          return;
+        }
+        try {
+          persistRotatedCredentials(
+            source,
+            attemptDataDir,
+            credentialFiles.get(agent),
+            executor.id,
+          );
+        } catch (error) {
+          logger.warn("startup credential write-back failed", {
+            attemptId,
+            agent,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    });
+
     const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
     reportRepositoryProviderMismatches(repositories, config.agents, logger);
     const operatorActions = new OperatorActionStore(store.db);
+    // Managed startup recovery (task 3.6): decide every attempt dir holding a
+    // managed OpenCode manifest — recover it only when its owner is known
+    // inactive AND its child tree is proven quiescent through the pinned
+    // session API, otherwise quarantine it durably (the manifest and generated
+    // files survive and the workspace is barred from retry reuse).
+    await recoverStaleManagedAttempts({
+      dataDir: config.dataDir,
+      db: store.db,
+      actions: operatorActions,
+      logger,
+      resolveWorker: (attempt, workspacePath) => {
+        const executor = executors.get(attempt.agent);
+        if (executor === undefined) return undefined;
+        return {
+          cwd: workspacePath,
+          env: buildAgentEnvironment(
+            process.env,
+            executor.additionalEnvironment(
+              attemptDataDirFor(config.dataDir, attempt.id),
+              credentialSources.get(attempt.agent),
+            ),
+          ),
+        };
+      },
+    });
     const reclamationRepositories = repositories.map(({ id, sourcePath, workspaceRoot }) => ({
       id,
       sourcePath,
@@ -160,12 +229,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     if (config.workspaceReclamation.enabled) await sweepWorkspaces("startup");
     if (config.artifactRetention.enabled) await sweepArtifacts("startup");
     const registry = createDefaultCommandRegistry();
-    const credentialSources = new Map(
-      Object.values(config.agents).map((def) => [def.id, def.credentialSource]),
-    );
-    const credentialFiles = new Map(
-      Object.values(config.agents).map((def) => [def.id, def.credentialFiles]),
-    );
     const orchestrator = new ResolutionOrchestrator({
       db: store.db,
       dataDir: config.dataDir,
@@ -384,10 +447,33 @@ export function installLockSafetyHandlers(lock: DataDirectoryLock): { remove: ()
   };
 }
 
+/**
+ * Legacy startup sweep for attempt data dirs that a crashed run left behind
+ * (Cline and any non-managed attempt; task 3.6).
+ *
+ * A job the startup sweep marked interrupted cannot have a live Gremlyn owner
+ * again (the data-dir lock guarantees it), and a Cline attempt has no child
+ * session that could outlive its run, so removing the per-attempt dir is safe
+ * and matches the historical behavior. Managed OpenCode attempts are SKIPPED
+ * here: their data dir journals the manifest that the dedicated startup
+ * recovery (`recoverStaleManagedAttempts`) needs, and deleting it before child
+ * quiescence is proven would destroy the only record of what the attempt owned.
+ *
+ * `onRemoveAttempt` runs before a dir is removed so callers can rescue
+ * per-attempt state (e.g. an OAuth refresh token the agent rotated) exactly
+ * like the runtime failure path does.
+ */
 export function cleanupStaleAttemptDirs(
   dataDir: string,
   db: import("better-sqlite3").Database,
   interruptedJobIds?: number[],
+  options?: {
+    onRemoveAttempt?: (input: {
+      attemptId: number;
+      agent: string | null;
+      attemptDataDir: string;
+    }) => void;
+  },
 ): void {
   const attemptsRoot = join(dataDir, "attempts");
   if (!existsSync(attemptsRoot)) return;
@@ -401,12 +487,18 @@ export function cleanupStaleAttemptDirs(
     const attemptId = Number(entry);
     if (!Number.isInteger(attemptId) || attemptId < 1) continue;
     const dir = join(attemptsRoot, entry);
+    // A managed OpenCode attempt (one that journaled a manifest, or one whose
+    // recovery record already exists) belongs to the startup recovery module,
+    // never to this sweep: its data dir must survive until child quiescence is
+    // proven through the pinned session API.
+    if (isManagedAttemptDataDir(dir)) continue;
     // If this attempt belongs to an interrupted job, remove it.
     // Otherwise keep it: a running attempt must not be disturbed.
     try {
       const attempt = db
-        .prepare("SELECT job_id, outcome FROM attempts WHERE id = ?")
-        .get(attemptId) as { job_id: number; outcome: string | null } | undefined;
+        .prepare("SELECT id, job_id, agent, outcome FROM attempts WHERE id = ?")
+        .get(attemptId) as
+        { id: number; job_id: number; agent: string | null; outcome: string | null } | undefined;
       if (!attempt) {
         // Orphan directory left by a killed process with no DB record (or old run).
         removeAttemptDataDir(dir);
@@ -415,11 +507,21 @@ export function cleanupStaleAttemptDirs(
       const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(attempt.job_id) as
         { status: string } | undefined;
       if (job?.status === "interrupted" || attempt.outcome === "interrupted") {
+        options?.onRemoveAttempt?.({
+          attemptId,
+          agent: attempt.agent,
+          attemptDataDir: dir,
+        });
         removeAttemptDataDir(dir);
         continue;
       }
       // Also handle explicit interruptedJobIds list from startup sweep
       if (interruptedJobIds?.includes(attempt.job_id)) {
+        options?.onRemoveAttempt?.({
+          attemptId,
+          agent: attempt.agent,
+          attemptDataDir: dir,
+        });
         removeAttemptDataDir(dir);
       }
     } catch {

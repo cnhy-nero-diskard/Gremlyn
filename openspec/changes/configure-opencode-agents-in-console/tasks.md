@@ -18,7 +18,7 @@
 - [x] 3.3 Preflight the effective generated agents under the same cwd and environment as `run`; verify a missing primary, blocked child, or config-load mismatch fails with a configuration reason before agent edits and never falls back silently.
 - [x] 3.4 Extend the common run options and OpenCode executor with the captured primary ID while leaving Cline's argv unchanged; verify contract checks assert `--agent <id>` only for managed OpenCode attempts.
 - [x] 3.5 Track parent and child session IDs, wait for child quiescence, and interrupt children on timeout or cancellation; verify validation and publication cannot begin while a child can still write and an unknown child state fails closed.
-- [ ] 3.6 Recover stale generated files on restart only for inactive attempts and quarantine uncertain workspaces; verify an interrupted attempt cannot leak an old profile into a later run or publish its generated files.
+- [x] 3.6 Recover stale generated files on restart only for inactive attempts and quarantine uncertain workspaces; verify an interrupted attempt cannot leak an old profile into a later run or publish its generated files.
 
 ## 4. Configure and inspect profiles in the browser console
 

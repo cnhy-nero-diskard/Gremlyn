@@ -18,6 +18,7 @@ export const FAILURE_REASONS = [
   "workspace-corrupted",
   "workspace-invalid",
   "workspace-dirty",
+  "workspace-quarantined",
   "workspace-conflicted",
   "workspace-branch-in-use",
   "workspace-seed-failed",
