@@ -247,8 +247,10 @@ export class ResolutionOrchestrator {
         ...(authorization.kind === "authorized" ? {} : { reason: authorization.reason }),
       });
       if (authorization.kind !== "authorized") continue;
+      const executorKind = this.options.executors.get(repository.agent)?.id;
       const claimed = this.jobs.createJob({
         repoId: repository.id,
+        ...(executorKind === undefined ? {} : { executorKind }),
         prNumber: event.prNumber,
         commentId: event.commentId,
         command: command.name,

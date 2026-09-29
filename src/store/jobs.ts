@@ -71,6 +71,8 @@ export interface StatusEventRow {
 
 export interface NewJob {
   repoId: number;
+  /** Resolved executor kind for a configured agent alias; defaults to the stored agent id. */
+  executorKind?: string;
   prNumber: number;
   commentId: number;
   command: string;
@@ -135,11 +137,18 @@ export class JobStore {
         );
 
       const createdAt = now();
+      // D2: capture the current OpenCode profile with the job, in the same
+      // transaction that claims the command, so a concurrent dashboard save
+      // cannot split one job between revisions. Queued jobs and their retries
+      // keep this snapshot; a later save affects new jobs only. See
+      // {@link opencodeProfileSnapshot}.
+      const snapshot = this.opencodeProfileSnapshot(input.repoId, input.executorKind);
       const job = this.db
         .prepare(
           `INSERT INTO jobs
-             (repo_id, pr_number, comment_id, command, thread_id, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             (repo_id, pr_number, comment_id, command, thread_id, status, created_at,
+              opencode_profile_json, opencode_profile_revision)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.repoId,
@@ -149,6 +158,8 @@ export class JobStore {
           input.threadId ?? null,
           "queued" satisfies JobStatus,
           createdAt,
+          snapshot.profileJson,
+          snapshot.revision,
         );
       const jobId = Number(job.lastInsertRowid);
       this.db
@@ -164,6 +175,41 @@ export class JobStore {
       if (isUniqueViolation(err)) return { kind: "duplicate" };
       throw err;
     }
+  }
+
+  /**
+   * The current OpenCode profile snapshot for a repository, read inside the
+   * job-creation transaction (design D2, task 2.4).
+   *
+   * Reads the nullable `opencode_agent_profiles` row (migration 0006) and
+   * returns its canonical JSON and revision. A repository with no row — or a
+   * row whose `profile_json` is NULL — captures no snapshot: both return
+   * values are null, so no default profile is ever synthesized. A snapshot is
+   * copied into `jobs.opencode_profile_json` / `opencode_profile_revision` at
+   * creation time and stays with the job across retries; the row is owned by
+   * the profile store, so file-configuration synchronization (which upserts
+   * `repositories` only) cannot overwrite the operator's selection.
+   */
+  private opencodeProfileSnapshot(
+    repoId: number,
+    executorKind?: string,
+  ): {
+    profileJson: string | null;
+    revision: number | null;
+  } {
+    const repository = this.db
+      .prepare("SELECT agent FROM repositories WHERE id = ?")
+      .get(repoId) as { agent: string } | undefined;
+    if ((executorKind ?? repository?.agent) !== "opencode") {
+      return { profileJson: null, revision: null };
+    }
+    const row = this.db
+      .prepare("SELECT profile_json, revision FROM opencode_agent_profiles WHERE repo_id = ?")
+      .get(repoId) as { profile_json: string | null; revision: number } | undefined;
+    if (row === undefined || row.profile_json === null) {
+      return { profileJson: null, revision: null };
+    }
+    return { profileJson: row.profile_json, revision: row.revision };
   }
 
   createAttempt(input: NewAttempt): { attemptId: number; attemptNumber: number } {

@@ -9,7 +9,7 @@
 - [x] 2.1 Define the versioned OpenCode profile type and field validation for safe unique IDs, descriptions, instructions, optional model/variant, positive step limits, enabled state, and supported permissions; verify invalid input yields field-specific errors without changing the prior profile.
 - [x] 2.2 Add an additive migration for the repository profile, revision, and job snapshot; verify old databases migrate with no active profiles and existing Cline/OpenCode rows remain loadable.
 - [x] 2.3 Save profiles with an atomic revision compare-and-set mutation and scoped operator action; verify stale writes conflict, non-OpenCode repositories reject updates, and audit details omit full instruction text.
-- [ ] 2.4 Snapshot the profile and revision in the job-creation transaction, leaving file-config synchronization unable to overwrite the operator choice; verify a queued job and its retry retain profile A after profile B is saved, while a new job uses B.
+- [x] 2.4 Snapshot the profile and revision in the job-creation transaction, leaving file-config synchronization unable to overwrite the operator choice; verify a queued job and its retry retain profile A after profile B is saved, while a new job uses B.
 
 ## 3. Apply a managed profile to an isolated attempt
 
