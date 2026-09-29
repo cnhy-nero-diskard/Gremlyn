@@ -22,11 +22,11 @@ export function statusPill(status: string): string {
           ? "cancelled"
           : status === "interrupted"
             ? "interrupted"
-          : ["queued", "preparing", "running", "validating", "publishing", "reporting"].includes(
-                status,
-              )
-            ? "progress"
-            : "neutral";
+            : ["queued", "preparing", "running", "validating", "publishing", "reporting"].includes(
+                  status,
+                )
+              ? "progress"
+              : "neutral";
   return `<span class="status-pill status-${className}" data-status-value="${safe}" data-visual-role="${visualRole}" aria-label="Status: ${safe}">${safe}</span>`;
 }
 

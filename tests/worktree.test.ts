@@ -215,10 +215,7 @@ test("collectStrandedDiff pulls remote first and captures tracked and untracked 
     diff.files.some((file) => file.includes("feature.txt")),
     "tracked modification is listed",
   );
-  assert.ok(
-    diff.files.includes(strandedName),
-    "untracked addition is listed",
-  );
+  assert.ok(diff.files.includes(strandedName), "untracked addition is listed");
   assert.match(diff.patch, /stranded space-é\.txt/u);
   assert.match(diff.patch, /modified/);
   // Non-destructive: the workspace still holds the work.

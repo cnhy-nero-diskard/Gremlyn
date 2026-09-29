@@ -341,9 +341,11 @@ export async function collectStrandedDiff(workspacePath: string): Promise<Strand
   let patch = "";
   if (stashSha !== null) {
     try {
-      patch = (await git(["diff", "--binary", "--patch", "HEAD", stashSha], {
-        cwd: workspacePath,
-      })).stdout;
+      patch = (
+        await git(["diff", "--binary", "--patch", "HEAD", stashSha], {
+          cwd: workspacePath,
+        })
+      ).stdout;
     } catch {
       patch = "";
     }

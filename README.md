@@ -201,7 +201,7 @@ change beyond `agent: opencode`:
 
 - **Credential**: OpenCode 2 stores provider connections in its data database.
   Set `credential_source` to that installation's data root — `opencode debug
-  paths` reports it (typically `C:/Users/<you>/.local/share/opencode`).
+paths` reports it (typically `C:/Users/<you>/.local/share/opencode`).
 - **Service**: OpenCode 2.0.16's `--standalone` mode returned an empty model
   catalog on the configured profile, while the default service exposed the
   selected models. Gremlyn uses the configured service and the attempt's

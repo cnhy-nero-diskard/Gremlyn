@@ -447,7 +447,9 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
     reportRun(first);
 
     const second = await runOnce({
-      label: sharedCredentials ? "second — configured service" : "second — a different fresh data dir",
+      label: sharedCredentials
+        ? "second — configured service"
+        : "second — a different fresh data dir",
       kind,
       binary,
       model,
@@ -474,11 +476,7 @@ export async function probe(argv: readonly string[] = process.argv.slice(2)): Pr
       out("             --data-dir isolation does not strand credentials");
     } else if (bothOk) {
       out("             OpenCode sessions and provider credentials stay in its configured service");
-    } else if (
-      !sharedCredentials &&
-      first.result.exitCode === 0 &&
-      second.result.exitCode !== 0
-    ) {
+    } else if (!sharedCredentials && first.result.exitCode === 0 && second.result.exitCode !== 0) {
       out("             NOTE: run 1 passed and run 2 failed on an identical setup.");
       out("             That is the signature of state cached in the first data dir.");
     }
