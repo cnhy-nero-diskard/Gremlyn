@@ -156,4 +156,27 @@ ALTER TABLE repositories ADD COLUMN timeout_seconds INTEGER;
 ALTER TABLE attempts ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  {
+    id: "0006_opencode_agent_profiles",
+    sql: `
+-- D1: one nullable, versioned dashboard profile per OpenCode repository, in a
+-- separate row keyed by repository id (never a column on repositories, so file
+-- configuration synchronization cannot touch it). profile_json is the canonical
+-- profile JSON, or NULL when the repository has no dashboard profile — a
+-- missing profile keeps the existing OpenCode invocation. revision is the
+-- compare-and-set counter; a missing row reads as revision 0, and no default
+-- profile is ever synthesized by the schema.
+CREATE TABLE opencode_agent_profiles (
+  repo_id INTEGER PRIMARY KEY REFERENCES repositories(id),
+  profile_json TEXT,
+  revision INTEGER NOT NULL DEFAULT 0
+);
+
+-- D2: jobs retain the exact profile captured at job-creation time, so queued
+-- jobs and their retries are unaffected by a later dashboard save. Both
+-- columns are nullable; a job created without a saved profile has no snapshot.
+ALTER TABLE jobs ADD COLUMN opencode_profile_json TEXT;
+ALTER TABLE jobs ADD COLUMN opencode_profile_revision INTEGER;
+`,
+  },
 ];

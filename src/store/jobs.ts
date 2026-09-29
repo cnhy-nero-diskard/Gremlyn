@@ -27,6 +27,13 @@ export interface JobRow {
   finished_at: string | null;
   current_attempt: number;
   review_context: string | null;
+  /**
+   * OpenCode profile captured when the job was created (design D2, migration
+   * 0006). Null when the repository had no dashboard-managed profile at
+   * creation time; queued jobs and retries keep their captured snapshot.
+   */
+  opencode_profile_json: string | null;
+  opencode_profile_revision: number | null;
 }
 
 export interface AttemptRow {
