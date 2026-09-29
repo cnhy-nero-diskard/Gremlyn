@@ -107,6 +107,23 @@ export function agentRuntimeId(namespace: string, id: string): string {
   return `${namespace}/${id}`;
 }
 
+/**
+ * True when a value is a syntactically valid generated runtime id:
+ * exactly two safe single path segments joined by one `/`
+ * (`<namespace>/<id>`), the shape this module emits. The check exists so the
+ * executor's trust boundary can refuse anything else before it reaches a
+ * subprocess argv — a malformed id could never have been generated here, so an
+ * attempt that carried one must fail closed rather than be launched.
+ */
+export function isOpenCodeAgentRuntimeId(value: string): boolean {
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash === value.length - 1) return false;
+  if (value.indexOf("/", slash + 1) !== -1) return false;
+  return (
+    isSafeAttemptNamespace(value.slice(0, slash)) && isSafeAttemptNamespace(value.slice(slash + 1))
+  );
+}
+
 /** A generated V2 Markdown agent file, keyed by a repository-relative path. */
 export interface GeneratedOpenCodeAgentFile {
   readonly path: string;
