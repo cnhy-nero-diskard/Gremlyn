@@ -14,10 +14,10 @@
 ## 3. Apply a managed profile to an isolated attempt
 
 - [x] 3.1 Serialize profile definitions into pinned V2 Markdown agent files with a unique attempt namespace and explicit parent allowlist/child permissions; verify generated content encodes arbitrary instruction text as data and child model omission inherits the primary model.
-- [ ] 3.2 Materialize only attempt-owned files in the disposable worktree, journal their paths outside it, and restore/remove them before validation; verify untouched tracked OpenCode files are byte-identical and no generated file enters the publishable diff after success, failure, or cancellation.
-- [ ] 3.3 Preflight the effective generated agents under the same cwd and environment as `run`; verify a missing primary, blocked child, or config-load mismatch fails with a configuration reason before agent edits and never falls back silently.
-- [ ] 3.4 Extend the common run options and OpenCode executor with the captured primary ID while leaving Cline's argv unchanged; verify contract checks assert `--agent <id>` only for managed OpenCode attempts.
-- [ ] 3.5 Track parent and child session IDs, wait for child quiescence, and interrupt children on timeout or cancellation; verify validation and publication cannot begin while a child can still write and an unknown child state fails closed.
+- [x] 3.2 Materialize only attempt-owned files in the disposable worktree, journal their paths outside it, and restore/remove them before validation; verify untouched tracked OpenCode files are byte-identical and no generated file enters the publishable diff after success, failure, or cancellation.
+- [x] 3.3 Preflight the effective generated agents under the same cwd and environment as `run`; verify a missing primary, blocked child, or config-load mismatch fails with a configuration reason before agent edits and never falls back silently.
+- [x] 3.4 Extend the common run options and OpenCode executor with the captured primary ID while leaving Cline's argv unchanged; verify contract checks assert `--agent <id>` only for managed OpenCode attempts.
+- [x] 3.5 Track parent and child session IDs, wait for child quiescence, and interrupt children on timeout or cancellation; verify validation and publication cannot begin while a child can still write and an unknown child state fails closed.
 - [ ] 3.6 Recover stale generated files on restart only for inactive attempts and quarantine uncertain workspaces; verify an interrupted attempt cannot leak an old profile into a later run or publish its generated files.
 
 ## 4. Configure and inspect profiles in the browser console
