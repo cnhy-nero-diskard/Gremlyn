@@ -179,4 +179,30 @@ ALTER TABLE jobs ADD COLUMN opencode_profile_json TEXT;
 ALTER TABLE jobs ADD COLUMN opencode_profile_revision INTEGER;
 `,
   },
+  {
+    id: "0007_managed_attempt_evidence",
+    sql: `
+-- Task 4.4: durable diagnostic evidence for managed OpenCode attempts, because
+-- job detail is a database projection that must survive restart. Only ids,
+-- outcomes, and states are stored -- never the operator's private instruction
+-- text. failure_detail keeps the specific configuration or quiescence message
+-- (agent labels, session ids, paths); managed_child_sessions records every
+-- child the attempt settled with its terminal outcome, or marks an unproven
+-- child as unsettled/unknown with its id so the failure stays specific and
+-- fail-closed.
+ALTER TABLE attempts ADD COLUMN failure_detail TEXT;
+
+CREATE TABLE managed_child_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  session_id TEXT NOT NULL,
+  outcome TEXT,
+  state TEXT NOT NULL,
+  interrupted INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(attempt_id, session_id)
+);
+
+CREATE INDEX idx_managed_child_sessions_attempt ON managed_child_sessions(attempt_id);
+`,
+  },
 ];

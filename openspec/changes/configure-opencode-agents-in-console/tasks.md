@@ -25,7 +25,7 @@
 - [x] 4.1 Add OpenCode-only repository projections and a readable summary of primary, callable children, model inheritance/overrides, and permission presets; verify a Cline repository has no OpenCode controls and an unconfigured OpenCode repository shows its current default behavior.
 - [x] 4.2 Add a repository-local draft editor for primary and subagent definitions with Apply, Cancel, review, inline validation, and accessible labels; verify adding, editing, enabling, disabling, and removing children without editing OpenCode files manually.
 - [x] 4.3 Wire an authenticated compare-and-set save route and live-update reconciliation; verify one applied profile yields one audit action and runtime refresh, while a stale edit or SSE update preserves the operator's unsaved draft.
-- [ ] 4.4 Show the captured profile name/revision, delegated agent outcomes, and specific configuration or unsettled-child failures in job detail; verify full private instructions are absent from ordinary audit and status projections.
+- [x] 4.4 Show the captured profile name/revision, delegated agent outcomes, and specific configuration or unsettled-child failures in job detail; verify full private instructions are absent from ordinary audit and status projections.
 
 ## 5. Document and validate the integrated behavior
 

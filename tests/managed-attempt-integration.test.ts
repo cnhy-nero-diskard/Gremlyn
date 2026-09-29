@@ -755,3 +755,96 @@ test("a cancelled run with an unsettled child records failure and retains recove
   assert.equal(await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch), data.initialSha);
   data.store.close();
 });
+
+test("a successful managed run persists its settled child outcomes durably (task 4.4)", async () => {
+  const data = await setupManaged({
+    executor: { sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } },
+    childIds: ["ses_child"],
+    settlePollIntervalMs: 5,
+  });
+  const queued = await resolveEvent(data);
+  assert.equal((await queued.completed).kind, "completed");
+
+  // Job detail is a database projection that must survive restart, so every
+  // settled child is recorded with its terminal outcome and interrupt flag.
+  const children = data.store.db
+    .prepare(
+      `SELECT session_id, outcome, state, interrupted
+       FROM managed_child_sessions WHERE attempt_id = ? ORDER BY id`,
+    )
+    .all(queued.attemptId) as Array<{
+    session_id: string;
+    outcome: string;
+    state: string;
+    interrupted: number;
+  }>;
+  assert.deepEqual(children, [
+    { session_id: "ses_child", outcome: "succeeded", state: "settled", interrupted: 0 },
+  ]);
+  data.store.close();
+});
+
+test("an unsettled child persists its id fail-closed with the specific detail (task 4.4)", async () => {
+  const data = await setupManaged({
+    executor: { sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } },
+    childIds: ["ses_child"],
+    runningChildIds: ["ses_child"],
+    timeoutSec: 0.25,
+    settlePollIntervalMs: 5,
+    settleInterruptGraceMs: 20,
+  });
+  const queued = await resolveEvent(data);
+  await assert.rejects(() => queued.completed);
+
+  // The unproven child survives with its id and no terminal outcome, exactly
+  // the fail-closed evidence job detail must render after a restart.
+  const children = data.store.db
+    .prepare(
+      `SELECT session_id, outcome, state
+       FROM managed_child_sessions WHERE attempt_id = ? ORDER BY id`,
+    )
+    .all(queued.attemptId) as Array<{
+    session_id: string;
+    outcome: string | null;
+    state: string;
+  }>;
+  assert.deepEqual(children, [{ session_id: "ses_child", outcome: null, state: "unsettled" }]);
+  const attempt = data.store.db
+    .prepare("SELECT failure_reason, failure_detail FROM attempts WHERE id = ?")
+    .get(queued.attemptId) as { failure_reason: string; failure_detail: string | null };
+  assert.equal(attempt.failure_reason, "managed-child-unsettled");
+  assert.ok(attempt.failure_detail !== null, "the specific quiescence detail is recorded");
+  assert.ok(attempt.failure_detail.includes("ses_child"));
+  data.store.close();
+});
+
+test("a cancelled managed run that provably interrupted children persists their outcome (task 4.4)", async () => {
+  const data = await setupManaged({
+    executor: { sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } },
+    childIds: ["ses_child"],
+    runningChildIds: ["ses_child"],
+    settleOnInterrupt: true,
+    cancelAt: "agent exited",
+    settlePollIntervalMs: 5,
+    settleInterruptGraceMs: 20,
+  });
+  const queued = await resolveEvent(data);
+  assert.equal((await queued.completed).kind, "cancelled");
+  // Settlement proved quiescence by interrupting the child, so its terminal
+  // outcome reflects the interrupt and is still durable for job detail.
+  const children = data.store.db
+    .prepare(
+      `SELECT session_id, outcome, state, interrupted
+       FROM managed_child_sessions WHERE attempt_id = ? ORDER BY id`,
+    )
+    .all(queued.attemptId) as Array<{
+    session_id: string;
+    outcome: string;
+    state: string;
+    interrupted: number;
+  }>;
+  assert.deepEqual(children, [
+    { session_id: "ses_child", outcome: "interrupted", state: "settled", interrupted: 1 },
+  ]);
+  data.store.close();
+});

@@ -871,6 +871,11 @@ export class ResolutionOrchestrator {
             reason: failure.reason,
             hasUncommittedChanges: true,
           });
+          // Task 4.4: a managed attempt cancelled with unproven quiescence
+          // persists the specific failure detail alongside the failure reason.
+          if (failure.message.length > 0 && failure.message !== failure.reason) {
+            this.recordManagedFailureDetail(attemptId, failure.message);
+          }
           this.jobs.finishFailure(jobId, attemptId, failure.stage, failure.reason);
           await this.reactToStatus(repository, commentId, "failed");
           return;
@@ -1027,6 +1032,85 @@ export class ResolutionOrchestrator {
   }
 
   /**
+   * Persist the attempt's settled child-session outcomes (task 4.4). Job
+   * detail is a database projection that must survive restart, so the
+   * delegated agent outcomes are written durably here: session ids, terminal
+   * outcomes, and whether each child had to be interrupted — never instruction
+   * text. Best-effort: a diagnostic write failure is logged, not thrown, so it
+   * can never change the attempt's own outcome.
+   */
+  private recordManagedChildrenSettled(input: {
+    attemptId: number;
+    settlement: ManagedAttemptSettlement;
+  }): void {
+    try {
+      const upsert = this.options.db.prepare(`
+        INSERT INTO managed_child_sessions (attempt_id, session_id, outcome, state, interrupted)
+        VALUES (?, ?, ?, 'settled', ?)
+        ON CONFLICT(attempt_id, session_id) DO UPDATE SET
+          outcome = excluded.outcome,
+          state = 'settled',
+          interrupted = excluded.interrupted
+      `);
+      for (const child of input.settlement.children) {
+        upsert.run(input.attemptId, child.id, child.outcome, child.interrupted ? 1 : 0);
+      }
+    } catch (error) {
+      this.options.logger.warn("managed child outcomes were not persisted", {
+        attemptId: input.attemptId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Persist child sessions whose quiescence could not be proven (task 4.4).
+   * An unsettled or unknown child carries its id and no terminal outcome, so
+   * job detail can show, specific and fail-closed, exactly which child stopped
+   * the attempt. Best-effort, like {@link recordManagedChildrenSettled}.
+   */
+  private recordManagedChildrenUnproven(input: {
+    attemptId: number;
+    unsettled: readonly string[];
+    unknown: readonly string[];
+  }): void {
+    try {
+      const upsert = this.options.db.prepare(`
+        INSERT INTO managed_child_sessions (attempt_id, session_id, outcome, state, interrupted)
+        VALUES (?, ?, NULL, ?, 0)
+        ON CONFLICT(attempt_id, session_id) DO UPDATE SET state = excluded.state
+      `);
+      for (const sessionId of input.unsettled) upsert.run(input.attemptId, sessionId, "unsettled");
+      for (const sessionId of input.unknown) upsert.run(input.attemptId, sessionId, "unknown");
+    } catch (error) {
+      this.options.logger.warn("managed unproven-child evidence was not persisted", {
+        attemptId: input.attemptId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Persist the specific failure detail of a managed attempt (task 4.4): the
+   * configuration or quiescence message naming agent labels, session ids, or
+   * paths. The redactor at the console boundary treats it like any other
+   * string; only the message text is stored, never the operator's private
+   * instruction content. Best-effort, like the child evidence writers.
+   */
+  private recordManagedFailureDetail(attemptId: number, detail: string): void {
+    try {
+      this.options.db
+        .prepare("UPDATE attempts SET failure_detail = ? WHERE id = ?")
+        .run(detail, attemptId);
+    } catch (error) {
+      this.options.logger.warn("managed failure detail was not persisted", {
+        attemptId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Remove the attempt's generated agent files (task 3.2 cleanup). Runs only
    * after child-session quiescence is proven — or trivially, when nothing was
    * ever spawned — and always before validation and publication. The manifest
@@ -1117,6 +1201,14 @@ export class ResolutionOrchestrator {
         throw new StageFailure(input.stage, "managed-session-discovery-failed", error.message);
       }
       if (error instanceof OpenCodeSessionSettleError) {
+        // Task 4.4: make the fail-closed stop durable — the specific child ids
+        // that could not be proven stopped must survive for job detail, even
+        // though the wrapped StageFailure below only carries them in its text.
+        this.recordManagedChildrenUnproven({
+          attemptId: input.attemptId,
+          unsettled: error.unsettledSessionIds,
+          unknown: error.unknownSessionIds,
+        });
         throw new StageFailure(input.stage, "managed-child-unsettled", error.message);
       }
       throw error;
@@ -1129,6 +1221,8 @@ export class ResolutionOrchestrator {
       interrupted: settlement.interruptedSessionIds.length,
       rounds: settlement.rounds,
     });
+    // Task 4.4: the settled child outcomes are durable evidence for job detail.
+    this.recordManagedChildrenSettled({ attemptId: input.attemptId, settlement });
     await this.cleanupManagedAttempt({
       managed: input.managed,
       workspacePath: input.worker.cwd,
@@ -1733,6 +1827,16 @@ export class ResolutionOrchestrator {
         reason: failure.reason,
         hasUncommittedChanges: hasChanges,
       });
+      // Task 4.4: keep the specific managed failure detail (which agent id,
+      // which child session stayed unproven) durable for job detail, without
+      // persisting redundant reason codes as detail.
+      if (
+        managed !== undefined &&
+        failure.message.length > 0 &&
+        failure.message !== failure.reason
+      ) {
+        this.recordManagedFailureDetail(attemptId, failure.message);
+      }
       this.jobs.finishFailure(jobId, attemptId, failure.stage, failure.reason);
       await this.reactToStatus(repository, commentId, "failed");
       if (failure.stage !== "reporting") {
