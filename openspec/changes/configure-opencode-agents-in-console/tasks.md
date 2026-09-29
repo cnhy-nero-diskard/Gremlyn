@@ -13,7 +13,7 @@
 
 ## 3. Apply a managed profile to an isolated attempt
 
-- [ ] 3.1 Serialize profile definitions into pinned V2 Markdown agent files with a unique attempt namespace and explicit parent allowlist/child permissions; verify generated content encodes arbitrary instruction text as data and child model omission inherits the primary model.
+- [x] 3.1 Serialize profile definitions into pinned V2 Markdown agent files with a unique attempt namespace and explicit parent allowlist/child permissions; verify generated content encodes arbitrary instruction text as data and child model omission inherits the primary model.
 - [ ] 3.2 Materialize only attempt-owned files in the disposable worktree, journal their paths outside it, and restore/remove them before validation; verify untouched tracked OpenCode files are byte-identical and no generated file enters the publishable diff after success, failure, or cancellation.
 - [ ] 3.3 Preflight the effective generated agents under the same cwd and environment as `run`; verify a missing primary, blocked child, or config-load mismatch fails with a configuration reason before agent edits and never falls back silently.
 - [ ] 3.4 Extend the common run options and OpenCode executor with the captured primary ID while leaving Cline's argv unchanged; verify contract checks assert `--agent <id>` only for managed OpenCode attempts.
