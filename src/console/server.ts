@@ -9,6 +9,7 @@ import { authLayout, layout } from "./views/layout.js";
 import { dashboardView, dashboardRegions } from "./views/dashboard.js";
 import { jobView, jobRegions } from "./views/job.js";
 import { commandsView, auditView } from "./views/commands.js";
+import { defaultOpenCodeAgentProfile } from "../config/opencode-profile.js";
 import {
   repositoryAgent,
   repositoryExists,
@@ -581,9 +582,13 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       return reply.code(404).send({ error: "not-opencode" });
     const record = readOpenCodeProfile(options.db, id);
     if (!record) return reply.code(404).send({ error: "repository-not-found" });
-    return reply
-      .header("cache-control", "no-store")
-      .send({ ok: true, repoId: id, revision: record.revision, profile: record.profile });
+    return reply.header("cache-control", "no-store").send({
+      ok: true,
+      repoId: id,
+      revision: record.revision,
+      profile: record.profile,
+      defaultProfile: defaultOpenCodeAgentProfile(),
+    });
   });
   // Compare-and-set save for one whole agent profile. `expectedRevision` is the
   // revision the operator's edit began from; a stale write conflicts with HTTP

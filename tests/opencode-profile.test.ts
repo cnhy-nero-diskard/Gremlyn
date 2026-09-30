@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   canonicalOpenCodeProfileJson,
   DENIED_CHILD_SCOPES,
+  defaultOpenCodeAgentProfile,
   effectiveChildPermissions,
   OPENCODE_AGENT_PROFILE_VERSION,
   OPENCODE_PERMISSIONS,
@@ -98,6 +99,29 @@ test("a valid profile parses with read-only defaults and preserved order", () =>
     }),
   );
   assert.deepEqual(effectiveChildPermissions(withTools.subagents[0]!), ["shell", "edit"]);
+});
+
+test("the shared default workflow is an orchestrator with bounded specialist children", () => {
+  const profile = defaultOpenCodeAgentProfile();
+  assert.equal(profile.primary.id, "orchestrator");
+  assert.deepEqual(profile.primary.permissions, ["edit", "shell", "web", "skill"]);
+  assert.deepEqual(
+    profile.subagents.map((agent) => agent.id),
+    ["researcher", "implementer", "reviewer"],
+  );
+  assert.deepEqual(
+    profile.subagents.map((agent) => agent.model),
+    [undefined, undefined, undefined],
+  );
+  assert.deepEqual(
+    profile.subagents.map((agent) => agent.permissions),
+    [["web"], ["edit", "shell"], []],
+  );
+  assert.ok(profile.subagents.every((agent) => agent.enabled));
+
+  // A caller may freely edit the returned draft without changing the template.
+  profile.subagents.pop();
+  assert.equal(defaultOpenCodeAgentProfile().subagents.length, 3);
 });
 
 test("a profile version is required and only version 1 is supported", () => {

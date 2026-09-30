@@ -640,6 +640,7 @@ label { gap: var(--space-2); }
 .agent-field { display: grid; gap: var(--space-1); }
 .agent-field > label { font-size: var(--type-meta); font-weight: var(--weight-semibold); color: var(--text-secondary); }
 .agent-field input[type="text"], .agent-field textarea { width: 100%; min-width: 0; }
+.agent-model-field select, .agent-model-field input { width: 100%; min-width: 0; }
 .agent-field textarea { min-height: 4rem; font-family: var(--font-mono); font-size: var(--type-meta); resize: vertical; }
 .agent-field input[type="number"] { max-width: 10rem; }
 .agent-permissions { display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: center; }
@@ -1727,6 +1728,58 @@ export const clientScript = `
     const errorSlot = error ? '<small class="agent-field-error" id="' + id + '-error">' + openCodeEscapeHtml(error) + '</small>' : '';
     return '<fieldset class="agent-field" id="' + id + '"><legend>' + (enabled === false ? 'Tools (the agent is disabled)' : 'Tools') + '</legend><span class="agent-permissions">' + boxes + '</span>' + errorSlot + '</fieldset>';
   };
+  const openCodeModelProviders = (state) => {
+    const providers = state && Array.isArray(state.modelProviders) ? state.modelProviders : [];
+    if (providers.length) return providers;
+    // Reuse the OpenCode choices already rendered for this repository's model
+    // picker. They remain in the DOM even when that picker is hidden for a
+    // custom repository provider.
+    const card = state && state.container && typeof state.container.closest === 'function'
+      ? state.container.closest('[data-live-key^="repository-"]') : null;
+    const select = card && typeof card.querySelector === 'function'
+      ? card.querySelector('[data-repo-model-select]') : null;
+    if (!select || typeof select.querySelectorAll !== 'function') return [];
+    return [...select.querySelectorAll('optgroup')].map((group) => ({
+      id: group.label || 'OpenCode models',
+      name: group.label || 'OpenCode models',
+      models: [...group.querySelectorAll('option')].map((option) => ({
+        id: option.value,
+        name: option.dataset.modelName || option.textContent || option.value,
+      })),
+    }));
+  };
+  const openCodeModelPickerHtml = (repoId, state, index, model) => {
+    const path = 'subagents[' + String(index) + '].model';
+    const id = openCodeIdBase(repoId, 'sub', index) + '-model';
+    const customId = id + '-custom';
+    const providers = openCodeModelProviders(state);
+    const knownModel = providers.some((provider) =>
+      Array.isArray(provider.models) && provider.models.some((entry) => entry.id === model));
+    const custom = Boolean(model) && !knownModel;
+    const modelOptions = providers.map((provider) => {
+      const options = (Array.isArray(provider.models) ? provider.models : []).map((entry) =>
+        '<option value="' + openCodeEscapeHtml(entry.id) + '"' + (entry.id === model ? ' selected' : '') + '>' +
+        openCodeEscapeHtml(entry.name || entry.id) + '</option>').join('');
+      return options
+        ? '<optgroup label="' + openCodeEscapeHtml(provider.name || provider.id) + '">' + options + '</optgroup>'
+        : '';
+    }).join('');
+    const error = openCodeErrorAt(state, path);
+    const invalid = error ? ' aria-invalid="true"' : '';
+    const describedBy = error ? ' aria-describedby="' + id + '-error"' : '';
+    const errorSlot = error ? '<small class="agent-field-error" id="' + id + '-error">' + openCodeEscapeHtml(error) + '</small>' : '';
+    return '<div class="agent-field agent-model-field">' +
+      '<label for="' + id + '">Model override</label>' +
+      '<select id="' + id + '" data-agent-model="' + path + '"' + invalid + describedBy + '>' +
+      '<option value=""' + (!model ? ' selected' : '') + '>Inherit repository model</option>' +
+      modelOptions +
+      '<option value="__custom__"' + (custom ? ' selected' : '') + '>Custom model ID…</option>' +
+      '</select>' +
+      '<label for="' + customId + '" data-agent-custom-label="' + path + '"' + (custom ? '' : ' hidden') + '>Custom model ID</label>' +
+      '<input type="text" id="' + customId + '" data-agent-field="' + path + '" value="' + openCodeEscapeHtml(custom ? model : '') + '" placeholder="provider/model[#variant]"' + invalid + describedBy + (custom ? '' : ' hidden') + '>' +
+      '<small class="muted">Leave inherited, choose a catalog model, or enter a custom provider/model id.</small>' + errorSlot +
+      '</div>';
+  };
   const openCodeSubagentHtml = (repoId, state, index, child) => {
     const prefix = 'subagents[' + String(index) + ']';
     return '<article class="agent-card agent-subagent" data-live-key="agent-sub-' + String(index) + '">' +
@@ -1736,7 +1789,7 @@ export const clientScript = `
       openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.id', 'text', 'Agent id', child.id, 'reviewer') +
       openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.description', 'text', 'Purpose', child.description, 'What this child does') +
       openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.instructions', 'textarea', 'Instructions', child.instructions, 'Optional private instructions for this child') +
-      openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.model', 'text', 'Model override', child.model, 'provider/model[#variant] — blank inherits the primary model') +
+      openCodeModelPickerHtml(repoId, state, index, child.model) +
       openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.stepLimit', 'number', 'Step limit', child.stepLimit, null) +
       '<label class="agent-field agent-enable"><input type="checkbox" data-agent-checkbox="' + prefix + '.enabled"' + (child.enabled ? ' checked' : '') + '> Callable by the primary</label>' +
       openCodePermissionCheckboxes(repoId, state, 'sub', index, prefix + '.permissions', child.permissions, child.enabled) +
@@ -1789,6 +1842,9 @@ export const clientScript = `
       ? '<span class="chip">draft from revision ' + String(state.revision) + '</span>'
       : '<span class="chip">no saved profile</span>';
     const feedback = '<p class="agent-feedback" data-agent-feedback role="status" aria-live="polite"></p>';
+    const resetButton = state.defaultProfile
+      ? '<button type="button" data-agent-action="reset">Reset to default workflow</button>'
+      : '';
     if (state.mode === 'review') {
       return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
         '<div class="agent-editor-head"><h4>Review OpenCode agents</h4>' + revisionNote +
@@ -1802,8 +1858,8 @@ export const clientScript = `
       : state.draft.subagents.map((child, index) => openCodeSubagentHtml(repoId, state, index, child)).join('');
     return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
       '<div class="agent-editor-head"><h4>Configure OpenCode agents</h4>' + revisionNote +
-      '<span class="actions"><button type="button" class="danger" data-agent-action="cancel">Cancel</button></span></div>' +
-      '<p class="muted">The primary runs the repository selected model; children inherit it unless they carry an explicit provider/model override. Children default to read-only; external-directory access and nested delegation are always denied. Changes apply to jobs created after the save.</p>' +
+      '<span class="actions">' + resetButton + '<button type="button" class="danger" data-agent-action="cancel">Cancel</button></span></div>' +
+      '<p class="muted">Reset loads the shared starter workflow into this draft; nothing changes until you review and save. The primary runs the repository selected model; children inherit it unless they carry an explicit provider/model override. Children default to read-only; external-directory access and nested delegation are always denied. Changes apply to jobs created after the save.</p>' +
       (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
       openCodePrimaryHtml(repoId, state) +
       '<section class="agent-card"><div class="agent-editor-head"><h5>Subagents</h5><span class="actions"><button type="button" data-agent-action="add">Add subagent</button></span></div>' +
@@ -1842,7 +1898,9 @@ export const clientScript = `
       const state = {
         mode: 'editing',
         revision: typeof payload.revision === 'number' ? payload.revision : 0,
-        draft: openCodeDraftFromProfile(payload.profile),
+        draft: openCodeDraftFromProfile(payload.profile || payload.defaultProfile),
+        defaultProfile: payload.defaultProfile || null,
+        modelProviders: [],
         errors: [],
         notice: null,
         busy: false,
@@ -1850,6 +1908,7 @@ export const clientScript = `
         repoModel: model,
         container: mounted,
       };
+      state.modelProviders = openCodeModelProviders(state);
       openCodeEditors.set(repoId, state);
       openCodeRenderEditor(mounted, repoId);
     } catch {
@@ -1959,6 +2018,47 @@ export const clientScript = `
     state.mode = 'editing';
     openCodeRenderEditor(state.container, repoId);
   };
+  const openCodeResetToDefault = (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state || !state.defaultProfile) return;
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function' &&
+        !window.confirm('Replace this draft with the default workflow? Unsaved draft changes will be lost.')) return;
+    state.draft = openCodeDraftFromProfile(state.defaultProfile);
+    state.errors = [];
+    state.notice = null;
+    state.mode = 'editing';
+    openCodeRenderEditor(state.container, repoId);
+    openCodeSetFeedback(state.container, 'Default workflow loaded into this draft. Review and apply to save it.', false);
+    const reset = state.container && typeof state.container.querySelector === 'function'
+      ? state.container.querySelector('[data-agent-action="reset"]') : null;
+    if (reset && typeof reset.focus === 'function') reset.focus({ preventScroll: true });
+  };
+  const openCodeHandleModelSelection = (repoId, path, value, select) => {
+    const state = openCodeEditors.get(repoId);
+    const location = openCodeFieldLocation(path);
+    if (!state || location.level !== 'subagent' || location.field !== 'model') return;
+    const child = state.draft.subagents[location.index];
+    if (!child) return;
+    if (value !== '__custom__') {
+      child.model = value;
+    } else {
+      const currentIsCatalogModel = openCodeModelProviders(state).some((provider) =>
+        Array.isArray(provider.models) && provider.models.some((model) => model.id === child.model));
+      if (currentIsCatalogModel) child.model = '';
+    }
+    const editor = select && typeof select.closest === 'function' ? select.closest('[data-agent-editor]') : state.container;
+    const customInput = editor && typeof editor.querySelectorAll === 'function'
+      ? [...editor.querySelectorAll('[data-agent-field]')].find((field) => field.dataset.agentField === path) : null;
+    const customLabel = editor && typeof editor.querySelectorAll === 'function'
+      ? [...editor.querySelectorAll('[data-agent-custom-label]')].find((field) => field.dataset.agentCustomLabel === path) : null;
+    const showCustom = value === '__custom__';
+    if (customInput) {
+      customInput.value = child.model || '';
+      customInput.hidden = !showCustom;
+    }
+    if (customLabel) customLabel.hidden = !showCustom;
+    if (showCustom && customInput && typeof customInput.focus === 'function') customInput.focus({ preventScroll: true });
+  };
   const openCodeAddSubagent = (repoId) => {
     const state = openCodeEditors.get(repoId);
     if (!state) return;
@@ -2015,6 +2115,8 @@ export const clientScript = `
     mode: state.mode,
     revision: state.revision,
     draft: state.draft,
+    defaultProfile: state.defaultProfile,
+    modelProviders: state.modelProviders,
     errors: state.errors.slice(),
     notice: state.notice,
     busy: state.busy,
@@ -2034,6 +2136,8 @@ export const clientScript = `
         mode: entry.mode,
         revision: entry.revision,
         draft: entry.draft,
+        defaultProfile: entry.defaultProfile || null,
+        modelProviders: entry.modelProviders || [],
         errors: entry.errors || [],
         notice: entry.notice,
         busy: entry.busy,
@@ -2068,6 +2172,7 @@ export const clientScript = `
     const action = button.dataset.agentAction;
     if (action === 'add') { openCodeAddSubagent(repoId); return; }
     if (action === 'remove') { openCodeRemoveSubagent(repoId, Number(button.dataset.agentIndex)); return; }
+    if (action === 'reset') { openCodeResetToDefault(repoId); return; }
     if (action === 'apply') { openCodeApply(repoId); return; }
     if (action === 'back') { openCodeBack(repoId); return; }
     if (action === 'save') { void openCodeSave(repoId); return; }
@@ -2083,6 +2188,15 @@ export const clientScript = `
     openCodeHandleEditorInput(repoId, field.dataset.agentField, typeof field.value === 'string' ? field.value : '');
   });
   document.addEventListener('change', (event) => {
+    const model = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-model]') : null;
+    if (model && model.dataset) {
+      const editor = typeof model.closest === 'function' ? model.closest('[data-agent-editor]') : null;
+      const repoId = Number(editor && editor.dataset ? editor.dataset.repoId : NaN);
+      if (Number.isInteger(repoId) && model.dataset.agentModel) {
+        openCodeHandleModelSelection(repoId, model.dataset.agentModel, model.value || '', model);
+      }
+      return;
+    }
     const field = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-checkbox]') : null;
     if (!field || !field.dataset) return;
     const editor = typeof field.closest === 'function' ? field.closest('[data-agent-editor]') : null;
@@ -2106,6 +2220,7 @@ export const clientScript = `
       apply: openCodeApply,
       addSubagent: openCodeAddSubagent,
       removeSubagent: openCodeRemoveSubagent,
+      resetToDefault: openCodeResetToDefault,
       handleInput: openCodeHandleEditorInput,
       handleChange: openCodeHandleEditorChange,
       capture: captureOpenCodeEditors,

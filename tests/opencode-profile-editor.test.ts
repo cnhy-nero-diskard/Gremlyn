@@ -22,6 +22,7 @@ import { request as httpRequest } from "node:http";
 import { buildConsoleServer, type ConsoleOptions } from "../src/console/server.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
+import { defaultOpenCodeAgentProfile } from "../src/config/opencode-profile.js";
 import { readOpenCodeProfile, saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
 import { clientScript } from "../src/console/assets.js";
 import type { AgentDefinition } from "../src/config/loader.js";
@@ -244,7 +245,7 @@ test("the editor GET route returns the full authenticated profile while ordinary
   store.close();
 });
 
-test("an unconfigured OpenCode repository opens a blank draft at revision zero", async () => {
+test("an unconfigured OpenCode repository gets the shared default workflow at revision zero", async () => {
   const fixture = openStore();
   const { store, options, opencodeRepoId } = fixture;
   const app = buildConsoleServer(options);
@@ -254,12 +255,23 @@ test("an unconfigured OpenCode repository opens a blank draft at revision zero",
     headers: AUTH,
   });
   assert.equal(editor.statusCode, 200);
-  assert.deepEqual(editor.json(), {
-    ok: true,
-    repoId: opencodeRepoId,
-    revision: 0,
-    profile: null,
-  });
+  const payload = editor.json() as {
+    ok: boolean;
+    repoId: number;
+    revision: number;
+    profile: unknown;
+    defaultProfile: { primary: { id: string }; subagents: Array<{ id: string }> };
+  };
+  assert.equal(payload.ok, true);
+  assert.equal(payload.repoId, opencodeRepoId);
+  assert.equal(payload.revision, 0);
+  assert.equal(payload.profile, null);
+  assert.equal(payload.defaultProfile.primary.id, "orchestrator");
+  assert.deepEqual(
+    payload.defaultProfile.subagents.map((agent) => agent.id),
+    ["researcher", "implementer", "reviewer"],
+  );
+  assert.equal(readOpenCodeProfile(store.db, opencodeRepoId)?.profile, null);
   await app.close();
   store.close();
 });
@@ -462,12 +474,18 @@ test("the editor gate follows the configured executor kind, not the agent alias"
     headers: AUTH,
   });
   assert.equal(opencodeAlias.statusCode, 200);
-  assert.deepEqual(opencodeAlias.json(), {
-    ok: true,
-    repoId: opencodeRepoId,
-    revision: 0,
-    profile: null,
-  });
+  const aliasPayload = opencodeAlias.json() as {
+    ok: boolean;
+    repoId: number;
+    revision: number;
+    profile: unknown;
+    defaultProfile: { primary: { id: string } };
+  };
+  assert.equal(aliasPayload.ok, true);
+  assert.equal(aliasPayload.repoId, opencodeRepoId);
+  assert.equal(aliasPayload.revision, 0);
+  assert.equal(aliasPayload.profile, null);
+  assert.equal(aliasPayload.defaultProfile.primary.id, "orchestrator");
 
   await app.close();
   store.close();
@@ -541,6 +559,7 @@ interface AgentEditorSurface {
   apply: (repoId: number) => void;
   addSubagent: (repoId: number) => void;
   removeSubagent: (repoId: number, index: number) => void;
+  resetToDefault: (repoId: number) => void;
   handleInput: (repoId: number, path: string, value: string) => void;
   handleChange: (repoId: number, path: string, checked: boolean) => void;
   capture: () => Array<Record<string, unknown>>;
@@ -551,7 +570,7 @@ interface FakeContainer {
   innerHTML: string;
   dataset: Record<string, string>;
   querySelector: (selector: string) => unknown;
-  closest: () => null;
+  closest: () => unknown;
   setAttribute: () => void;
   getAttribute: () => null;
   focus: () => void;
@@ -714,11 +733,15 @@ test("the editor renders labelled fields, and the review shows the team before t
   assert.match(html, /<label for="agents-7-primary-id">Agent id<\/label>/u);
   assert.match(html, /data-agent-field="primary.instructions"/u);
   assert.match(html, /data-agent-field="subagents\[0\]\.model"/u);
+  assert.match(html, /data-agent-model="subagents\[0\]\.model"/u);
+  assert.match(html, /Inherit repository model/u);
+  assert.match(html, /Custom model ID…/u);
   assert.match(html, /data-agent-checkbox="primary.permissions.shell"/u);
   assert.match(html, /data-agent-checkbox="subagents\[0\]\.enabled"/u);
   assert.match(html, /data-agent-action="add"/u);
   assert.match(html, /data-agent-action="apply"/u);
   assert.match(html, /data-agent-action="cancel"/u);
+  assert.doesNotMatch(html, /data-agent-action="reset"/u);
 
   state.mode = "review";
   const review = agent.editorHtml(7, state);
@@ -728,6 +751,181 @@ test("the editor renders labelled fields, and the review shows the team before t
   assert.match(review, /data-agent-action="back"/u);
   assert.match(review, /<code>primary<\/code>/u);
   assert.match(review, /<code>reviewer<\/code>/u);
+});
+
+test("the child model dropdown uses catalog choices and keeps a custom-model escape hatch", () => {
+  const { agent, environment } = runAgentEditor(rejectedFetch());
+  const container = fakeContainer();
+  const state = {
+    mode: "editing",
+    revision: 1,
+    draft: agent.draftFromProfile(profileWithChildren()),
+    defaultProfile: defaultOpenCodeAgentProfile(),
+    modelProviders: [
+      {
+        id: "opencode",
+        name: "OpenCode Zen",
+        models: [
+          { id: "opencode/gpt-5.4", name: "GPT-5.4" },
+          { id: "opencode/gpt-6-luna", name: "GPT-6 Luna" },
+        ],
+      },
+    ],
+    errors: [],
+    notice: null,
+    busy: false,
+    container,
+    repoModel: "opencode/gpt-5.4",
+  };
+  agent.editors.set(7, state as never);
+
+  const html = agent.editorHtml(7, state);
+  assert.match(html, /<optgroup label="OpenCode Zen">/u);
+  assert.match(html, /<option value="opencode\/gpt-6-luna">GPT-6 Luna<\/option>/u);
+  assert.match(html, /data-agent-custom-label="subagents\[0\]\.model" hidden/u);
+
+  state.draft.subagents[0]!.model = "vendor/custom-model";
+  const customHtml = agent.editorHtml(7, state);
+  assert.match(customHtml, /<option value="__custom__" selected>Custom model ID…<\/option>/u);
+  assert.match(
+    customHtml,
+    /data-agent-custom-label="subagents\[0\]\.model">Custom model ID<\/label>/u,
+  );
+  assert.match(
+    customHtml,
+    /value="vendor\/custom-model" placeholder="provider\/model\[#variant\]">/u,
+  );
+
+  // Selecting the custom option clears a prior catalog choice; text entry then
+  // becomes the exact override, while selecting a catalog model stores its id.
+  state.draft.subagents[0]!.model = "opencode/gpt-5.4";
+  const editorElement = { dataset: { repoId: "7" } };
+  const modelElement = {
+    dataset: { agentModel: "subagents[0].model" },
+    value: "__custom__",
+    closest: (selector: string) => (selector === "[data-agent-editor]" ? editorElement : null),
+  };
+  const changeHandler = environment.document.listeners.change[0] as (event: unknown) => void;
+  changeHandler({
+    target: {
+      closest: (selector: string) => (selector === "[data-agent-model]" ? modelElement : null),
+    },
+  });
+  assert.equal(state.draft.subagents[0]?.model, "");
+  const customModelInput = {
+    dataset: { agentField: "subagents[0].model" },
+    value: "vendor/custom-model",
+    closest: (selector: string) => (selector === "[data-agent-editor]" ? editorElement : null),
+  };
+  const inputHandler = environment.document.listeners.input[0] as (event: unknown) => void;
+  inputHandler({
+    target: {
+      closest: (selector: string) => (selector === "[data-agent-field]" ? customModelInput : null),
+    },
+  });
+  assert.equal(state.draft.subagents[0]?.model, "vendor/custom-model");
+  modelElement.value = "opencode/gpt-6-luna";
+  changeHandler({
+    target: {
+      closest: (selector: string) => (selector === "[data-agent-model]" ? modelElement : null),
+    },
+  });
+  assert.equal(state.draft.subagents[0]?.model, "opencode/gpt-6-luna");
+});
+
+test("the child model dropdown can reuse the repository picker catalog before live data loads", () => {
+  const { agent } = runAgentEditor(rejectedFetch());
+  const container = fakeContainer();
+  const options = [
+    {
+      value: "opencode/gpt-5.4",
+      dataset: { modelName: "GPT-5.4" },
+      textContent: "GPT-5.4",
+    },
+  ];
+  const modelSelect = {
+    querySelectorAll: () => [{ label: "OpenCode Zen", querySelectorAll: () => options }],
+  };
+  const card = { querySelector: () => modelSelect };
+  container.closest = () => card;
+  const state = {
+    mode: "editing",
+    revision: 0,
+    draft: agent.draftFromProfile(profileWithChildren()),
+    defaultProfile: defaultOpenCodeAgentProfile(),
+    modelProviders: [],
+    errors: [],
+    notice: null,
+    busy: false,
+    container,
+    repoModel: "opencode/gpt-5.4",
+  };
+
+  const html = agent.editorHtml(7, state);
+  assert.match(html, /<optgroup label="OpenCode Zen">/u);
+  assert.match(html, /<option value="opencode\/gpt-5\.4" selected>GPT-5\.4<\/option>/u);
+});
+
+test("reset to default replaces only the current draft and leaves normal review/save in control", () => {
+  const { agent } = runAgentEditor(rejectedFetch());
+  const container = fakeContainer();
+  const defaultProfile = defaultOpenCodeAgentProfile();
+  const state = {
+    mode: "editing",
+    revision: 2,
+    draft: agent.draftFromProfile(profileWithChildren()),
+    defaultProfile,
+    modelProviders: [],
+    errors: [{ path: "primary.id", message: "fix this" }],
+    notice: "old notice",
+    busy: false,
+    container,
+    repoModel: "opencode/gpt-5.4",
+  };
+  agent.editors.set(7, state as never);
+  agent.handleInput(7, "primary.description", "Unsaved custom edit");
+  agent.resetToDefault(7);
+
+  assert.equal(agent.editors.has(7), true);
+  assert.equal(state.draft.primary.id, "orchestrator");
+  assert.deepEqual(
+    state.draft.subagents.map((child) => child.id),
+    ["researcher", "implementer", "reviewer"],
+  );
+  assert.equal(state.draft.primary.description, defaultProfile.primary.description);
+  assert.equal(state.errors.length, 0);
+  assert.equal(state.notice, null);
+  assert.equal(state.mode, "editing");
+  assert.equal(state.revision, 2);
+  assert.match(container.innerHTML, /data-agent-action="reset"/u);
+  assert.match(container.innerHTML, /data-agent-action="apply"/u);
+  assert.equal(container.innerHTML.includes("Unsaved custom edit"), false);
+});
+
+test("reset can be canceled before discarding an in-progress draft", () => {
+  const { agent, environment } = runAgentEditor(rejectedFetch());
+  Object.assign(environment.window, { confirm: () => false });
+  const container = fakeContainer();
+  const state = {
+    mode: "editing",
+    revision: 1,
+    draft: agent.draftFromProfile(profileWithChildren()),
+    defaultProfile: defaultOpenCodeAgentProfile(),
+    modelProviders: [],
+    errors: [],
+    notice: null,
+    busy: false,
+    container,
+    repoModel: "opencode/gpt-5.4",
+  };
+  agent.editors.set(7, state as never);
+  agent.handleInput(7, "primary.description", "Keep this draft");
+
+  agent.resetToDefault(7);
+
+  assert.equal(state.draft.primary.description, "Keep this draft");
+  assert.equal(state.revision, 1);
+  assert.equal(container.innerHTML, "");
 });
 
 test("a validation refusal shows inline field errors and a focusable summary while the draft is retained", async () => {
