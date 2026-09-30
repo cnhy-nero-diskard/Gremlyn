@@ -1,0 +1,2 @@
+description = "Implement and ship an OpenSpec change using autoship."
+prompt = "Use the openspec-autoship skill to implement and ship the OpenSpec change. Follow its instructions exactly. Arguments: {{args}}"

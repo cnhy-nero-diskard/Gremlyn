@@ -1,14 +1,9 @@
 ---
 name: openspec-autoship
 description: >-
-  Autonomous end-to-end OpenSpec execution: implements every task in a change
-  using the openspec-apply-change workflow and commits AND pushes each coherent
-  checkpoint without manual oversight. Use when the user invokes
-  `$openspec-autoship`, asks to "apply and ship" or "implement and push" an
-  OpenSpec change, or wants hands-free execution on the current non-detached
-  branch, including main.
-slash: false
-allowed-tools: Bash(openspec:*), Bash(git:*), Bash(powershell:*)
+  Run an OpenSpec change end to end with safe commit and push checkpoints. Use when
+  the user invokes /openspec-autoship or requests OpenSpec implementation with commits
+  and pushes.
 license: MIT
 compatibility: Requires openspec CLI and Git.
 metadata:
@@ -23,13 +18,22 @@ One-shot autonomous execution pipeline that combines two existing skills:
 - **`openspec-apply-change`** — the task-selection, instruction-reading, and implementation loop
 - **`auto-commit-agent`** — the safety gate, staging rules, and conventional commit discipline
 
-and extends both with a hard guarantee: every coherent checkpoint is committed
-**and pushed** immediately, with no permission prompts, so the entire change
-lands on the remote hands-free.
+and extends both: every coherent checkpoint is committed and, unless
+`--no-push` is set, pushed automatically after the safety gate passes. Do not
+ask for repeated approval; higher-priority platform controls still apply.
 
 ## Autonomy Contract (read first)
 
 This skill exists to remove manual oversight. Follow these rules strictly:
+
+Calling this workflow through its provider-native trigger explicitly authorizes commits
+for task-only checkpoints and, unless `--no-push` is set, pushes to the checked-out
+branch's configured upstream (or `origin` when the branch has no upstream). Do not ask
+for a second approval for normal commits or pushes.
+
+This authorization does not override a higher-priority platform safety or egress
+control. If the platform rejects the exact authorized operation, stop and report the
+refusal; do not reroute it through another tool, agent, shell, or destination.
 
 1. **Never pause to ask permission to commit.** If the safety gate passes, commit.
 2. **Never pause to ask permission to push.** If the safety gate passes, push.
@@ -44,7 +48,7 @@ This skill exists to remove manual oversight. Follow these rules strictly:
 ## Input
 
 ```
-$openspec-autoship [change-name] [--dry-run] [--no-push]
+/openspec-autoship [change-name] [--dry-run] [--no-push]
 ```
 
 - `change-name` (optional): the OpenSpec change to apply. If omitted, infer from
@@ -234,7 +238,7 @@ After the last task (or when `instructions apply` reports `all_done`):
 ### Left Untouched (pre-existing)
 - <file>: <why>
 
-Next: archive with `$openspec-archive-change` when ready.
+Next: archive with `/opsx-archive` when ready.
 ```
 
 ## Pause Conditions (exhaustive)
@@ -247,6 +251,8 @@ Pause ONLY for:
 - Secrets detected in a task's diff.
 - Pre-existing user changes inseparably overlapping a task's files.
 - Merge conflicts after a push rejection that cannot auto-resolve.
+- The execution platform blocks an authorized commit or push. Report the exact refusal
+  and do not retry through another route.
 - openspec CLI reports `blocked` and the missing artifact is not part of this run.
 - User interrupts.
 
