@@ -118,6 +118,14 @@ export interface AgentRunOptions {
   signal: AbortSignal;
   /** Observe the agent's stdout lines as they arrive, for live reporting. */
   onLine?: (line: string) => void;
+  /**
+   * The captured primary agent runtime id for a managed OpenCode attempt
+   * (`<namespace>/<primary>`), selecting the generated primary through
+   * OpenCode's `--agent <id>`. Absent on unmanaged attempts and on executors
+   * with no `--agent` surface (Cline ignores it), so only a managed OpenCode
+   * run ever receives the flag.
+   */
+  primaryAgentId?: string;
 }
 
 /**

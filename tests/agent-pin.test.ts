@@ -28,6 +28,7 @@ const OPENCODE_RUN_HELP = [
   "FLAGS",
   "  --standalone            Run with a private server instead of the background service",
   "  --model, -m string    Model to use in the format provider/model#variant",
+  "  --agent string          Agent to use",
   "  --format choice       Output format (choices: default, json)",
   "  --thinking            Show thinking blocks",
   "  --auto                Auto-approve permissions that are not explicitly denied",
@@ -216,7 +217,10 @@ test("a newer CLI that moved a flag is refused, and the pin is left where it was
     runner: intactRunner(
       { opencode: "2.1.0", cline: "3.0.61" },
       {
-        "run --help": OPENCODE_RUN_HELP.replace("provider/model#variant", "provider/model#reasoning"),
+        "run --help": OPENCODE_RUN_HELP.replace(
+          "provider/model#variant",
+          "provider/model#reasoning",
+        ),
       },
     ),
   });

@@ -15,27 +15,39 @@ export interface OperatorActionRow {
   detail: string | null;
 }
 
+export interface OperatorActionInput {
+  action: string;
+  target: string;
+  effect?: string;
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * Insert one operator action row. Standalone statements join whatever
+ * transaction is already open on `db`, so a store operation can record its
+ * audit atomically with the change it audited (see the OpenCode profile save,
+ * which runs inside a compare-and-set transaction).
+ */
+export function recordOperatorAction(db: Database.Database, input: OperatorActionInput): number {
+  const result = db
+    .prepare(
+      "INSERT INTO operator_actions (at, action, target, effect, detail) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(
+      new Date().toISOString(),
+      input.action,
+      input.target,
+      input.effect ?? null,
+      input.detail === undefined ? null : JSON.stringify(input.detail),
+    );
+  return Number(result.lastInsertRowid);
+}
+
 export class OperatorActionStore {
   constructor(private readonly db: Database.Database) {}
 
-  record(input: {
-    action: string;
-    target: string;
-    effect?: string;
-    detail?: Record<string, unknown>;
-  }): number {
-    const result = this.db
-      .prepare(
-        "INSERT INTO operator_actions (at, action, target, effect, detail) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run(
-        new Date().toISOString(),
-        input.action,
-        input.target,
-        input.effect ?? null,
-        input.detail === undefined ? null : JSON.stringify(input.detail),
-      );
-    return Number(result.lastInsertRowid);
+  record(input: OperatorActionInput): number {
+    return recordOperatorAction(this.db, input);
   }
 
   list(limit = 50): OperatorActionRow[] {

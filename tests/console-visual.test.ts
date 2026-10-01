@@ -56,8 +56,14 @@ const jobFixture = (status: string) =>
   });
 
 test("console stylesheet is offline-safe and uses the declared native stacks", () => {
-  assert.match(stylesheet, /--font-sans:\s*"Segoe UI Variable Text",\s*"Segoe UI",\s*system-ui,\s*sans-serif/);
-  assert.match(stylesheet, /--font-mono:\s*"Cascadia Mono",\s*"SFMono-Regular",\s*Consolas,\s*monospace/);
+  assert.match(
+    stylesheet,
+    /--font-sans:\s*"Segoe UI Variable Text",\s*"Segoe UI",\s*system-ui,\s*sans-serif/,
+  );
+  assert.match(
+    stylesheet,
+    /--font-mono:\s*"Cascadia Mono",\s*"SFMono-Regular",\s*Consolas,\s*monospace/,
+  );
   assert.doesNotMatch(stylesheet, /\bInter\b/u);
   assert.doesNotMatch(stylesheet, /@font-face|url\(|font-display|preload/iu);
   assert.doesNotMatch(stylesheet, /https?:\/\//iu);
@@ -102,7 +108,9 @@ test("console stylesheet exposes primitive, semantic, component, and motion toke
 test("migrated component selectors consume semantic status tokens instead of raw palette values", () => {
   const componentRules = stylesheet
     .split("\n")
-    .filter((line) => /^\s*(?:\.|#|\[|button|input|select|details|nav|table|th|td|pre)/u.test(line));
+    .filter((line) =>
+      /^\s*(?:\.|#|\[|button|input|select|details|nav|table|th|td|pre)/u.test(line),
+    );
   for (const line of componentRules) {
     assert.doesNotMatch(line, /#(?:166534|1d4ed8|8a4b08|a61b15|8f2019|6941c6|4b5563)/iu, line);
   }
@@ -123,7 +131,10 @@ test("route fixtures expose one peak and identify forensic or inset content", ()
   }
   assert.match(dashboardFixture(), /data-presentation="peak"/u);
   assert.match(dashboardFixture(), /data-presentation="panel"/u);
-  assert.match(jobFixture("succeeded"), /data-presentation="peak"[^>]*data-job-outcome="succeeded"/u);
+  assert.match(
+    jobFixture("succeeded"),
+    /data-presentation="peak"[^>]*data-job-outcome="succeeded"/u,
+  );
   assert.match(jobFixture("succeeded"), /job-outcome-success/u);
   assert.match(jobFixture("running"), /class="panel presentation-panel activity-panel"/u);
   assert.match(commandsView([], "UTC"), /data-presentation="inset"/u);
@@ -150,7 +161,10 @@ test("current navigation and interactive states have independent visual hooks", 
 
 test("theme, motion, and narrow layout rules preserve semantic evidence", () => {
   assert.match(stylesheet, /@media\s*\(prefers-color-scheme:\s*dark\)[\s\S]*--status-success-fg/iu);
-  assert.match(stylesheet, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*animation:\s*none/iu);
+  assert.match(
+    stylesheet,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*animation:\s*none/iu,
+  );
   assert.match(stylesheet, /transition-duration:\s*\.01ms\s*!important/iu);
   assert.match(stylesheet, /\.grid\s*\{[^}]*minmax\(min\(100%,\s*260px\)/su);
   assert.match(stylesheet, /\.attempt-grid\s*\{[^}]*minmax\(min\(100%,\s*23rem\)/su);
@@ -171,7 +185,16 @@ test("semantic status treatments retain visible text and non-color markers", () 
   assert.match(stylesheet, /\.status-pill::before/iu);
   assert.match(stylesheet, /\.status-failed::before/iu);
   assert.match(stylesheet, /\.status-cancelled::before/iu);
-  for (const role of ["success", "progress", "warning", "cancelled", "interrupted", "failure", "danger", "neutral"]) {
+  for (const role of [
+    "success",
+    "progress",
+    "warning",
+    "cancelled",
+    "interrupted",
+    "failure",
+    "danger",
+    "neutral",
+  ]) {
     assert.match(stylesheet, new RegExp(`data-visual-role="${role}"`), role);
   }
   assert.match(stylesheet, /\.safety-rail, \.job-safety-rail/iu);

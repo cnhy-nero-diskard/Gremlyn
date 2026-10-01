@@ -971,7 +971,9 @@ test("retry keeps content edits made to an already-dirty file after quarantine v
   await assert.rejects(() => resolveEvent(data));
   const job = data.store.db.prepare("SELECT id FROM jobs").get() as { id: number };
   const first = data.store.db
-    .prepare("SELECT id, head_sha_at_prepare, workspace_path FROM attempts WHERE attempt_number = 1")
+    .prepare(
+      "SELECT id, head_sha_at_prepare, workspace_path FROM attempts WHERE attempt_number = 1",
+    )
     .get() as { id: number; head_sha_at_prepare: string; workspace_path: string };
   const raceFile = join(first.workspace_path, "feature.txt");
   let mutated = false;

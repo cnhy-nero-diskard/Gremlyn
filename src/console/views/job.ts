@@ -1,4 +1,9 @@
-import type { JobDetail, ValidationRun } from "../queries.js";
+import type {
+  AttemptDetail,
+  JobDetail,
+  ManagedChildSessionSummary,
+  ValidationRun,
+} from "../queries.js";
 import {
   agentActivity,
   attemptCard,
@@ -67,6 +72,21 @@ function reviewContext(raw: string | null): string {
 }
 
 const LIVE_STATUSES = ["queued", "preparing", "running", "validating", "publishing", "reporting"];
+
+/**
+ * The managed OpenCode failure reasons whose specific detail is worth showing
+ * in job detail: a configuration fault (profile/materialize/preflight) or an
+ * unproven child tree (discovery/unsettled/cleanup). These are the reasons
+ * whose detail message names the failing agent id or the child session ids.
+ */
+const MANAGED_FAILURE_REASONS = new Set([
+  "managed-profile-corrupt",
+  "managed-materialize-failed",
+  "managed-preflight-failed",
+  "managed-session-discovery-failed",
+  "managed-child-unsettled",
+  "managed-cleanup-failed",
+]);
 
 /** Mark the log as streaming, so a still panel is not mistaken for a stalled one. */
 function liveBadge(status: string): string {
@@ -145,9 +165,20 @@ function jobHeader(model: JobDetail): string {
   const repo = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
   const prUrl = `https://github.com/${repo}/pull/${String(pr)}`;
   const outcomeClass = model.job.status === "succeeded" ? " job-outcome-success" : "";
-  const title = `<div class="job-title"><h1 data-focus-fallback tabindex="-1">${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span><span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
+  const title = `<div class="job-title"><h1 data-focus-fallback tabindex="-1">${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span>${capturedAgentChip(model)}<span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
   const links = `<p class="job-links"><a href="${prUrl}">Pull request #${String(pr)} ↗</a><a href="${prUrl}#discussion_r${String(comment)}">Triggering comment discussion_r${String(comment)} ↗</a></p>`;
   return `<header class="page-head presentation-peak${outcomeClass}" data-presentation="peak" data-job-outcome="${escapeHtml(model.job.status)}"><div class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></div>${title}${links}${statStrip(model)}</header>`;
+}
+
+/**
+ * The captured OpenCode agent profile as a compact chip beside the triggering
+ * command. Names the primary agent and the exact revision the job froze at
+ * creation; the private instruction text is never projected.
+ */
+function capturedAgentChip(model: JobDetail): string {
+  const profile = model.job.opencodeProfile ?? null;
+  if (profile === null) return "";
+  return `<span class="chip" title="Captured OpenCode agent profile at job creation">agent <code>${escapeHtml(profile.primaryId)}</code> · revision ${escapeHtml(String(profile.revision))}</span>`;
 }
 
 /**
@@ -168,6 +199,83 @@ function activityPanel(model: JobDetail, timeZone?: string): string {
   const live = LIVE_STATUSES.includes(model.job.status);
   const follow = `<label class="follow-toggle" title="Pin to the newest step while the agent runs"><input type="checkbox" data-activity-follow${live ? " checked" : ""}> Follow</label>`;
   return `<section class="panel presentation-panel activity-panel" data-presentation="panel" data-resizable="activity"><h2>Agent activity ${liveBadge(model.job.status)}${attempt}</h2>${agentActivity(latest?.activity ?? null, follow, timeZone)}</section>`;
+}
+
+/**
+ * One delegated child session as a readable row: text first, colour second.
+ * A settled child shows its terminal pinned outcome; a child whose quiescence
+ * could not be proven shows that state explicitly with the mechanism spelled
+ * out — unsettled means never confirmed stopped, unknown means its state could
+ * not be verified. Both fail closed with the id in view.
+ */
+function childSessionEvidence(child: ManagedChildSessionSummary): string {
+  const label = child.outcome ?? child.state;
+  const note =
+    child.state === "unsettled"
+      ? " could not be confirmed stopped"
+      : child.state === "unknown"
+        ? " state could not be verified"
+        : child.interrupted
+          ? " interrupted by Gremlyn"
+          : "";
+  return `<li><code class="session-id">${escapeHtml(child.sessionId)}</code>${statusPill(label)}<span class="muted">${escapeHtml(note)}</span></li>`;
+}
+
+/**
+ * Managed OpenCode evidence for one attempt: its parent session, every child's
+ * terminal outcome (or unproven state), and the specific configuration or
+ * quiescence failure detail. Renders nothing for attempts without managed
+ * evidence, so ordinary Cline/legacy jobs are unchanged.
+ */
+function managedEvidenceForAttempt(attempt: AttemptDetail, capturedProfile: boolean): string {
+  const childSessions = attempt.childSessions ?? [];
+  const failureDetail = attempt.failure_detail ?? null;
+  const managedFailure =
+    failureDetail !== null ||
+    (attempt.failure_reason !== null && MANAGED_FAILURE_REASONS.has(attempt.failure_reason));
+  if (
+    (!capturedProfile && childSessions.length === 0 && !managedFailure) ||
+    (attempt.agent_session_id === null && childSessions.length === 0 && !managedFailure)
+  ) {
+    return "";
+  }
+  const parent = attempt.agent_session_id
+    ? `<code class="session-id">${escapeHtml(attempt.agent_session_id)}</code>`
+    : '<span class="muted">no parent session captured</span>';
+  const children =
+    childSessions.length > 0
+      ? `<ul class="child-sessions">${childSessions.map(childSessionEvidence).join("")}</ul>`
+      : '<p class="muted">No child sessions recorded.</p>';
+  const failure =
+    failureDetail !== null
+      ? `<p class="managed-failure-detail"><strong>Specific failure detail:</strong> ${escapeHtml(failureDetail)}</p>`
+      : "";
+  return `<article class="managed-attempt" data-live-key="managed-attempt-${String(attempt.id)}"><h3>Attempt ${String(attempt.attempt_number)}</h3><p class="delegated-parent">Parent session ${parent}</p>${children}${failure}</article>`;
+}
+
+/**
+ * The managed OpenCode evidence panel: the captured profile (primary + exact
+ * revision + enabled subagent count) and, per attempt, its delegated child
+ * outcomes and specific configuration/quiescence failures. Absent entirely for
+ * jobs without a captured profile or managed attempt evidence.
+ */
+function managedOpenCodePanel(model: JobDetail): string {
+  const profile = model.job.opencodeProfile ?? null;
+  const evidence = model.attempts
+    .map((attempt) => managedEvidenceForAttempt(attempt, profile !== null))
+    .filter((html) => html.length > 0);
+  if (profile === null && evidence.length === 0) return "";
+  const enabledChildren = profile?.subagents.filter((subagent) => subagent.enabled).length ?? 0;
+  const profileHtml =
+    profile === null
+      ? ""
+      : `<p class="managed-agent-summary">Captured agent profile: primary <code>${escapeHtml(profile.primaryId)}</code> · revision ${escapeHtml(String(profile.revision))} · ${String(enabledChildren)} enabled subagent${enabledChildren === 1 ? "" : "s"}</p>`;
+  const body =
+    profileHtml +
+    (evidence.length > 0
+      ? evidence.join("")
+      : '<p class="muted">No managed OpenCode attempt evidence recorded.</p>');
+  return `<section class="panel presentation-inset span-all" data-presentation="inset" aria-label="Managed OpenCode agent and delegated sessions"><h2>Managed OpenCode agent</h2>${body}</section>`;
 }
 
 /**
@@ -194,7 +302,7 @@ function jobAside(model: JobDetail, timeZone?: string): string {
   const review = `<section class="panel presentation-inset span-all" data-presentation="inset"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
   const attemptPanel = `<section class="panel presentation-panel span-all" data-presentation="panel"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
   const validation = `<section class="panel presentation-inset span-2" data-presentation="inset">${validationTable(model.validation)}</section>`;
-  return `<div class="job-aside">${timeline}${validation}${review}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
+  return `<div class="job-aside">${timeline}${validation}${review}${managedOpenCodePanel(model)}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
 export function jobRegions(

@@ -30,6 +30,7 @@ test("migrations apply cleanly against a fresh database", () => {
     "validation_runs",
     "log_entries",
     "ingestion_state",
+    "opencode_agent_profiles",
   ]) {
     assert.ok(tables.includes(table), `missing table ${table}`);
   }

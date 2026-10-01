@@ -4,6 +4,32 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RepoConfig } from "../config/loader.js";
 import { extractSupportedEfforts } from "../agent/cline.js";
+import { serializeOpenCodeAgents, type SerializedOpenCodeAgents } from "../agent/materialize.js";
+import {
+  cleanupManagedOpencodeFiles,
+  ManagedFilesError,
+  materializeManagedOpencodeFiles,
+  managedOpencodeManifestPath,
+  readManagedOpencodeManifest,
+} from "../agent/managed-files.js";
+import {
+  OpenCodeAgentPreflightError,
+  preflightManagedOpenCodeAgents,
+  type AgentInventoryReader,
+  type ManagedAgentPreflightResult,
+} from "../agent/managed-preflight.js";
+import {
+  createCliManagedSessionHttp,
+  OpenCodeSessionDiscoveryError,
+  OpenCodeSessionSettleError,
+  settleAttemptChildren,
+  type ManagedAttemptSettlement,
+  type ManagedSessionHttp,
+} from "../agent/managed-sessions.js";
+import {
+  parseOpenCodeAgentProfile,
+  type OpenCodeAgentProfile,
+} from "../config/opencode-profile.js";
 import {
   persistRotatedCredentials,
   removeAttemptDataDir,
@@ -28,6 +54,11 @@ import type { OperatorActionStore } from "../store/actions.js";
 import { publishIfEligible } from "../publish/policy.js";
 import { reportAttemptOutcome } from "../publish/report.js";
 import { JobStore, type AttemptRow } from "../store/jobs.js";
+import {
+  attemptDataDirFor,
+  isAttemptQuarantined,
+  quarantineRecordsForWorkspace,
+} from "./attempt-recovery.js";
 import type {
   AgentExecutor,
   AgentResult,
@@ -69,6 +100,29 @@ import { reactionForStatus } from "./reactions.js";
 
 /** Snapshot cadence for live agent activity: responsive without thrashing disk. */
 const ACTIVITY_FLUSH_MS = 400;
+
+/**
+ * Fallback bound for child-session settlement when the attempt has no
+ * configured timeout. With a configured timeout the parent run and the
+ * settlement share that budget ("bounded parent+child total timeout"); with
+ * none, the parent can run indefinitely, but settlement must still be bounded
+ * so a wedged `opencode api` transport cannot stall the queue forever.
+ */
+const MANAGED_SETTLE_FALLBACK_BUDGET_MS = 60_000;
+
+/** The per-attempt namespace for generated OpenCode agents, derived from the attempt id. */
+function managedAttemptNamespace(attemptId: number): string {
+  return `attempt-${attemptId}`;
+}
+
+/** The remaining share of the configured attempt timeout, read at settlement time. */
+function managedRemainingBudgetMs(
+  configuredTimeoutSec: number | undefined,
+  runStartedAt: number,
+): number {
+  if (configuredTimeoutSec === undefined) return MANAGED_SETTLE_FALLBACK_BUDGET_MS;
+  return Math.max(0, configuredTimeoutSec * 1000 - (Date.now() - runStartedAt));
+}
 
 function samePath(left: string, right: string): boolean {
   const normalizedLeft = resolve(left);
@@ -116,8 +170,15 @@ function canResumeRetainedWorkspace(
   attempt: AttemptRow | undefined,
   workspaceRoot: string,
   prNumber: number,
+  dataDir: string,
 ): boolean {
-  if (!attempt?.workspace_path || !attempt.head_sha_at_prepare) return false;
+  if (!attempt) return false;
+  // A managed attempt that start-up recovery could not prove quiescent for is
+  // quarantined: its workspace may still hold generated agent files (private
+  // instructions) and a later run must never resume over them. Its durable
+  // recovery record is the admission gate (task 3.6).
+  if (isAttemptQuarantined(attemptDataDirFor(dataDir, attempt.id))) return false;
+  if (!attempt.workspace_path || !attempt.head_sha_at_prepare) return false;
   if (!samePath(attempt.workspace_path, workspacePathFor(workspaceRoot, prNumber))) return false;
   if (attempt.outcome === "interrupted") return true;
   if (attempt.has_uncommitted_changes !== 1) return false;
@@ -151,12 +212,15 @@ function retainedWorkspaceAttempt(
   attempts: readonly AttemptRow[],
   workspaceRoot: string,
   prNumber: number,
+  dataDir: string,
 ): AttemptRow | undefined {
   for (let index = attempts.length - 1; index >= 0; index -= 1) {
     const attempt = attempts[index];
     if (!attempt) continue;
     if (!attempt.workspace_path) continue;
-    return canResumeRetainedWorkspace(attempt, workspaceRoot, prNumber) ? attempt : undefined;
+    return canResumeRetainedWorkspace(attempt, workspaceRoot, prNumber, dataDir)
+      ? attempt
+      : undefined;
   }
   return undefined;
 }
@@ -201,7 +265,52 @@ export interface ResolutionOrchestratorOptions {
   operatorActions?: Pick<OperatorActionStore, "record">;
   /** Provider/executor pairing reference; defaults to the bundled catalog. */
   providerCatalog?: ProviderCatalogSnapshot;
+  /**
+   * Managed-OpenCode seams (tasks 3.2-3.5 integration). Every field defaults
+   * to the pinned production path — the `opencode api` CLI under the
+   * attempt's exact cwd and environment for child-session settlement, and
+   * the `opencode debug agents` probe for the preflight — so only tests have
+   * reason to inject fakes.
+   */
+  managedOpenCode?: {
+    /**
+     * Session transport for settlement; receives the same cwd and environment
+     * the attempt's parent run used. Defaults to {@link createCliManagedSessionHttp}.
+     */
+    sessionHttp?: (worker: { cwd: string; env: Record<string, string> }) => ManagedSessionHttp;
+    /** Agent-inventory source for the preflight; defaults to the CLI reader. */
+    preflightInventory?: AgentInventoryReader;
+    preflightPollIntervalMs?: number;
+    preflightPollBudgetMs?: number;
+    settlePollIntervalMs?: number;
+    settleInterruptGraceMs?: number;
+  };
 }
+
+/**
+ * The running state of a managed OpenCode attempt (tasks 3.2-3.5): the
+ * serialized agent contract, the journaled manifest location, and the captured
+ * profile revision. Only ever present when the resolved executor is the
+ * `opencode` one AND the job carried a dashboard profile snapshot.
+ */
+interface ManagedAttemptContext {
+  readonly namespace: string;
+  readonly revision: number | null;
+  readonly serialized: SerializedOpenCodeAgents;
+  readonly primaryRuntimeId: string;
+  readonly manifestPath: string;
+}
+
+/**
+ * Whether a failure path finished a managed attempt's finalization. `clean`
+ * means child sessions were provably quiescent (or nothing had been spawned)
+ * and the generated files were removed; `uncertain` means quiescence could not
+ * be proven, so no validation or publication may begin, the manifest and data
+ * dir must survive for recovery, and the recorded failure must be the managed
+ * quiescence/cleanup reason rather than a retriable agent failure.
+ */
+type ManagedRemediation =
+  { readonly status: "clean" } | { readonly status: "uncertain"; readonly failure: StageFailure };
 
 export class ResolutionOrchestrator {
   private readonly jobs: JobStore;
@@ -247,8 +356,10 @@ export class ResolutionOrchestrator {
         ...(authorization.kind === "authorized" ? {} : { reason: authorization.reason }),
       });
       if (authorization.kind !== "authorized") continue;
+      const executorKind = this.options.executors.get(repository.agent)?.id;
       const claimed = this.jobs.createJob({
         repoId: repository.id,
+        ...(executorKind === undefined ? {} : { executorKind }),
         prNumber: event.prNumber,
         commentId: event.commentId,
         command: command.name,
@@ -321,6 +432,7 @@ export class ResolutionOrchestrator {
       this.jobs.listAttempts(jobId),
       repository.workspaceRoot,
       job.pr_number,
+      this.options.dataDir,
     );
     const attempt = this.jobs.retryJob({
       jobId,
@@ -337,7 +449,12 @@ export class ResolutionOrchestrator {
       job.comment_id,
       repository.model,
       { name: job.command },
-      canResumeRetainedWorkspace(priorAttempt, repository.workspaceRoot, job.pr_number)
+      canResumeRetainedWorkspace(
+        priorAttempt,
+        repository.workspaceRoot,
+        job.pr_number,
+        this.options.dataDir,
+      )
         ? {
             attemptId: priorAttempt!.id,
             workspacePath: priorAttempt!.workspace_path!,
@@ -433,6 +550,25 @@ export class ResolutionOrchestrator {
       resumeDirtyWorkspace,
       adoptExistingCheckout,
     } = input;
+    // A workspace quarantined by startup recovery (task 3.6) may still hold the
+    // crashed attempt's generated agent files — including paths git ignores, so
+    // a clean-tree check would never see them. Every admission is gated BEFORE
+    // preparation so the stale old profile can never be discovered or published
+    // by a later run, whether that run is a fresh job or a retry.
+    const quarantineRecords = quarantineRecordsForWorkspace(
+      this.options.dataDir,
+      workspacePathFor(repository.workspaceRoot, prNumber),
+    );
+    if (quarantineRecords.length > 0) {
+      const record = quarantineRecords[0]!;
+      throw new StageFailure(
+        "preparing",
+        "workspace-quarantined",
+        `workspace ${workspacePathFor(repository.workspaceRoot, prNumber)} is quarantined by ` +
+          `start-up recovery (attempt ${record.attemptId}, ${record.reason}); its owned ` +
+          "generated files cannot be accounted for safely, so this attempt is refused",
+      );
+    }
     try {
       return await prepareWorkspace({
         sourcePath: repository.sourcePath,
@@ -496,6 +632,12 @@ export class ResolutionOrchestrator {
     }
     const workspacePath = workspacePathFor(input.repository.workspaceRoot, input.prNumber);
     if (!existsSync(workspacePath)) return undefined;
+    // A managed attempt that start-up recovery could not prove quiescent for is
+    // quarantined. Its workspace may still hold generated agent files that are
+    // evidence; the guarded reset path must never discard them (task 3.6).
+    if (quarantineRecordsForWorkspace(this.options.dataDir, workspacePath).length > 0) {
+      return undefined;
+    }
     try {
       if ((await currentBranch(workspacePath)) !== input.headBranch) return undefined;
       if ((await unmergedEntries(workspacePath)).length > 0) return undefined;
@@ -526,6 +668,9 @@ export class ResolutionOrchestrator {
       break;
     }
     if (!prior?.head_sha_at_prepare) return undefined;
+    // A prior attempt quarantined by start-up recovery must not be reset into:
+    // generated content it owned is evidence, and this reset would discard it.
+    if (isAttemptQuarantined(attemptDataDirFor(this.options.dataDir, prior.id))) return undefined;
     let workspaceSnapshotAtCollection: WorkspaceSnapshot;
     try {
       workspaceSnapshotAtCollection = await workspaceSnapshot(workspacePath);
@@ -684,6 +829,10 @@ export class ResolutionOrchestrator {
     command: ParsedCommand,
     retainedWorkspace?: RetainedWorkspace,
   ): QueuedJob {
+    // Shared with the running attempt: when a managed attempt ends with
+    // unproven quiescence, both the failure path and the cancellation handler
+    // must leave the manifest and data dir in place for recovery.
+    const preserveDataDir: { value: boolean; failure?: StageFailure } = { value: false };
     const completed = this.queue.enqueue({
       jobId,
       repoId: repository.id,
@@ -708,21 +857,41 @@ export class ResolutionOrchestrator {
           command,
           ...(retainedWorkspace === undefined ? {} : { retainedWorkspace }),
           signal,
+          preserveDataDir,
         }),
       onRejected: async (reason) => {
         this.jobs.finishFailure(jobId, attemptId, "preparing", reason);
         await this.reactToStatus(repository, commentId, "failed");
       },
       onCancelled: async () => {
+        if (preserveDataDir.failure !== undefined) {
+          const failure = preserveDataDir.failure;
+          this.jobs.recordFailureDetail(attemptId, {
+            stage: failure.stage,
+            reason: failure.reason,
+            hasUncommittedChanges: true,
+          });
+          // Task 4.4: a managed attempt cancelled with unproven quiescence
+          // persists the specific failure detail alongside the failure reason.
+          if (failure.message.length > 0 && failure.message !== failure.reason) {
+            this.recordManagedFailureDetail(attemptId, failure.message);
+          }
+          this.jobs.finishFailure(jobId, attemptId, failure.stage, failure.reason);
+          await this.reactToStatus(repository, commentId, "failed");
+          return;
+        }
         const attempt = this.jobs.getAttempt(attemptId);
         const hasChanges = attempt.workspace_path
           ? (await statusEntries(attempt.workspace_path)).length > 0
           : false;
         this.jobs.cancelJob(jobId, attemptId, hasChanges);
         await this.reactToStatus(repository, commentId, "cancelled");
-        // 4.3: seeded credential must be removed even on cancellation.
+        // 4.3: seeded credential must be removed even on cancellation. A
+        // managed attempt with unproven quiescence keeps its manifest and data
+        // dir instead (tasks 3.2-3.5) so recovery can still account for the
+        // generated content.
         const attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
-        removeAttemptDataDir(attemptDataDir);
+        if (!preserveDataDir.value) removeAttemptDataDir(attemptDataDir);
       },
     });
     // Ingestion must never await a run. The poll loop is single-flight, so
@@ -741,6 +910,434 @@ export class ResolutionOrchestrator {
     return { jobId, attemptId, completed };
   }
 
+  /**
+   * Resolve and validate the attempt's managed OpenCode contract from the job's
+   * captured profile snapshot (task 3.2). Runs only when the actual executor is
+   * the `opencode` one, per the snapshot gate; a repository whose agent maps to
+   * any other executor never consults the snapshot. Fails closed when the
+   * snapshot is present but unusable: a stored profile that no longer parses
+   * must not silently degrade to an unmanaged run.
+   */
+  private resolveManagedContract(input: {
+    jobId: number;
+    attemptId: number;
+    stage: FailureStage;
+  }): ManagedAttemptContext | undefined {
+    const job = this.jobs.getJob(input.jobId);
+    const profileJson = job.opencode_profile_json;
+    if (profileJson === null) return undefined;
+    let profile: OpenCodeAgentProfile;
+    try {
+      profile = parseOpenCodeAgentProfile(JSON.parse(profileJson) as unknown);
+    } catch (error) {
+      throw new StageFailure(
+        input.stage,
+        "managed-profile-corrupt",
+        `the captured OpenCode profile for job ${input.jobId} is unusable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const namespace = managedAttemptNamespace(input.attemptId);
+    let serialized: SerializedOpenCodeAgents;
+    try {
+      serialized = serializeOpenCodeAgents({ profile, namespace });
+    } catch (error) {
+      throw new StageFailure(
+        input.stage,
+        "managed-profile-corrupt",
+        `the captured OpenCode profile for job ${input.jobId} cannot be serialized for ` +
+          `attempt ${input.attemptId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return {
+      namespace,
+      revision: job.opencode_profile_revision,
+      serialized,
+      primaryRuntimeId: serialized.primaryRuntimeId,
+      manifestPath: managedOpencodeManifestPath(
+        join(this.options.dataDir, "attempts", String(input.attemptId)),
+      ),
+    };
+  }
+
+  /**
+   * Materialize the serialized agent files into the prepared worktree (task
+   * 3.2) and prove the generated team is effective for the attempt location
+   * under the exact cwd and environment the run will receive (task 3.3). The
+   * manifest is journaled outside the worktree, inside the attempt data dir,
+   * before a single generated byte lands in the worktree.
+   *
+   * Materialization and preflight failures are configuration failures: the
+   * operator's team is what is wrong, and no amount of retrying the available
+   * agent helps. They are mapped to distinct reasons and thrown here so the
+   * attempt records them before any agent work runs.
+   */
+  private async configureManagedAttempt(input: {
+    managed: ManagedAttemptContext;
+    jobId: number;
+    attemptId: number;
+    workspacePath: string;
+    agentEnv: Record<string, string>;
+    signal: AbortSignal;
+    stage: FailureStage;
+  }): Promise<void> {
+    const { managed } = input;
+    try {
+      await materializeManagedOpencodeFiles({
+        workspacePath: input.workspacePath,
+        manifestPath: managed.manifestPath,
+        serialized: managed.serialized,
+        ...(managed.revision === null ? {} : { profileFingerprint: `v${managed.revision}` }),
+      });
+    } catch (error) {
+      if (error instanceof ManagedFilesError) {
+        throw new StageFailure(input.stage, "managed-materialize-failed", error.message);
+      }
+      throw error;
+    }
+    let preflight: ManagedAgentPreflightResult;
+    try {
+      preflight = await preflightManagedOpenCodeAgents({
+        agents: managed.serialized,
+        cwd: input.workspacePath,
+        env: input.agentEnv,
+        signal: input.signal,
+        ...(this.options.managedOpenCode?.preflightInventory === undefined
+          ? {}
+          : { inventory: this.options.managedOpenCode.preflightInventory }),
+        ...(this.options.managedOpenCode?.preflightPollIntervalMs === undefined
+          ? {}
+          : { pollIntervalMs: this.options.managedOpenCode.preflightPollIntervalMs }),
+        ...(this.options.managedOpenCode?.preflightPollBudgetMs === undefined
+          ? {}
+          : { pollBudgetMs: this.options.managedOpenCode.preflightPollBudgetMs }),
+      });
+    } catch (error) {
+      if (error instanceof OpenCodeAgentPreflightError) {
+        throw new StageFailure(input.stage, "managed-preflight-failed", error.message);
+      }
+      throw error;
+    }
+    this.options.logger.info("managed attempt configured", {
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      namespace: managed.namespace,
+      revision: managed.revision,
+      primary: managed.primaryRuntimeId,
+      files: managed.serialized.files.length,
+      verifiedChildren: preflight.verifiedChildren.length,
+      preflightPolls: preflight.polls,
+    });
+  }
+
+  /**
+   * Persist the attempt's settled child-session outcomes (task 4.4). Job
+   * detail is a database projection that must survive restart, so the
+   * delegated agent outcomes are written durably here: session ids, terminal
+   * outcomes, and whether each child had to be interrupted — never instruction
+   * text. Best-effort: a diagnostic write failure is logged, not thrown, so it
+   * can never change the attempt's own outcome.
+   */
+  private recordManagedChildrenSettled(input: {
+    attemptId: number;
+    settlement: ManagedAttemptSettlement;
+  }): void {
+    try {
+      const upsert = this.options.db.prepare(`
+        INSERT INTO managed_child_sessions (attempt_id, session_id, outcome, state, interrupted)
+        VALUES (?, ?, ?, 'settled', ?)
+        ON CONFLICT(attempt_id, session_id) DO UPDATE SET
+          outcome = excluded.outcome,
+          state = 'settled',
+          interrupted = excluded.interrupted
+      `);
+      for (const child of input.settlement.children) {
+        upsert.run(input.attemptId, child.id, child.outcome, child.interrupted ? 1 : 0);
+      }
+    } catch (error) {
+      this.options.logger.warn("managed child outcomes were not persisted", {
+        attemptId: input.attemptId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Persist child sessions whose quiescence could not be proven (task 4.4).
+   * An unsettled or unknown child carries its id and no terminal outcome, so
+   * job detail can show, specific and fail-closed, exactly which child stopped
+   * the attempt. Best-effort, like {@link recordManagedChildrenSettled}.
+   */
+  private recordManagedChildrenUnproven(input: {
+    attemptId: number;
+    unsettled: readonly string[];
+    unknown: readonly string[];
+  }): void {
+    try {
+      const upsert = this.options.db.prepare(`
+        INSERT INTO managed_child_sessions (attempt_id, session_id, outcome, state, interrupted)
+        VALUES (?, ?, NULL, ?, 0)
+        ON CONFLICT(attempt_id, session_id) DO UPDATE SET state = excluded.state
+      `);
+      for (const sessionId of input.unsettled) upsert.run(input.attemptId, sessionId, "unsettled");
+      for (const sessionId of input.unknown) upsert.run(input.attemptId, sessionId, "unknown");
+    } catch (error) {
+      this.options.logger.warn("managed unproven-child evidence was not persisted", {
+        attemptId: input.attemptId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Persist the specific failure detail of a managed attempt (task 4.4): the
+   * configuration or quiescence message naming agent labels, session ids, or
+   * paths. The redactor at the console boundary treats it like any other
+   * string; only the message text is stored, never the operator's private
+   * instruction content. Best-effort, like the child evidence writers.
+   */
+  private recordManagedFailureDetail(attemptId: number, detail: string): void {
+    try {
+      this.options.db
+        .prepare("UPDATE attempts SET failure_detail = ? WHERE id = ?")
+        .run(detail, attemptId);
+    } catch (error) {
+      this.options.logger.warn("managed failure detail was not persisted", {
+        attemptId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Remove the attempt's generated agent files (task 3.2 cleanup). Runs only
+   * after child-session quiescence is proven — or trivially, when nothing was
+   * ever spawned — and always before validation and publication. The manifest
+   * is retained by the cleanup module when generated content remains, so a
+   * callback that cannot prove the workspace clean fails the attempt instead
+   * of letting it publish.
+   */
+  private async cleanupManagedAttempt(input: {
+    managed: ManagedAttemptContext;
+    workspacePath: string;
+    jobId: number;
+    attemptId: number;
+    stage: FailureStage;
+  }): Promise<void> {
+    try {
+      const report = await cleanupManagedOpencodeFiles({
+        workspacePath: input.workspacePath,
+        manifestPath: input.managed.manifestPath,
+      });
+      this.options.logger.info("managed agent files cleaned", {
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        removed: report.removed.length,
+        edited: report.edited.length,
+      });
+      // Content that was edited away is never restored or logged inline: the
+      // possibly-private instruction text went to a content-addressed evidence
+      // sidecar, and only that path is surfaced.
+      for (const edited of report.edited) {
+        this.options.logger.warn(
+          "generated agent file was modified by the agent; edited bytes preserved outside the worktree",
+          {
+            jobId: input.jobId,
+            attemptId: input.attemptId,
+            path: edited.path,
+            evidencePath: edited.evidencePath,
+          },
+        );
+      }
+    } catch (error) {
+      if (error instanceof ManagedFilesError) {
+        throw new StageFailure(input.stage, "managed-cleanup-failed", error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Settle the attempt's child sessions through the pinned session surface
+   * (task 3.5), then clean up the generated files. Runs before any validation
+   * or publication and on every failure path: the parent CLI exiting — even
+   * cleanly — does not prove background children have stopped, so nothing that
+   * reads or publishes the workspace may begin until every child is provably
+   * quiescent. The transport is the `opencode api` CLI under the exact cwd and
+   * environment the parent run received, with queries encoded into the request
+   * path (the CLI's `--param` flag silently drops filters on 2.0.16).
+   */
+  private async settleAndCleanupManagedAttempt(input: {
+    managed: ManagedAttemptContext;
+    parentSessionId: string;
+    worker: { cwd: string; env: Record<string, string> };
+    remainingBudgetMs: number;
+    signal: AbortSignal;
+    jobId: number;
+    attemptId: number;
+    stage: FailureStage;
+  }): Promise<void> {
+    let settlement: ManagedAttemptSettlement;
+    try {
+      settlement = await settleAttemptChildren({
+        parentSessionId: input.parentSessionId,
+        attemptDirectory: input.worker.cwd,
+        http:
+          this.options.managedOpenCode?.sessionHttp === undefined
+            ? createCliManagedSessionHttp({ cwd: input.worker.cwd, env: input.worker.env })
+            : this.options.managedOpenCode.sessionHttp(input.worker),
+        timeoutMs: input.remainingBudgetMs,
+        signal: input.signal,
+        ...(this.options.managedOpenCode?.settlePollIntervalMs === undefined
+          ? {}
+          : { pollIntervalMs: this.options.managedOpenCode.settlePollIntervalMs }),
+        ...(this.options.managedOpenCode?.settleInterruptGraceMs === undefined
+          ? {}
+          : { interruptGraceMs: this.options.managedOpenCode.settleInterruptGraceMs }),
+      });
+    } catch (error) {
+      if (error instanceof OpenCodeSessionDiscoveryError) {
+        throw new StageFailure(input.stage, "managed-session-discovery-failed", error.message);
+      }
+      if (error instanceof OpenCodeSessionSettleError) {
+        // Task 4.4: make the fail-closed stop durable — the specific child ids
+        // that could not be proven stopped must survive for job detail, even
+        // though the wrapped StageFailure below only carries them in its text.
+        this.recordManagedChildrenUnproven({
+          attemptId: input.attemptId,
+          unsettled: error.unsettledSessionIds,
+          unknown: error.unknownSessionIds,
+        });
+        throw new StageFailure(input.stage, "managed-child-unsettled", error.message);
+      }
+      throw error;
+    }
+    this.options.logger.info("managed child sessions settled", {
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      parentSessionId: input.parentSessionId,
+      children: settlement.children.length,
+      interrupted: settlement.interruptedSessionIds.length,
+      rounds: settlement.rounds,
+    });
+    // Task 4.4: the settled child outcomes are durable evidence for job detail.
+    this.recordManagedChildrenSettled({ attemptId: input.attemptId, settlement });
+    await this.cleanupManagedAttempt({
+      managed: input.managed,
+      workspacePath: input.worker.cwd,
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      stage: input.stage,
+    });
+  }
+
+  /**
+   * Finalize a managed attempt in the exact required order: child sessions
+   * first (interrupting them when the attempt boundary is reached), generated
+   * files only after quiescence is proven, and never any validation or
+   * publication on an unproven tree. Throws a {@link StageFailure} naming the
+   * config or quiescence failure when the attempt cannot be completed safely.
+   */
+  private async finalizeManagedAttempt(input: {
+    managed: ManagedAttemptContext;
+    launched: boolean;
+    parentSessionId: string | undefined;
+    worker: { cwd: string; env: Record<string, string> };
+    remainingBudgetMs: number;
+    signal: AbortSignal;
+    jobId: number;
+    attemptId: number;
+    stage: FailureStage;
+  }): Promise<void> {
+    const { managed, launched, parentSessionId } = input;
+    if (!launched) {
+      // Nothing was ever spawned, so no child session can exist: quiescence is
+      // trivially proven and only the generated files must be removed. A
+      // retained manifest that can no longer be read could still own files, so
+      // that state fails closed rather than being treated as clean.
+      const manifest = readManagedOpencodeManifest(managed.manifestPath);
+      if (manifest === undefined && existsSync(managed.manifestPath)) {
+        throw new StageFailure(
+          input.stage,
+          "managed-cleanup-failed",
+          `the attempt manifest at ${managed.manifestPath} is unreadable; generated content cannot be proven absent from the workspace`,
+        );
+      }
+      if (manifest !== undefined) {
+        await this.cleanupManagedAttempt({
+          managed,
+          workspacePath: input.worker.cwd,
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          stage: input.stage,
+        });
+      }
+      return;
+    }
+    if (parentSessionId === undefined) {
+      // The run began but the parent session id was never captured. Children
+      // cannot be enumerated from an unknown parent, so the tree could contain
+      // a still-running child: fail closed, never validate or publish.
+      throw new StageFailure(
+        input.stage,
+        "managed-session-discovery-failed",
+        "the managed OpenCode run captured no session id, so the attempt's child sessions cannot be enumerated; quiescence cannot be proven and no validation or publication may begin",
+      );
+    }
+    await this.settleAndCleanupManagedAttempt({
+      managed,
+      parentSessionId,
+      worker: input.worker,
+      remainingBudgetMs: input.remainingBudgetMs,
+      signal: input.signal,
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      stage: input.stage,
+    });
+  }
+
+  /**
+   * The failure-path mirror of {@link finalizeManagedAttempt}. A managed
+   * attempt that has not already finished its settlement and cleanup must
+   * still attempt it once the run is over — timeout, cancel, nonzero exit, and
+   * thrown errors included — interrupting children and removing generated
+   * files only when quiescence is proven. When quiescence cannot be proven,
+   * the returned remediation is `uncertain`: the recorded failure must be the
+   * managed reason, and the manifest and data dir must survive for recovery.
+   */
+  private async remediateManagedOnFailure(input: {
+    managed: ManagedAttemptContext;
+    managedFinalized: boolean;
+    launched: boolean;
+    parentSessionId: string | undefined;
+    worker: { cwd: string; env: Record<string, string> } | undefined;
+    remainingBudgetMs: number;
+    signal: AbortSignal;
+    jobId: number;
+    attemptId: number;
+    stage: FailureStage;
+  }): Promise<ManagedRemediation> {
+    if (input.managedFinalized || input.worker === undefined) return { status: "clean" };
+    try {
+      await this.finalizeManagedAttempt({
+        managed: input.managed,
+        launched: input.launched,
+        parentSessionId: input.parentSessionId,
+        worker: input.worker,
+        remainingBudgetMs: input.remainingBudgetMs,
+        signal: input.signal,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        stage: input.stage,
+      });
+      return { status: "clean" };
+    } catch (error) {
+      const failure = error instanceof StageFailure ? error : classifyFailure(error, input.stage);
+      return { status: "uncertain", failure };
+    }
+  }
+
   private async runAttempt(input: {
     jobId: number;
     attemptId: number;
@@ -751,12 +1348,26 @@ export class ResolutionOrchestrator {
     command: ParsedCommand;
     retainedWorkspace?: RetainedWorkspace;
     signal: AbortSignal;
+    /**
+     * Per-attempt flag shared with the queue's cancellation handler: when a
+     * managed attempt ends with unproven quiescence, its manifest and data dir
+     * must survive for recovery, and neither path may erase them.
+     */
+    preserveDataDir: { value: boolean; failure?: StageFailure };
   }): Promise<{ commitSha?: string }> {
-    const { jobId, attemptId, repository, prNumber, commentId, signal } = input;
+    const { jobId, attemptId, repository, prNumber, commentId, signal, preserveDataDir } = input;
     let stage: FailureStage = "preparing";
     let workspacePath: string | undefined;
     let attemptDataDir: string | undefined;
     let adoptionClaim: AdoptionClaimHandle | undefined;
+    let managed: ManagedAttemptContext | undefined;
+    let agentEnv: Record<string, string> | undefined;
+    let worker: { cwd: string; env: Record<string, string> } | undefined;
+    let launched = false;
+    let parentSessionId: string | undefined;
+    let managedFinalized = false;
+    const configuredTimeoutSec = repository.timeoutSec ?? this.options.timeoutSec;
+    let runStartedAt = 0;
     try {
       this.jobs.setStatus(jobId, stage, attemptId);
       await this.reactToStatus(repository, commentId, stage);
@@ -894,7 +1505,38 @@ export class ResolutionOrchestrator {
           source: credentialSource,
         });
       }
-      this.options.logger.info("agent launched", { jobId, attemptId, agent: executor.id });
+      // Tasks 3.2-3.5: the shared environment the run, the preflight probe, and
+      // the child-session transport all receive — identical cwd and env, so a
+      // managed run, its inventory check, and its settlement talk to the same
+      // OpenCode project and data store. Generated files are journaled and
+      // materialized, then the effective agents are proven present, before any
+      // agent work runs; the parent session then runs with the verified
+      // primary agent id.
+      agentEnv = buildAgentEnvironment(
+        process.env,
+        executor.additionalEnvironment(attemptDataDir, credentialSource),
+      );
+      worker = { cwd: workspace.path, env: agentEnv };
+      if (executor.id === "opencode") {
+        managed = this.resolveManagedContract({ jobId, attemptId, stage });
+        if (managed !== undefined) {
+          await this.configureManagedAttempt({
+            managed,
+            jobId,
+            attemptId,
+            workspacePath: workspace.path,
+            agentEnv,
+            signal,
+            stage,
+          });
+        }
+      }
+      this.options.logger.info("agent launched", {
+        jobId,
+        attemptId,
+        agent: executor.id,
+        ...(managed === undefined ? {} : { primaryAgentId: managed.primaryRuntimeId }),
+      });
       // Follow the agent while it works. Nothing here may fail the attempt:
       // the recorder swallows unparsable lines, and a failed snapshot write is
       // logged rather than thrown — losing visibility is not losing the run.
@@ -919,16 +1561,12 @@ export class ResolutionOrchestrator {
           provider: repository.provider,
           effort: repository.effort,
           prompt: buildResolutionPrompt(context, this.options.orchestratorLogin, inheritedFailure),
-          env: buildAgentEnvironment(
-            process.env,
-            executor.additionalEnvironment(attemptDataDir!, credentialSource),
-          ),
-          ...((repository.timeoutSec ?? this.options.timeoutSec) === undefined
-            ? {}
-            : { timeoutSec: repository.timeoutSec ?? this.options.timeoutSec }),
+          env: agentEnv!,
+          ...(configuredTimeoutSec === undefined ? {} : { timeoutSec: configuredTimeoutSec }),
           retries: this.options.retries,
           dataDir: attemptDataDir!,
           signal,
+          ...(managed === undefined ? {} : { primaryAgentId: managed.primaryRuntimeId }),
           onLine: (line) => {
             recorder.push(line);
             // The stream arrives token by token; rewriting the snapshot on every
@@ -942,8 +1580,12 @@ export class ResolutionOrchestrator {
       // Cline bounds retries itself (--retries counts consecutive mistakes
       // within one session); an executor that cannot do that is bounded here
       // instead, by re-running the whole invocation up to the same allowance.
-      // The units differ deliberately — this counts whole invocations.
-      const maxInvocations = executor.honorsRetries ? 1 : Math.max(1, this.options.retries);
+      // The units differ deliberately — this counts whole invocations. A
+      // managed attempt is never relaunched: its first session may have left
+      // background children, and launching a second parent before settling
+      // would compound the very quiescence the attempt must prove.
+      const maxInvocations =
+        managed !== undefined ? 1 : executor.honorsRetries ? 1 : Math.max(1, this.options.retries);
       // Billing, authentication, and model-route failures are terminal for an
       // invocation: another identical launch cannot repair them, so only
       // transient agent failures consume the retry allowance.
@@ -951,6 +1593,8 @@ export class ResolutionOrchestrator {
         isAgentBillingFailure(result) ||
         isAgentAuthenticationFailure(result) ||
         isAgentModelUnavailable(result);
+      runStartedAt = Date.now();
+      launched = true;
       let agentResult = await runOnce();
       let invocation = 1;
       while (
@@ -970,6 +1614,7 @@ export class ResolutionOrchestrator {
         });
         agentResult = await runOnce();
       }
+      parentSessionId = agentResult.sessionId;
       recorder.finish();
       flush();
       // Reasoning effort is validated per agent at startup, but the CLI enforces
@@ -995,6 +1640,25 @@ export class ResolutionOrchestrator {
         exitCode: agentResult.exitCode,
         timedOut: agentResult.timedOut,
       });
+      // Tasks 3.2-3.5: settle the child sessions and remove the generated files
+      // BEFORE the agent result is judged. A timed-out, cancelled, or nonzero
+      // parent can still own background children, so nothing is classified —
+      // and certainly nothing is validated or published — until the tree is
+      // provably quiescent and clean.
+      if (managed !== undefined) {
+        await this.finalizeManagedAttempt({
+          managed,
+          launched,
+          parentSessionId,
+          worker,
+          remainingBudgetMs: managedRemainingBudgetMs(configuredTimeoutSec, runStartedAt),
+          signal,
+          jobId,
+          attemptId,
+          stage,
+        });
+        managedFinalized = true;
+      }
       if (signal.aborted) throw new Error("job-cancelled");
       if (agentResult.timedOut) throw new StageFailure(stage, "agent-timeout");
       // Ordering matters: a billing refusal's payload also matches the
@@ -1105,11 +1769,54 @@ export class ResolutionOrchestrator {
       this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       return { commitSha: publication.commitSha };
     } catch (error) {
+      // Tasks 3.2-3.5: every failure path of a managed attempt still attempts
+      // its settlement and cleanup — timeout, cancel, nonzero exit, and throws
+      // included — interrupting child sessions first and removing the generated
+      // files only when quiescence is proven. An attempt that ends unproven
+      // records the managed quiescence/cleanup reason (never a retriable agent
+      // failure) and preserves its manifest and data dir for recovery.
+      let remedy: ManagedRemediation | undefined;
+      if (managed !== undefined) {
+        remedy = await this.remediateManagedOnFailure({
+          managed,
+          managedFinalized,
+          launched,
+          parentSessionId,
+          worker,
+          remainingBudgetMs: managedRemainingBudgetMs(configuredTimeoutSec, runStartedAt),
+          signal,
+          jobId,
+          attemptId,
+          stage,
+        });
+        preserveDataDir.value = remedy.status === "uncertain";
+        if (remedy.status === "uncertain") {
+          preserveDataDir.failure = remedy.failure;
+          this.options.logger.error(
+            "managed attempt ended with unproven quiescence; manifest and data dir preserved",
+            {
+              jobId,
+              attemptId,
+              reason: remedy.failure.reason,
+              error: remedy.failure.message,
+            },
+          );
+        }
+      }
       if (signal.aborted) {
-        this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
+        this.releaseAttemptDataDir(
+          repository.agent,
+          attemptDataDir,
+          jobId,
+          attemptId,
+          preserveDataDir.value,
+        );
         throw error;
       }
-      const failure = classifyFailure(error, stage);
+      const failure = classifyFailure(
+        remedy?.status === "uncertain" ? remedy.failure : error,
+        stage,
+      );
       const hasChanges = workspacePath
         ? await statusEntries(workspacePath)
             .then((entries) => entries.length > 0)
@@ -1120,6 +1827,16 @@ export class ResolutionOrchestrator {
         reason: failure.reason,
         hasUncommittedChanges: hasChanges,
       });
+      // Task 4.4: keep the specific managed failure detail (which agent id,
+      // which child session stayed unproven) durable for job detail, without
+      // persisting redundant reason codes as detail.
+      if (
+        managed !== undefined &&
+        failure.message.length > 0 &&
+        failure.message !== failure.reason
+      ) {
+        this.recordManagedFailureDetail(attemptId, failure.message);
+      }
       this.jobs.finishFailure(jobId, attemptId, failure.stage, failure.reason);
       await this.reactToStatus(repository, commentId, "failed");
       if (failure.stage !== "reporting") {
@@ -1144,7 +1861,13 @@ export class ResolutionOrchestrator {
         commitExists: this.jobs.getAttempt(attemptId).commit_sha !== null,
         pushed: this.jobs.getAttempt(attemptId).pushed === 1,
       });
-      this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
+      this.releaseAttemptDataDir(
+        repository.agent,
+        attemptDataDir,
+        jobId,
+        attemptId,
+        preserveDataDir.value,
+      );
       throw failure;
     } finally {
       this.releaseAdoptionClaim(adoptionClaim, jobId, attemptId);
@@ -1182,12 +1905,17 @@ export class ResolutionOrchestrator {
    *
    * Write-back is best-effort: losing a rotated token is bad, but throwing
    * here would mask the real outcome the caller is in the middle of reporting.
+   *
+   * `preserveDir` keeps the directory (and the managed manifest inside it) after
+   * the credential write-back, so an attempt whose quiescence could not be
+   * proven leaves recovery the evidence it owns (tasks 3.2-3.5).
    */
   private releaseAttemptDataDir(
     agent: string,
     attemptDataDir: string | undefined,
     jobId: number,
     attemptId: number,
+    preserveDir = false,
   ): void {
     if (!attemptDataDir) return;
     const credentialSource = this.options.credentialSources?.get(agent);
@@ -1217,6 +1945,7 @@ export class ResolutionOrchestrator {
         });
       }
     }
+    if (preserveDir) return;
     removeAttemptDataDir(attemptDataDir);
   }
 }

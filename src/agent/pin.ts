@@ -105,6 +105,7 @@ const PINNED_AGENTS: readonly PinnedAgent[] = [
           req('--format choice "json"', /\bjson\b/u),
           req("--auto (permission auto-approve)", flag("--auto")),
           req("--thinking", flag("--thinking")),
+          req("--agent (managed primary selection)", flag("--agent")),
         ],
       },
       {

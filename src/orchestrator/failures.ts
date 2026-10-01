@@ -1,3 +1,10 @@
+import { ManagedFilesError } from "../agent/managed-files.js";
+import { OpenCodeAgentPreflightError } from "../agent/managed-preflight.js";
+import {
+  OpenCodeSessionDiscoveryError,
+  OpenCodeSessionSettleError,
+} from "../agent/managed-sessions.js";
+import { OpenCodeProfileValidationError } from "../config/opencode-profile.js";
 import { GitHubError } from "../github/client.js";
 import { GitError } from "../workspace/gitops.js";
 import { WorkspaceError } from "../workspace/worktree.js";
@@ -11,6 +18,7 @@ export const FAILURE_REASONS = [
   "workspace-corrupted",
   "workspace-invalid",
   "workspace-dirty",
+  "workspace-quarantined",
   "workspace-conflicted",
   "workspace-branch-in-use",
   "workspace-seed-failed",
@@ -24,6 +32,19 @@ export const FAILURE_REASONS = [
   "agent-auth-failed",
   "agent-billing-failed",
   "credential-seed-failed",
+  // Managed OpenCode attempts (tasks 3.2-3.5): the captured job snapshot is
+  // unusable, the generated agents could not be written or verified, or the
+  // attempt ended without provable child-session quiescence. The config
+  // reasons (profile/materialize/preflight) are distinct from the
+  // quiescence reasons (discovery/unsettled/cleanup) so an operator can tell
+  // a fixable configuration problem from a run that must never be retried
+  // over possibly-running children.
+  "managed-profile-corrupt",
+  "managed-materialize-failed",
+  "managed-preflight-failed",
+  "managed-session-discovery-failed",
+  "managed-child-unsettled",
+  "managed-cleanup-failed",
   "validation-failed",
   "push-rejected",
   "comment-post-failed",
@@ -123,9 +144,7 @@ export function isAgentBillingFailure(result: Pick<AgentResult, "stdout" | "stde
 }
 
 /** Detect OpenCode's structured model/provider route failure. */
-export function isAgentModelUnavailable(
-  result: Pick<AgentResult, "stdout" | "stderr">,
-): boolean {
+export function isAgentModelUnavailable(result: Pick<AgentResult, "stdout" | "stderr">): boolean {
   const combined = `${result.stdout}\n${result.stderr}`;
   for (const line of combined.split(/\r?\n/u)) {
     const trimmed = line.trim();
@@ -187,6 +206,28 @@ export function classifyFailure(error: unknown, stage: FailureStage): StageFailu
       stage === "publishing" ? "push-rejected" : "workspace-corrupted",
       error.message,
     );
+  }
+  // Managed OpenCode failures (tasks 3.2-3.5). Classified before any message
+  // heuristic: their messages routinely contain "model", "not found", or
+  // "Unauthorized" and would otherwise be misread as a model route, a missing
+  // CLI, or an auth failure. The underlying errors carry session ids and
+  // issued rules — diagnostic, never the operators' private instruction text.
+  if (error instanceof OpenCodeProfileValidationError) {
+    return new StageFailure(stage, "managed-profile-corrupt", error.message);
+  }
+  if (error instanceof OpenCodeAgentPreflightError) {
+    return new StageFailure(stage, "managed-preflight-failed", error.message);
+  }
+  if (error instanceof OpenCodeSessionDiscoveryError) {
+    return new StageFailure(stage, "managed-session-discovery-failed", error.message);
+  }
+  if (error instanceof OpenCodeSessionSettleError) {
+    return new StageFailure(stage, "managed-child-unsettled", error.message);
+  }
+  if (error instanceof ManagedFilesError) {
+    // Cleanup call sites wrap their own failure as `managed-cleanup-failed`;
+    // an unwrapped error is materialization's fail-closed refusal.
+    return new StageFailure(stage, "managed-materialize-failed", error.message);
   }
   const message = error instanceof Error ? error.message : String(error);
   // Anchored and case-sensitive, matching `isAgentAuthenticationFailure`. A

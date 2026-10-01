@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
 import { activityPath, type AgentActivity } from "../agent/activity.js";
+import { type OpenCodePermission, parseOpenCodeAgentProfile } from "../config/opencode-profile.js";
 import { createRedactor, type Redactor } from "../log/redact.js";
 import type { CommandOutcome, JobStatus } from "../types.js";
 
@@ -34,6 +35,49 @@ export interface RepositorySummary {
   validationCommands?: string[][];
   /** Parsed allowed-models list for views that do not want to parse JSON. */
   allowedModels?: string[];
+  /**
+   * The repository's dashboard-managed OpenCode agent team, or null when no
+   * profile is saved. Only OpenCode-executor repositories project one at the
+   * presentation layer; instructions never appear in this projection.
+   */
+  opencodeProfile?: OpenCodeProfileSummary | null;
+}
+
+/**
+ * One dashboard-managed subagent in the readable OpenCode projection.
+ * Identifiers, purpose, model data, and tool preset only — the child's private
+ * instructions are deliberately never projected here.
+ */
+export interface OpenCodeSubagentSummary {
+  id: string;
+  /** Whether the managed primary may invoke this child. */
+  enabled: boolean;
+  /** The child's purpose; never its private instructions. */
+  description: string;
+  /** Explicit `provider/model[#variant]` override, or null to inherit the primary session model. */
+  model: string | null;
+  /** Supported tool permissions; an empty list means read-only. */
+  permissions: OpenCodePermission[];
+  /** Optional positive step limit. */
+  stepLimit: number | null;
+}
+
+/**
+ * Privacy-safe dashboard projection of a saved OpenCode agent profile. The
+ * active primary, its permission preset, model resolution data, and the
+ * ordered subagents with their callable state — never the operators' private
+ * instruction text. The full profile is read separately by the dedicated edit
+ * route when the operator opens the editor.
+ */
+export interface OpenCodeProfileSummary {
+  revision: number;
+  primaryId: string;
+  /** The primary's purpose; never its private instructions. */
+  primaryDescription: string;
+  primaryPermissions: OpenCodePermission[];
+  primaryStepLimit: number | null;
+  /** Ordered subagent projections; enabled children are callable. */
+  subagents: OpenCodeSubagentSummary[];
 }
 
 export interface JobSummary {
@@ -69,6 +113,11 @@ export interface AttemptDetail {
   outcome: string | null;
   failure_stage: string | null;
   failure_reason: string | null;
+  /**
+   * The specific managed configuration or quiescence failure message, or null
+   * when no managed failure detail was recorded. Never instruction text.
+   */
+  failure_detail: string | null;
   commit_sha: string | null;
   pushed: number;
   report_status: string | null;
@@ -81,6 +130,29 @@ export interface AttemptDetail {
   outputRetained: boolean;
   /** Live transcript for this attempt, when the agent produced one. */
   activity: AgentActivity | null;
+  /**
+   * Delegated child sessions captured for a managed OpenCode attempt, in
+   * discovery order. Empty when the attempt was not managed (or recorded none).
+   */
+  childSessions: ManagedChildSessionSummary[];
+}
+
+/**
+ * One durable delegated child-session record for a managed OpenCode attempt.
+ * Session id and state only — child outcomes never surface instruction text.
+ */
+export interface ManagedChildSessionSummary {
+  /** The child session id (`ses…`). */
+  sessionId: string;
+  /**
+   * Terminal pinned outcome (`succeeded`/`failed`/`interrupted`), or null
+   * while the child was never confirmed stopped (unsettled/unknown).
+   */
+  outcome: string | null;
+  /** `settled`, `unsettled`, or `unknown`. */
+  state: string;
+  /** Whether Gremlyn had to interrupt this child to reach quiescence. */
+  interrupted: boolean;
 }
 
 export interface StatusTimelineEntry {
@@ -118,6 +190,13 @@ export interface JobDetail {
   job: JobSummary & {
     review_context: string | null;
     thread_id: string | null;
+    /**
+     * The dashboard-managed OpenCode agent team captured when this job was
+     * created, or null when the job carried no profile snapshot (or the
+     * snapshot no longer parses). Identifiers and purposes only — the raw
+     * snapshot JSON and its private instruction text are never projected.
+     */
+    opencodeProfile?: OpenCodeProfileSummary | null;
   };
   attempts: AttemptDetail[];
   timeline: StatusTimelineEntry[];
@@ -284,6 +363,12 @@ export function readDashboard(
   options: DashboardReadOptions = {},
 ): DashboardModel {
   const redact = asRedactor(redaction);
+  const opencodeProfiles = new Map<number, { revision: number; profileJson: string | null }>();
+  for (const row of db
+    .prepare("SELECT repo_id, revision, profile_json FROM opencode_agent_profiles")
+    .all() as Array<{ repo_id: number; revision: number; profile_json: string | null }>) {
+    opencodeProfiles.set(row.repo_id, { revision: row.revision, profileJson: row.profile_json });
+  }
   const repositories = db
     .prepare(
       `SELECT id, owner, name, enabled, source_path, workspace_root, agent,
@@ -292,13 +377,16 @@ export function readDashboard(
        FROM repositories ORDER BY owner, name`,
     )
     .all()
-    .map((row) => {
-      const safe = redactRow(
-        row as Record<string, unknown>,
-        redact,
-      ) as unknown as RepositorySummary;
+    .map((raw) => {
+      const row = raw as Record<string, unknown>;
+      const safe = redactRow(row, redact) as unknown as RepositorySummary;
+      const profile = opencodeProfiles.get(row.id as number);
       return {
         ...safe,
+        opencodeProfile:
+          profile === undefined || profile.profileJson === null
+            ? null
+            : summarizeOpenCodeProfile(profile.profileJson, profile.revision, redact),
         validationCommands: parseValidationCommands(safe.validation_commands),
         allowedModels: parseAllowedModels(safe.allowed_models),
       };
@@ -310,7 +398,17 @@ export function readDashboard(
        ORDER BY jobs.id DESC LIMIT 50`,
     )
     .all()
-    .map((row) => redactRow(row as Record<string, unknown>, redact) as unknown as JobSummary);
+    .map((row) => {
+      // The captured snapshot JSON carries the operator's private instruction
+      // text; the status lanes must never project it, even redacted. Only the
+      // dedicated job-detail projection derives a purpose-summary from it.
+      const {
+        opencode_profile_json: _profileJson,
+        opencode_profile_revision: _revision,
+        ...safeRow
+      } = row as Record<string, unknown>;
+      return redactRow(safeRow, redact) as unknown as JobSummary;
+    });
   const running = jobs.filter((job) => RUNNING_STATUSES.has(job.status));
   const queued = jobs.filter((job) => job.status === "queued");
   const recent = jobs.filter((job) => TERMINAL_STATUSES.has(job.status));
@@ -323,6 +421,35 @@ export function readDashboard(
   return { repositories, jobs, running, queued, recent, health };
 }
 
+/**
+ * Build the privacy-safe dashboard projection of a saved OpenCode profile.
+ * Identifiers, purposes, model data, and permission presets only; instruction
+ * text is deliberately never read out here — the dedicated edit route
+ * retrieves the full profile when the operator opens the editor.
+ */
+function summarizeOpenCodeProfile(
+  profileJson: string,
+  revision: number,
+  redact: Redactor,
+): OpenCodeProfileSummary {
+  const profile = parseOpenCodeAgentProfile(JSON.parse(profileJson));
+  return {
+    revision,
+    primaryId: profile.primary.id,
+    primaryDescription: redact(profile.primary.description),
+    primaryPermissions: [...profile.primary.permissions],
+    primaryStepLimit: profile.primary.stepLimit ?? null,
+    subagents: profile.subagents.map((agent) => ({
+      id: agent.id,
+      enabled: agent.enabled,
+      description: redact(agent.description),
+      model: agent.model === undefined ? null : redact(agent.model),
+      permissions: [...agent.permissions],
+      stepLimit: agent.stepLimit ?? null,
+    })),
+  };
+}
+
 /** Read and redact a complete job diagnostic projection. */
 export function readJobDetail(
   db: Database.Database,
@@ -330,7 +457,7 @@ export function readJobDetail(
   redaction: Redaction,
   dataDir = ".gremlyn",
 ): JobDetail | undefined {
-  const redact = asRedactor(redaction);
+  const baseRedact = asRedactor(redaction);
   const jobRow = db
     .prepare(
       `SELECT jobs.*, repositories.owner, repositories.name
@@ -339,26 +466,52 @@ export function readJobDetail(
     )
     .get(jobId) as Record<string, unknown> | undefined;
   if (!jobRow) return undefined;
+  // A provider or configuration error can echo an agent's instruction body in
+  // its diagnostic text. Treat captured instructions as job-local secrets on
+  // ordinary job projections, in addition to the console's configured secret
+  // redactor. The editor GET remains the only place that returns them in full.
+  const privateInstructions: string[] = [];
+  if (typeof jobRow.opencode_profile_json === "string") {
+    try {
+      const profile = parseOpenCodeAgentProfile(JSON.parse(jobRow.opencode_profile_json));
+      for (const agent of [profile.primary, ...profile.subagents]) {
+        if (agent.instructions) privateInstructions.push(agent.instructions);
+      }
+    } catch {
+      // A corrupt snapshot is refused by the runner; never project its raw JSON.
+    }
+  }
+  const instructionRedact = createRedactor(privateInstructions);
+  const redact: Redactor = (value) => baseRedact(instructionRedact(value));
 
-  const attempts = db
+  const attemptRows = db
     .prepare("SELECT * FROM attempts WHERE job_id = ? ORDER BY attempt_number")
-    .all(jobId)
-    .map((row) => {
-      const raw = row as Record<string, unknown>;
-      const outputRef = typeof raw.output_ref === "string" ? raw.output_ref : null;
-      const safe = redactRow(raw, redact) as unknown as AttemptDetail;
-      const artifact = readArtifact(outputRef);
-      // Activity is written by the running attempt and already redacted at the
-      // source; re-reading it here keeps a live attempt visible before its
-      // final output file exists.
-      return {
-        ...safe,
-        output: redact(artifact.text),
-        outputRetained: artifact.retained,
-        adopted: raw.adopted === 1,
-        activity: readActivity(dataDir, safe.id),
-      };
-    });
+    .all(jobId) as Record<string, unknown>[];
+  const mappedAttempts = attemptRows.map((row) => {
+    const raw = row as Record<string, unknown>;
+    const outputRef = typeof raw.output_ref === "string" ? raw.output_ref : null;
+    const safe = redactRow(raw, redact) as unknown as AttemptDetail;
+    const artifact = readArtifact(outputRef);
+    // Activity is written by the running attempt and already redacted at the
+    // source; re-reading it here keeps a live attempt visible before its
+    // final output file exists.
+    return {
+      ...safe,
+      output: redact(artifact.text),
+      outputRetained: artifact.retained,
+      adopted: raw.adopted === 1,
+      activity: readActivity(dataDir, safe.id),
+    };
+  });
+  const childSessions = readManagedChildSessions(
+    db,
+    mappedAttempts.map((attempt) => attempt.id),
+    redact,
+  );
+  const attempts = mappedAttempts.map((attempt) => ({
+    ...attempt,
+    childSessions: childSessions.get(attempt.id) ?? [],
+  }));
   const timeline = db
     .prepare(
       "SELECT id, job_id, attempt_id, status, at FROM status_events WHERE job_id = ? ORDER BY id",
@@ -387,8 +540,86 @@ export function readJobDetail(
       n: number;
     }
   ).n;
-  const safeJob = redactRow(jobRow, redact) as unknown as JobDetail["job"];
-  return { job: safeJob, attempts, timeline, validation, logs, logTotal };
+  // The captured snapshot JSON (which contains the operator's private
+  // instruction text) must never reach the projection. It is replaced by the
+  // redacted summary, and the revision rides along only as that summary's key.
+  const {
+    opencode_profile_json: _profileJson,
+    opencode_profile_revision: _revision,
+    ...jobRowSafe
+  } = jobRow;
+  const safeJob = redactRow(jobRowSafe, redact) as unknown as JobDetail["job"];
+  return {
+    job: { ...safeJob, opencodeProfile: readJobOpenCodeProfile(jobRow, redact) },
+    attempts,
+    timeline,
+    validation,
+    logs,
+    logTotal,
+  };
+}
+
+/**
+ * Read the delegated child-session evidence for one set of attempts, grouped
+ * by attempt id. Session ids and states are redacted like every string that
+ * leaves this module; outcomes and ids represent diagnostic facts, never
+ * profile instruction content.
+ */
+function readManagedChildSessions(
+  db: Database.Database,
+  attemptIds: readonly number[],
+  redact: Redactor,
+): Map<number, ManagedChildSessionSummary[]> {
+  const result = new Map<number, ManagedChildSessionSummary[]>();
+  if (attemptIds.length === 0) return result;
+  const rows = db
+    .prepare(
+      `SELECT attempt_id, session_id, outcome, state, interrupted
+       FROM managed_child_sessions
+       WHERE attempt_id IN (${attemptIds.map(() => "?").join(",")})
+       ORDER BY attempt_id, id`,
+    )
+    .all(...attemptIds) as Array<{
+    attempt_id: number;
+    session_id: string;
+    outcome: string | null;
+    state: string;
+    interrupted: number;
+  }>;
+  for (const row of rows) {
+    const entry: ManagedChildSessionSummary = {
+      sessionId: redact(row.session_id),
+      outcome: row.outcome === null ? null : redact(row.outcome),
+      state: redact(row.state),
+      interrupted: row.interrupted === 1,
+    };
+    const list = result.get(row.attempt_id);
+    if (list === undefined) result.set(row.attempt_id, [entry]);
+    else list.push(entry);
+  }
+  return result;
+}
+
+/**
+ * Build the privacy-safe summary of the profile a job captured at creation,
+ * or null when the job has no snapshot. The raw snapshot JSON is read only
+ * long enough to parse the identifier/purpose projection, and never leaves
+ * this function: instruction text is deliberately absent from job detail.
+ * A snapshot that no longer parses projects nothing (fail closed) rather than
+ * claiming an agent team that cannot be proven.
+ */
+function readJobOpenCodeProfile(
+  jobRow: Record<string, unknown>,
+  redact: Redactor,
+): OpenCodeProfileSummary | null {
+  const profileJson = jobRow.opencode_profile_json;
+  const revision = jobRow.opencode_profile_revision;
+  if (typeof profileJson !== "string" || typeof revision !== "number") return null;
+  try {
+    return summarizeOpenCodeProfile(profileJson, revision, redact);
+  } catch {
+    return null;
+  }
 }
 
 /** Read only the selected job's structured lifecycle log. */

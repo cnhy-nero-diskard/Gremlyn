@@ -626,6 +626,46 @@ label { gap: var(--space-2); }
 .repo-head { gap: var(--space-2); }
 .repo-chips { gap: var(--space-2); }
 
+/* OpenCode agent editor: the repository-local draft surfaced by Configure.
+   Field errors stay beside the control and the focusable summary announces
+   every refusal in the card that owns the draft. */
+.agent-editor { display: grid; gap: var(--space-4); background: var(--surface-panel);
+  border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); padding: var(--space-4); }
+.agent-editor-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.agent-editor-head h4, .agent-editor-head h5 { margin: 0; }
+.agent-editor-head .actions { margin-left: auto; }
+.agent-card { display: grid; gap: var(--space-3); background: var(--surface-quiet);
+  border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); padding: var(--space-4); }
+.agent-card h5 { margin: 0; }
+.agent-field { display: grid; gap: var(--space-1); }
+.agent-field > label { font-size: var(--type-meta); font-weight: var(--weight-semibold); color: var(--text-secondary); }
+.agent-field input[type="text"], .agent-field textarea { width: 100%; min-width: 0; }
+.agent-model-field select, .agent-model-field input { width: 100%; min-width: 0; }
+.agent-field textarea { min-height: 4rem; font-family: var(--font-mono); font-size: var(--type-meta); resize: vertical; }
+.agent-field input[type="number"] { max-width: 10rem; }
+.agent-permissions { display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: center; }
+.agent-permissions label { font-weight: var(--weight-regular); }
+.agent-field-error { color: var(--status-failure-fg); font-size: var(--type-meta); }
+.agent-error-summary, .agent-notice { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4);
+  border: var(--border-thin) solid var(--status-failure-border);
+  border-radius: var(--radius-sm); background: var(--status-failure-bg); color: var(--status-failure-fg);
+  font-size: var(--type-meta); }
+.agent-error-summary ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+.agent-notice { border-color: var(--status-warning-border); background: var(--status-warning-bg); color: var(--status-warning-fg); }
+.agent-feedback { min-height: 1.4rem; font-size: var(--type-meta); color: var(--text-muted); }
+.agent-feedback.is-error { color: var(--status-failure-fg); }
+.agent-feedback.is-success { color: var(--status-success-fg); }
+.agent-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+.agent-review { display: grid; gap: var(--space-2); }
+.agent-review-row { display: grid; grid-template-columns: minmax(7rem, 20%) minmax(0, 1fr); gap: var(--space-3);
+  align-items: baseline; padding: var(--space-2) 0; border-bottom: var(--border-thin) solid var(--divider); }
+.agent-review-row:last-child { border-bottom: 0; }
+.agent-review-label { color: var(--text-muted); font-size: var(--type-caption); font-weight: var(--weight-bold);
+  text-transform: uppercase; letter-spacing: .05em; }
+.agent-review-copy { display: grid; gap: var(--space-2); }
+.agent-chip-row { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
+.agent-saved-note { margin: 0; }
+
 .timeline li { gap: var(--space-2); border-left: var(--border-strong) solid var(--divider); padding: var(--space-2) 0 var(--space-3) var(--space-5); margin-left: var(--space-2); }
 .timeline li::before { background: var(--divider-strong); box-shadow: 0 0 0 3px var(--surface-panel); }
 .timeline time, .activity-time { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--type-meta); }
@@ -1560,6 +1600,634 @@ export const clientScript = `
       delete root.dataset.pickerSaving;
     }
   });
+  // BEGIN_OPENCODE_AGENT_EDITOR
+  /* OpenCode agent editor ---------------------------------------------------
+     The repository-local draft for the managed primary and its ordered
+     subagents (tasks 4.2-4.3). Clicking Configure fetches the authenticated
+     full-profile route and mounts the editor inside the repository card. The
+     draft is module-local state keyed by repository id: live region swaps
+     re-render the persisted summary but never overwrite a draft in progress.
+     Apply shows a review of names, models, and permissions; confirming posts
+     one whole-profile compare-and-set save, and Cancel discards only the
+     draft.  */
+  const openCodePermissions = ['edit', 'shell', 'web', 'skill'];
+  const openCodePermissionLabels = { edit: 'edit workspace', shell: 'run shell', web: 'browse web', skill: 'load skills' };
+  const openCodePermissionPreset = (permissions) => {
+    const list = Array.isArray(permissions) ? permissions : [];
+    return list.length === 0 ? 'read-only' : list.map((permission) => openCodePermissionLabels[permission] || permission).join(', ');
+  };
+  const openCodeEscapeHtml = (value) => String(value == null ? '' : value)
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;')
+    .replace(/'/gu, '&#39;');
+  const openCodeDefaultAgent = (enabled) => ({
+    id: '', description: '', instructions: '', model: '', stepLimit: '',
+    enabled: enabled !== false, permissions: [],
+  });
+  const openCodeStepText = (value) => (value == null || value === '') ? '' : String(value);
+  const openCodeDraftFromProfile = (profile) => {
+    const primary = profile && profile.primary ? profile.primary : {};
+    const children = profile && Array.isArray(profile.subagents) ? profile.subagents : [];
+    return {
+      primary: {
+        id: typeof primary.id === 'string' ? primary.id : '',
+        description: typeof primary.description === 'string' ? primary.description : '',
+        instructions: typeof primary.instructions === 'string' ? primary.instructions : '',
+        stepLimit: openCodeStepText(primary.stepLimit),
+        permissions: Array.isArray(primary.permissions) ? primary.permissions.slice() : [],
+      },
+      subagents: children.map((child) => ({
+        id: typeof child.id === 'string' ? child.id : '',
+        description: typeof child.description === 'string' ? child.description : '',
+        instructions: typeof child.instructions === 'string' ? child.instructions : '',
+        model: typeof child.model === 'string' ? child.model : '',
+        stepLimit: openCodeStepText(child.stepLimit),
+        enabled: child.enabled !== false,
+        permissions: Array.isArray(child.permissions) ? child.permissions.slice() : [],
+      })),
+    };
+  };
+  const openCodeAgentPart = (item) => {
+    const part = { id: item.id, description: item.description, permissions: item.permissions.slice() };
+    if (item.instructions) part.instructions = item.instructions;
+    if (item.stepLimit !== '' && item.stepLimit != null) part.stepLimit = Number(item.stepLimit);
+    return part;
+  };
+  const openCodeDraftToCandidate = (draft) => ({
+    version: 1,
+    primary: openCodeAgentPart(draft.primary),
+    subagents: (draft.subagents || []).map((child) => {
+      const part = openCodeAgentPart(child);
+      part.enabled = child.enabled;
+      if (child.model) part.model = child.model;
+      return part;
+    }),
+  });
+  const openCodeReviewRows = (draft, primaryModel) => {
+    const model = primaryModel || 'the repository selected model';
+    const rows = [{
+      kind: 'primary', id: draft.primary.id || '(unnamed primary)',
+      description: draft.primary.description, status: 'primary agent',
+      model: model, permissions: openCodePermissionPreset(draft.primary.permissions),
+      stepLimit: draft.primary.stepLimit === '' ? '' : String(draft.primary.stepLimit),
+    }];
+    (draft.subagents || []).forEach((child) => {
+      rows.push({
+        kind: 'subagent', id: child.id || '(unnamed subagent)',
+        description: child.description,
+        status: child.enabled ? 'callable' : 'disabled',
+        model: child.model || 'inherits ' + model,
+        permissions: openCodePermissionPreset(child.permissions),
+        stepLimit: child.stepLimit === '' ? '' : String(child.stepLimit),
+      });
+    });
+    return rows;
+  };
+  const openCodeFieldLocation = (path) => {
+    const value = String(path || '');
+    const primary = value.match(/^primary\\.(.+)$/u);
+    if (primary) return { level: 'primary', field: primary[1] };
+    const child = value.match(/^subagents\\[(\\d+)\\](?:\\.(.*))?$/u);
+    if (child) return { level: 'subagent', index: Number(child[1]), field: child[2] || '' };
+    return { level: 'profile', field: '' };
+  };
+  const openCodeErrorAt = (state, path) => {
+    const issues = state.errors || [];
+    const prefix = path + '[';
+    for (let i = 0; i < issues.length; i += 1) {
+      const issue = issues[i];
+      const issuePath = issue && issue.path ? String(issue.path) : '';
+      if (issuePath === path || issuePath.indexOf(prefix) === 0) return issue.message;
+    }
+    return '';
+  };
+  const openCodeEditors = new Map();
+  const openCodeIdBase = (repoId, agentKey, index) =>
+    'agents-' + String(repoId) + '-' + agentKey + (index === null || index === undefined ? '' : '-' + String(index));
+  const openCodeFieldHtml = (repoId, state, agentKey, index, path, kind, label, value, placeholder) => {
+    const id = openCodeIdBase(repoId, agentKey, index) + '-' + String(path.split('.').pop() || 'field');
+    const error = openCodeErrorAt(state, path);
+    const invalid = error ? ' aria-invalid="true"' : '';
+    const describedBy = error ? ' aria-describedby="' + id + '-error"' : '';
+    const placeholderAttr = placeholder ? ' placeholder="' + openCodeEscapeHtml(placeholder) + '"' : '';
+    const control = kind === 'textarea'
+      ? '<textarea id="' + id + '" data-agent-field="' + path + '"' + invalid + describedBy + placeholderAttr + '>' + openCodeEscapeHtml(value) + '</textarea>'
+      : '<input type="' + (kind || 'text') + '" id="' + id + '" data-agent-field="' + path + '"' + invalid + describedBy + placeholderAttr + ' value="' + openCodeEscapeHtml(value) + '"' + (kind === 'number' ? ' min="1" step="1" inputmode="numeric"' : '') + '>';
+    const errorSlot = error ? '<small class="agent-field-error" id="' + id + '-error">' + openCodeEscapeHtml(error) + '</small>' : '';
+    return '<div class="agent-field"><label for="' + id + '">' + openCodeEscapeHtml(label) + '</label>' + control + errorSlot + '</div>';
+  };
+  const openCodePermissionCheckboxes = (repoId, state, agentKey, index, path, permissions, enabled) => {
+    const id = openCodeIdBase(repoId, agentKey, index) + '-permissions';
+    const error = openCodeErrorAt(state, path);
+    const boxes = openCodePermissions.map((permission) => {
+      const checked = permissions.indexOf(permission) !== -1;
+      return '<label><input type="checkbox" data-agent-checkbox="' + path + '.' + permission + '"' + (checked ? ' checked' : '') + (enabled === false ? ' disabled' : '') + '> ' + openCodeEscapeHtml(openCodePermissionLabels[permission] || permission) + '</label>';
+    }).join('');
+    const errorSlot = error ? '<small class="agent-field-error" id="' + id + '-error">' + openCodeEscapeHtml(error) + '</small>' : '';
+    return '<fieldset class="agent-field" id="' + id + '"><legend>' + (enabled === false ? 'Tools (the agent is disabled)' : 'Tools') + '</legend><span class="agent-permissions">' + boxes + '</span>' + errorSlot + '</fieldset>';
+  };
+  const openCodeModelProviders = (state) => {
+    const providers = state && Array.isArray(state.modelProviders) ? state.modelProviders : [];
+    if (providers.length) return providers;
+    // Reuse the OpenCode choices already rendered for this repository's model
+    // picker. They remain in the DOM even when that picker is hidden for a
+    // custom repository provider.
+    const card = state && state.container && typeof state.container.closest === 'function'
+      ? state.container.closest('[data-live-key^="repository-"]') : null;
+    const select = card && typeof card.querySelector === 'function'
+      ? card.querySelector('[data-repo-model-select]') : null;
+    if (!select || typeof select.querySelectorAll !== 'function') return [];
+    return [...select.querySelectorAll('optgroup')].map((group) => ({
+      id: group.label || 'OpenCode models',
+      name: group.label || 'OpenCode models',
+      models: [...group.querySelectorAll('option')].map((option) => ({
+        id: option.value,
+        name: option.dataset.modelName || option.textContent || option.value,
+      })),
+    }));
+  };
+  const openCodeModelPickerHtml = (repoId, state, index, model) => {
+    const path = 'subagents[' + String(index) + '].model';
+    const id = openCodeIdBase(repoId, 'sub', index) + '-model';
+    const customId = id + '-custom';
+    const providers = openCodeModelProviders(state);
+    const knownModel = providers.some((provider) =>
+      Array.isArray(provider.models) && provider.models.some((entry) => entry.id === model));
+    const custom = Boolean(model) && !knownModel;
+    const modelOptions = providers.map((provider) => {
+      const options = (Array.isArray(provider.models) ? provider.models : []).map((entry) =>
+        '<option value="' + openCodeEscapeHtml(entry.id) + '"' + (entry.id === model ? ' selected' : '') + '>' +
+        openCodeEscapeHtml(entry.name || entry.id) + '</option>').join('');
+      return options
+        ? '<optgroup label="' + openCodeEscapeHtml(provider.name || provider.id) + '">' + options + '</optgroup>'
+        : '';
+    }).join('');
+    const error = openCodeErrorAt(state, path);
+    const invalid = error ? ' aria-invalid="true"' : '';
+    const describedBy = error ? ' aria-describedby="' + id + '-error"' : '';
+    const errorSlot = error ? '<small class="agent-field-error" id="' + id + '-error">' + openCodeEscapeHtml(error) + '</small>' : '';
+    return '<div class="agent-field agent-model-field">' +
+      '<label for="' + id + '">Model override</label>' +
+      '<select id="' + id + '" data-agent-model="' + path + '"' + invalid + describedBy + '>' +
+      '<option value=""' + (!model ? ' selected' : '') + '>Inherit repository model</option>' +
+      modelOptions +
+      '<option value="__custom__"' + (custom ? ' selected' : '') + '>Custom model ID…</option>' +
+      '</select>' +
+      '<label for="' + customId + '" data-agent-custom-label="' + path + '"' + (custom ? '' : ' hidden') + '>Custom model ID</label>' +
+      '<input type="text" id="' + customId + '" data-agent-field="' + path + '" value="' + openCodeEscapeHtml(custom ? model : '') + '" placeholder="provider/model[#variant]"' + invalid + describedBy + (custom ? '' : ' hidden') + '>' +
+      '<small class="muted">Leave inherited, choose a catalog model, or enter a custom provider/model id.</small>' + errorSlot +
+      '</div>';
+  };
+  const openCodeSubagentHtml = (repoId, state, index, child) => {
+    const prefix = 'subagents[' + String(index) + ']';
+    return '<article class="agent-card agent-subagent" data-live-key="agent-sub-' + String(index) + '">' +
+      '<div class="agent-editor-head"><h5>Subagent ' + String(index + 1) + '</h5>' +
+      '<span class="chip">' + (child.enabled ? 'callable' : 'disabled') + '</span>' +
+      '<span class="actions"><button type="button" class="danger" data-agent-action="remove" data-agent-index="' + String(index) + '">Remove</button></span></div>' +
+      openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.id', 'text', 'Agent id', child.id, 'reviewer') +
+      openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.description', 'text', 'Purpose', child.description, 'What this child does') +
+      openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.instructions', 'textarea', 'Instructions', child.instructions, 'Optional private instructions for this child') +
+      openCodeModelPickerHtml(repoId, state, index, child.model) +
+      openCodeFieldHtml(repoId, state, 'sub', index, prefix + '.stepLimit', 'number', 'Step limit', child.stepLimit, null) +
+      '<label class="agent-field agent-enable"><input type="checkbox" data-agent-checkbox="' + prefix + '.enabled"' + (child.enabled ? ' checked' : '') + '> Callable by the primary</label>' +
+      openCodePermissionCheckboxes(repoId, state, 'sub', index, prefix + '.permissions', child.permissions, child.enabled) +
+      '</article>';
+  };
+  const openCodePrimaryHtml = (repoId, state) => {
+    const prefix = 'primary';
+    return '<article class="agent-card"><div class="agent-editor-head"><h5>Primary agent</h5><span class="chip">runs the repository selected model</span></div>' +
+      openCodeFieldHtml(repoId, state, 'primary', null, prefix + '.id', 'text', 'Agent id', state.draft.primary.id, 'primary') +
+      openCodeFieldHtml(repoId, state, 'primary', null, prefix + '.description', 'textarea', 'Purpose', state.draft.primary.description, 'What the primary does') +
+      openCodeFieldHtml(repoId, state, 'primary', null, prefix + '.instructions', 'textarea', 'Instructions', state.draft.primary.instructions, 'Optional private instructions') +
+      openCodeFieldHtml(repoId, state, 'primary', null, prefix + '.stepLimit', 'number', 'Step limit', state.draft.primary.stepLimit, null) +
+      openCodePermissionCheckboxes(repoId, state, 'primary', null, prefix + '.permissions', state.draft.primary.permissions, true) +
+      '</article>';
+  };
+  const openCodeErrorsSummary = (state) => {
+    const issues = state.errors || [];
+    if (issues.length === 0) return '';
+    return '<div class="agent-error-summary" data-agent-summary tabindex="-1" role="alert"><strong>The agent team was not saved.</strong><ul>' +
+      issues.map((issue) => '<li><code>' + openCodeEscapeHtml(issue && issue.path ? issue.path : 'agent team') + '</code>: ' + openCodeEscapeHtml(issue && issue.message ? issue.message : 'invalid value') + '</li>').join('') +
+      '</ul></div>';
+  };
+  const openCodeNoticeHtml = (state) =>
+    state.notice ? '<div class="agent-notice" data-agent-notice tabindex="-1" role="alert">' + openCodeEscapeHtml(state.notice) + '</div>' : '';
+  const openCodeReviewHtml = (repoId, state) => {
+    const primaryModel = openCodePrimaryModelOf(state.container, state.repoModel);
+    const rows = openCodeReviewRows(state.draft, primaryModel).map((row) => {
+      const chips = '<span class="agent-chip-row"><span class="chip">' + openCodeEscapeHtml(row.status) + '</span><span class="chip">model: ' + openCodeEscapeHtml(row.model) + '</span><span class="chip">tools: ' + openCodeEscapeHtml(row.permissions) + '</span>' + (row.stepLimit === '' ? '' : '<span class="chip">step limit ' + openCodeEscapeHtml(row.stepLimit) + '</span>') + '</span>';
+      const description = row.description
+        ? '<small class="muted">' + openCodeEscapeHtml(row.description) + '</small>'
+        : '';
+      return '<div class="agent-review-row"><span class="agent-review-label"><code>' + openCodeEscapeHtml(row.id) + '</code></span><div class="agent-review-copy">' + chips + description + '</div></div>';
+    }).join('');
+    return '<section class="agent-review" aria-label="Review the OpenCode agent team">' +
+      '<h4 class="sr-only" data-agent-review-heading tabindex="-1">Review the OpenCode agent team</h4>' +
+      '<p class="muted">The primary runs the repository selected model; children inherit it unless they carry an explicit override. Only enabled children are callable. Applied profiles govern jobs created after the save; existing jobs keep the team recorded when they were created.</p>' +
+      rows + '</section>';
+  };
+  // END_OPENCODE_AGENT_EDITOR
+  const openCodePrimaryModelOf = (container, fallback) => {
+    const card = container && typeof container.closest === 'function'
+      ? container.closest('[data-live-key^="repository-"]') : null;
+    const picker = card && typeof card.querySelector === 'function'
+      ? card.querySelector('[data-repo-picker]') : null;
+    const model = picker && picker.dataset && picker.dataset.savedModel ? picker.dataset.savedModel : '';
+    return model || fallback || '';
+  };
+  const openCodeEditorHtml = (repoId, state) => {
+    const revisionNote = state.revision > 0
+      ? '<span class="chip">draft from revision ' + String(state.revision) + '</span>'
+      : '<span class="chip">no saved profile</span>';
+    const feedback = '<p class="agent-feedback" data-agent-feedback role="status" aria-live="polite"></p>';
+    const resetButton = state.defaultProfile
+      ? '<button type="button" data-agent-action="reset">Reset to default workflow</button>'
+      : '';
+    if (state.mode === 'review') {
+      return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
+        '<div class="agent-editor-head"><h4>Review OpenCode agents</h4>' + revisionNote +
+        '<span class="actions"><button type="button" data-agent-action="back">Keep editing</button><button type="button" class="danger" data-agent-action="cancel">Cancel</button></span></div>' +
+        (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
+        openCodeReviewHtml(repoId, state) +
+        '<div class="agent-actions"><button type="button" class="primary" data-agent-action="save"' + (state.busy ? ' disabled' : '') + '>' + (state.busy ? 'Saving…' : 'Save agent team') + '</button></div></div>';
+    }
+    const children = state.draft.subagents.length === 0
+      ? '<p class="muted">No subagents yet. Add one to let the primary delegate a focused task.</p>'
+      : state.draft.subagents.map((child, index) => openCodeSubagentHtml(repoId, state, index, child)).join('');
+    return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
+      '<div class="agent-editor-head"><h4>Configure OpenCode agents</h4>' + revisionNote +
+      '<span class="actions">' + resetButton + '<button type="button" class="danger" data-agent-action="cancel">Cancel</button></span></div>' +
+      '<p class="muted">Reset loads the shared starter workflow into this draft; nothing changes until you review and save. The primary runs the repository selected model; children inherit it unless they carry an explicit provider/model override. Children default to read-only; external-directory access and nested delegation are always denied. Changes apply to jobs created after the save.</p>' +
+      (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
+      openCodePrimaryHtml(repoId, state) +
+      '<section class="agent-card"><div class="agent-editor-head"><h5>Subagents</h5><span class="actions"><button type="button" data-agent-action="add">Add subagent</button></span></div>' +
+      children + '</section>' +
+      '<div class="agent-actions"><button type="button" class="primary" data-agent-action="apply">Review and apply</button><button type="button" data-agent-action="cancel">Cancel</button></div></div>';
+  };
+  const openCodeFocusSummary = (container) => {
+    if (!container || typeof container.querySelector !== 'function') return;
+    const summary = container.querySelector('[data-agent-summary]') || container.querySelector('[data-agent-notice]');
+    if (summary && typeof summary.focus === 'function') summary.focus({ preventScroll: true });
+  };
+  const openCodeRenderEditor = (container, repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state || !container) return;
+    state.container = container;
+    if (typeof container.querySelector === 'function' && !container.querySelector('[data-agent-editor]')) {
+      state.summaryHtml = container.innerHTML;
+    }
+    container.innerHTML = openCodeEditorHtml(repoId, state);
+  };
+  const openCodeMountEditor = async (container, repoId) => {
+    const previousHtml = container.innerHTML;
+    container.innerHTML = '<p class="muted">Opening the agent editor…</p>';
+    try {
+      const response = await fetch('/repos/' + String(repoId) + '/opencode-profile');
+      const payload = await response.json().catch(() => ({}));
+      if (openCodeSessionExpiry(response, payload)) return;
+      if (!response.ok) {
+        container.innerHTML = '<p class="agent-notice" role="alert">The saved agent profile could not be opened (status ' + String(response.status) + ').</p>';
+        return;
+      }
+      const mounted = typeof document !== 'undefined' && typeof document.querySelector === 'function'
+        ? document.querySelector('[data-opencode-agents][data-repo-id="' + String(repoId) + '"]') : container;
+      if (!mounted) return;
+      const model = openCodePrimaryModelOf(mounted, '');
+      const state = {
+        mode: 'editing',
+        revision: typeof payload.revision === 'number' ? payload.revision : 0,
+        draft: openCodeDraftFromProfile(payload.profile || payload.defaultProfile),
+        defaultProfile: payload.defaultProfile || null,
+        modelProviders: [],
+        errors: [],
+        notice: null,
+        busy: false,
+        summaryHtml: mounted === container ? previousHtml : mounted.innerHTML,
+        repoModel: model,
+        container: mounted,
+      };
+      state.modelProviders = openCodeModelProviders(state);
+      openCodeEditors.set(repoId, state);
+      openCodeRenderEditor(mounted, repoId);
+    } catch {
+      container.innerHTML = '<p class="agent-notice" role="alert">The saved agent profile could not be opened.</p>';
+    }
+  };
+  const openCodeCancel = (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state) return;
+    const container = state.container;
+    const summaryHtml = state.summaryHtml || '';
+    openCodeEditors.delete(repoId);
+    if (container) {
+      container.innerHTML = summaryHtml || '<p class="muted">Agent team editor closed.</p>';
+      const configure = typeof container.querySelector === 'function' ? container.querySelector('[data-repo-agents-configure]') : null;
+      if (configure && typeof configure.focus === 'function') configure.focus({ preventScroll: true });
+    }
+  };
+  const openCodeSetFeedback = (container, message, error) => {
+    const node = container && typeof container.querySelector === 'function' ? container.querySelector('[data-agent-feedback]') : null;
+    if (!node) return;
+    node.textContent = message;
+    node.classList.toggle('is-error', Boolean(error));
+    node.classList.toggle('is-success', !error);
+    node.setAttribute('role', error ? 'alert' : 'status');
+    node.setAttribute('aria-live', error ? 'assertive' : 'polite');
+  };
+  const openCodeErrorMessage = (payload) => {
+    const messages = {
+      'invalid-request': 'The submitted agent team was malformed; nothing was saved.',
+      'repository-not-found': 'This repository is no longer available.',
+      'not-opencode': 'This repository does not run the OpenCode executor, so its agent team cannot be saved here.',
+      'conflict': 'The stored agent team changed in another session; the draft was kept.',
+    };
+    return messages[payload && payload.error] || 'The agent team was not accepted. Try again.';
+  };
+  const openCodeSessionExpiry = (response, payload) => {
+    if (response.status !== 401 || (payload && payload.error) !== 'session-expired') return false;
+    if (typeof window !== 'undefined' && window.location) window.location.assign('/auth?reason=expired');
+    return true;
+  };
+  const openCodeSave = async (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state || state.busy) return;
+    const currentContainer = () => state.container;
+    const candidate = openCodeDraftToCandidate(state.draft);
+    state.busy = true;
+    state.errors = [];
+    state.notice = null;
+    openCodeRenderEditor(currentContainer(), repoId);
+    openCodeSetFeedback(currentContainer(), 'Saving the agent team…', false);
+    try {
+      const response = await fetch('/repos/' + String(repoId) + '/opencode-profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedRevision: state.revision, candidate }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (openCodeSessionExpiry(response, payload)) return;
+      if (!response.ok) {
+        if (response.status === 400 && payload.error === 'validation' && Array.isArray(payload.issues)) {
+          state.errors = payload.issues;
+          state.mode = 'editing';
+          openCodeRenderEditor(currentContainer(), repoId);
+          openCodeFocusSummary(currentContainer());
+          return;
+        }
+        if (response.status === 409) {
+          const currentRevision = typeof payload.currentRevision === 'number' ? String(payload.currentRevision) : '?';
+          state.notice = 'The stored agent team changed in another session (now revision ' + currentRevision + '). Your draft was kept; saving again would overwrite that newer team, so review the stored team or cancel this draft.';
+          state.errors = [];
+          openCodeRenderEditor(currentContainer(), repoId);
+          openCodeFocusSummary(currentContainer());
+          return;
+        }
+        state.errors = [{ path: '', message: openCodeErrorMessage(payload) }];
+        openCodeRenderEditor(currentContainer(), repoId);
+        openCodeFocusSummary(currentContainer());
+        return;
+      }
+      openCodeEditors.delete(repoId);
+      const savedRevision = typeof payload.revision === 'number' ? String(payload.revision) : String(state.revision + 1);
+      const mounted = currentContainer();
+      if (mounted) mounted.innerHTML = '<p class="agent-saved-note" role="status">Agent team saved as revision ' + savedRevision + '. The dashboard summary refreshes automatically.</p>';
+    } catch {
+      state.errors = [{ path: '', message: 'The agent team could not be saved. Try again.' }];
+      openCodeRenderEditor(currentContainer(), repoId);
+      openCodeFocusSummary(currentContainer());
+    } finally {
+      state.busy = false;
+    }
+  };
+  const openCodeApply = (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state) return;
+    state.errors = [];
+    state.notice = null;
+    state.mode = 'review';
+    openCodeRenderEditor(state.container, repoId);
+    const heading = state.container && typeof state.container.querySelector === 'function' ? state.container.querySelector('[data-agent-review-heading]') : null;
+    if (heading && typeof heading.focus === 'function') heading.focus({ preventScroll: true });
+  };
+  const openCodeBack = (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state) return;
+    state.notice = null;
+    state.mode = 'editing';
+    openCodeRenderEditor(state.container, repoId);
+  };
+  const openCodeResetToDefault = (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state || !state.defaultProfile) return;
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function' &&
+        !window.confirm('Replace this draft with the default workflow? Unsaved draft changes will be lost.')) return;
+    state.draft = openCodeDraftFromProfile(state.defaultProfile);
+    state.errors = [];
+    state.notice = null;
+    state.mode = 'editing';
+    openCodeRenderEditor(state.container, repoId);
+    openCodeSetFeedback(state.container, 'Default workflow loaded into this draft. Review and apply to save it.', false);
+    const reset = state.container && typeof state.container.querySelector === 'function'
+      ? state.container.querySelector('[data-agent-action="reset"]') : null;
+    if (reset && typeof reset.focus === 'function') reset.focus({ preventScroll: true });
+  };
+  const openCodeHandleModelSelection = (repoId, path, value, select) => {
+    const state = openCodeEditors.get(repoId);
+    const location = openCodeFieldLocation(path);
+    if (!state || location.level !== 'subagent' || location.field !== 'model') return;
+    const child = state.draft.subagents[location.index];
+    if (!child) return;
+    if (value !== '__custom__') {
+      child.model = value;
+    } else {
+      const currentIsCatalogModel = openCodeModelProviders(state).some((provider) =>
+        Array.isArray(provider.models) && provider.models.some((model) => model.id === child.model));
+      if (currentIsCatalogModel) child.model = '';
+    }
+    const editor = select && typeof select.closest === 'function' ? select.closest('[data-agent-editor]') : state.container;
+    const customInput = editor && typeof editor.querySelectorAll === 'function'
+      ? [...editor.querySelectorAll('[data-agent-field]')].find((field) => field.dataset.agentField === path) : null;
+    const customLabel = editor && typeof editor.querySelectorAll === 'function'
+      ? [...editor.querySelectorAll('[data-agent-custom-label]')].find((field) => field.dataset.agentCustomLabel === path) : null;
+    const showCustom = value === '__custom__';
+    if (customInput) {
+      customInput.value = child.model || '';
+      customInput.hidden = !showCustom;
+    }
+    if (customLabel) customLabel.hidden = !showCustom;
+    if (showCustom && customInput && typeof customInput.focus === 'function') customInput.focus({ preventScroll: true });
+  };
+  const openCodeAddSubagent = (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state) return;
+    state.notice = null;
+    state.mode = 'editing';
+    state.draft.subagents.push(openCodeDefaultAgent(true));
+    openCodeRenderEditor(state.container, repoId);
+  };
+  const openCodeRemoveSubagent = (repoId, index) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state || !Number.isInteger(index)) return;
+    if (!state.draft.subagents[index]) return;
+    state.notice = null;
+    state.mode = 'editing';
+    state.draft.subagents.splice(index, 1);
+    openCodeRenderEditor(state.container, repoId);
+  };
+  const openCodeHandleEditorInput = (repoId, path, value) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state) return;
+    const location = openCodeFieldLocation(path);
+    if (location.level === 'primary' && location.field) {
+      state.draft.primary[location.field] = value;
+    } else if (location.level === 'subagent' && location.field) {
+      const child = state.draft.subagents[location.index];
+      if (child) child[location.field] = value;
+    }
+  };
+  const openCodeHandleEditorChange = (repoId, path, checked) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state) return;
+    const permission = path.match(/^(primary|subagents\\[\\d+\\])\\.permissions\\.([a-z]+)$/u);
+    if (permission) {
+      const agentPath = permission[1];
+      const name = permission[2];
+      const agent = agentPath === 'primary'
+        ? state.draft.primary
+        : state.draft.subagents[Number((agentPath.match(/\\d+/u) || [])[0])];
+      if (!agent) return;
+      const index = agent.permissions.indexOf(name);
+      if (checked && index === -1) agent.permissions.push(name);
+      if (!checked && index !== -1) agent.permissions.splice(index, 1);
+      agent.permissions.sort((left, right) => openCodePermissions.indexOf(left) - openCodePermissions.indexOf(right));
+      return;
+    }
+    const enabled = path.match(/^subagents\\[(\\d+)\\]\\.enabled$/u);
+    if (enabled) {
+      const child = state.draft.subagents[Number(enabled[1])];
+      if (child) child.enabled = checked;
+    }
+  };
+  const captureOpenCodeEditors = () => [...openCodeEditors.entries()].map(([repoId, state]) => ({
+    repoId,
+    mode: state.mode,
+    revision: state.revision,
+    draft: state.draft,
+    defaultProfile: state.defaultProfile,
+    modelProviders: state.modelProviders,
+    errors: state.errors.slice(),
+    notice: state.notice,
+    busy: state.busy,
+    repoModel: state.repoModel,
+  }));
+  const restoreOpenCodeEditors = (root, saved) => {
+    if (!root || !Array.isArray(saved)) return;
+    saved.forEach((entry) => {
+      if (!entry || !Number.isInteger(entry.repoId)) return;
+      const container = typeof root.querySelector === 'function'
+        ? root.querySelector('[data-opencode-agents][data-repo-id="' + String(entry.repoId) + '"]') : null;
+      if (!container) {
+        openCodeEditors.delete(entry.repoId);
+        return;
+      }
+      const state = {
+        mode: entry.mode,
+        revision: entry.revision,
+        draft: entry.draft,
+        defaultProfile: entry.defaultProfile || null,
+        modelProviders: entry.modelProviders || [],
+        errors: entry.errors || [],
+        notice: entry.notice,
+        busy: entry.busy,
+        repoModel: entry.repoModel || '',
+        summaryHtml: container.innerHTML,
+        container,
+      };
+      openCodeEditors.set(entry.repoId, state);
+      openCodeRenderEditor(container, entry.repoId);
+    });
+  };
+  registerSurface('opencode-editors', {
+    capture: () => captureOpenCodeEditors(),
+    restore: (root, saved) => restoreOpenCodeEditors(root, saved),
+  });
+  document.addEventListener('click', (event) => {
+    const configure = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-repo-agents-configure]') : null;
+    if (!configure) return;
+    event.preventDefault();
+    const repoId = Number(configure.dataset && configure.dataset.repoId);
+    const container = typeof configure.closest === 'function' ? configure.closest('[data-opencode-agents]') : null;
+    if (!Number.isInteger(repoId) || !container) return;
+    void openCodeMountEditor(container, repoId);
+  });
+  document.addEventListener('click', (event) => {
+    const button = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-action]') : null;
+    if (!button || !button.dataset) return;
+    const editor = typeof button.closest === 'function' ? button.closest('[data-agent-editor]') : null;
+    if (!editor || !editor.dataset) return;
+    const repoId = Number(editor.dataset.repoId);
+    if (!Number.isInteger(repoId)) return;
+    const action = button.dataset.agentAction;
+    if (action === 'add') { openCodeAddSubagent(repoId); return; }
+    if (action === 'remove') { openCodeRemoveSubagent(repoId, Number(button.dataset.agentIndex)); return; }
+    if (action === 'reset') { openCodeResetToDefault(repoId); return; }
+    if (action === 'apply') { openCodeApply(repoId); return; }
+    if (action === 'back') { openCodeBack(repoId); return; }
+    if (action === 'save') { void openCodeSave(repoId); return; }
+    if (action === 'cancel') { openCodeCancel(repoId); return; }
+  });
+  document.addEventListener('input', (event) => {
+    const field = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-field]') : null;
+    if (!field || !field.dataset) return;
+    const editor = typeof field.closest === 'function' ? field.closest('[data-agent-editor]') : null;
+    if (!editor || !editor.dataset) return;
+    const repoId = Number(editor.dataset.repoId);
+    if (!Number.isInteger(repoId) || !field.dataset.agentField) return;
+    openCodeHandleEditorInput(repoId, field.dataset.agentField, typeof field.value === 'string' ? field.value : '');
+  });
+  document.addEventListener('change', (event) => {
+    const model = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-model]') : null;
+    if (model && model.dataset) {
+      const editor = typeof model.closest === 'function' ? model.closest('[data-agent-editor]') : null;
+      const repoId = Number(editor && editor.dataset ? editor.dataset.repoId : NaN);
+      if (Number.isInteger(repoId) && model.dataset.agentModel) {
+        openCodeHandleModelSelection(repoId, model.dataset.agentModel, model.value || '', model);
+      }
+      return;
+    }
+    const field = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-checkbox]') : null;
+    if (!field || !field.dataset) return;
+    const editor = typeof field.closest === 'function' ? field.closest('[data-agent-editor]') : null;
+    if (!editor || !editor.dataset) return;
+    const repoId = Number(editor.dataset.repoId);
+    if (!Number.isInteger(repoId) || !field.dataset.agentCheckbox) return;
+    openCodeHandleEditorChange(repoId, field.dataset.agentCheckbox, Boolean(field.checked));
+  });
+  if (typeof window !== 'undefined' && window && window.gremlynConsole) {
+    window.gremlynConsole.agentEditor = {
+      draftFromProfile: openCodeDraftFromProfile,
+      draftToCandidate: openCodeDraftToCandidate,
+      reviewRows: openCodeReviewRows,
+      editorHtml: openCodeEditorHtml,
+      fieldLocation: openCodeFieldLocation,
+      editors: openCodeEditors,
+      mount: openCodeMountEditor,
+      render: openCodeRenderEditor,
+      save: openCodeSave,
+      cancel: openCodeCancel,
+      apply: openCodeApply,
+      addSubagent: openCodeAddSubagent,
+      removeSubagent: openCodeRemoveSubagent,
+      resetToDefault: openCodeResetToDefault,
+      handleInput: openCodeHandleEditorInput,
+      handleChange: openCodeHandleEditorChange,
+      capture: captureOpenCodeEditors,
+      restore: restoreOpenCodeEditors,
+    };
+  }
+  // END_OPENCODE_AGENT_EDITOR
   // The log arrives server-rendered and is refreshed by the stream swap above;
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
   const initialStream = document.querySelector('[data-log-items]');

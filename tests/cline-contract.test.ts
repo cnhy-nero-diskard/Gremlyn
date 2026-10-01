@@ -271,7 +271,7 @@ test(
  * `defaultRunner` resolves the npm shim to its Node entry to skip that cap.
  */
 test(
-  "an argv past cmd.exe's limit still reaches the agent",
+  "an argv past cmd.exe's limit reaches the resolved Node entry",
   { skip: process.platform !== "win32" },
   async () => {
     const env = Object.fromEntries(
@@ -279,13 +279,23 @@ test(
         (entry): entry is [string, string] => entry[1] !== undefined,
       ),
     );
-    const oversized = "y".repeat(20_000);
-    const result = await defaultRunner("cline", ["--version", oversized], { env });
-    assert.ok(
-      !/command line is too long/iu.test(result.stderr),
-      `spawn hit the cmd.exe cap: ${result.stderr}`,
+    const { dir, shimPath, entryPath } = writeShimFixture(
+      "cline",
+      "node_modules/cline-ai/bin/cline.js",
     );
-    assert.equal(result.exitCode, 0);
+    const oversized = "y".repeat(20_000);
+    try {
+      writeFileSync(entryPath, "process.stdout.write(process.argv.at(-1) ?? '');\n", "utf8");
+      const result = await defaultRunner(shimPath, ["--version", oversized], { env });
+      assert.ok(
+        !/command line is too long/iu.test(result.stderr),
+        `spawn hit the cmd.exe cap: ${result.stderr}`,
+      );
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, oversized, "the complete oversized argument must arrive");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   },
 );
 

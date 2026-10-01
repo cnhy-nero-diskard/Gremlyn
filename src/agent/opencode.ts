@@ -1,6 +1,7 @@
 import { basename, dirname, resolve } from "node:path";
 import { AgentVersionError, extractSessionId, extractVersion } from "./cline.js";
 import { defaultRunner, type ProcessRunner } from "./launcher.js";
+import { isOpenCodeAgentRuntimeId } from "./materialize.js";
 import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 
 /**
@@ -15,10 +16,36 @@ import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
 export const EXPECTED_OPENCODE_VERSION = "2.0.16";
 
 /**
+ * Raised when a managed attempt supplies a captured primary agent id that is
+ * not a valid generated runtime id. The id is placed into a subprocess argv
+ * (`--agent <id>`), so anything outside the generated `<namespace>/<id>` shape
+ * fails closed here — before the process is spawned — rather than being
+ * launched, and never falls back to another agent.
+ */
+export class OpenCodeAgentSelectionError extends Error {
+  readonly agentId: string;
+
+  constructor(agentId: string) {
+    super(
+      `Cannot select the captured OpenCode primary agent ${JSON.stringify(agentId)}: ` +
+        "it is not a generated runtime id of the form <namespace>/<id>",
+    );
+    this.name = "OpenCodeAgentSelectionError";
+    this.agentId = agentId;
+  }
+}
+
+/**
  * Real OpenCode CLI executor over the probed non-interactive argv surface:
  *
  *   run -m <provider/model[#variant]> --format json --auto --thinking <prompt>
+ *   run ... --agent <namespace>/<primary> <prompt>   # managed profile only
  *
+ * The optional `--agent <id>` names the captured primary agent a managed
+ * attempt generated (design D3). It is emitted only when the common run
+ * options carry a primary agent id, and only after the id passes the
+ * generated-runtime-id syntax check — an invalid id fails closed before the
+ * subprocess starts instead of reaching the argv.
  * `provider` has no OpenCode argument — it is folded into the `provider/model`
  * form of `-m`, so it is accepted on the common payload and ignored here. The
  * subprocess cwd selects the workspace. OpenCode 2.0.16's private standalone
@@ -79,6 +106,12 @@ export class OpenCodeExecutor implements AgentExecutor {
 
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const startedAt = new Date().toISOString();
+    // A supplied primary agent id is a trust-boundary input: it becomes
+    // `--agent <id>` on a subprocess argv, so anything outside the generated
+    // `<namespace>/<id>` shape fails closed before the process is spawned.
+    if (opts.primaryAgentId !== undefined && !isOpenCodeAgentRuntimeId(opts.primaryAgentId)) {
+      throw new OpenCodeAgentSelectionError(opts.primaryAgentId);
+    }
     const hasTimeout = opts.timeoutSec !== undefined && opts.timeoutSec > 0;
     const modelId = opts.model.split("#", 1)[0] ?? opts.model;
     const model = opts.effort === "none" ? modelId : `${modelId}#${opts.effort}`;
@@ -90,6 +123,7 @@ export class OpenCodeExecutor implements AgentExecutor {
       "json",
       "--auto",
       "--thinking",
+      ...(opts.primaryAgentId === undefined ? [] : ["--agent", opts.primaryAgentId]),
       opts.prompt,
     ];
     const result = await this.runProcess(this.binary, args, {

@@ -108,6 +108,11 @@ agents:
     # file carries every OpenCode namespace you have logged into — Zen and
     # Go included — so no extra field is needed to reach a Go model.
     credential_source: C:/Users/you/.local/share/opencode
+    # The dashboard-managed agent team (one primary plus its enabled
+    # subagents) is NOT configured here: it is an optional per-repository
+    # profile edited in the console's "OpenCode agents" section (Configure
+    # agents). A repository without a saved profile keeps OpenCode's normal
+    # project and global configuration.
 
 repositories:
   - owner: your-github-login

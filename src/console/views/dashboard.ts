@@ -1,6 +1,7 @@
 import type { DashboardModel, JobSummary, RepositorySummary } from "../queries.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../types.js";
 import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../../config/loader.js";
+import type { OpenCodePermission } from "../../config/opencode-profile.js";
 import {
   bundledProviderCatalog,
   type ProviderCatalogSnapshot,
@@ -50,6 +51,79 @@ function validationLabel(repository: RepositorySummary): string {
   const commands = repository.validationCommands ?? [];
   if (commands.length === 0) return '<span class="muted">None configured</span>';
   return `<ul class="cmd-list">${commands.map((command) => `<li><code>${escapeHtml(command.join(" "))}</code></li>`).join("")}</ul>`;
+}
+
+const OPENCODE_EXECUTOR = "opencode";
+
+const OPENCODE_PERMISSION_LABELS: Record<OpenCodePermission, string> = {
+  edit: "edit workspace",
+  shell: "run shell",
+  web: "browse web",
+  skill: "load skills",
+};
+
+/**
+ * The executor kind a repository's configured agent runs as. An agent id is a
+ * free operator label; its definition's kind selects the registered executor,
+ * defaulting to the id itself — matching the config loader.
+ */
+function executorKindOf(repo: RepositorySummary, agents: AgentDefinitions): string | undefined {
+  if (repo.agent === undefined) return undefined;
+  return agents[repo.agent]?.kind ?? repo.agent;
+}
+
+/** Tool access in plain language; an empty permission list means read-only. */
+function permissionPreset(permissions: readonly OpenCodePermission[]): string {
+  return permissions.length === 0
+    ? "read-only"
+    : permissions
+        .map((permission) => OPENCODE_PERMISSION_LABELS[permission] ?? permission)
+        .join(", ");
+}
+
+function stepLimitChip(limit: number | null): string {
+  return limit === null ? "" : `<span class="chip">step limit ${String(limit)}</span>`;
+}
+
+/**
+ * The dashboard-managed OpenCode agent team as a readable repository summary:
+ * the active primary, each subagent and whether the primary may call it, the
+ * model each child runs with (an explicit override or inherited from the
+ * repository's selected model), and tool access in plain language. Only
+ * OpenCode-executor repositories render this section; a repository using
+ * another executor shows no OpenCode controls at all, even when a dormant
+ * profile is stored. An OpenCode repository without a saved profile states its
+ * current default behavior. The Configure link is the direct dashboard entry
+ * point for the repository-local editor, anchored at `#repo-agents-<id>`.
+ */
+function opencodeAgentsSection(repo: RepositorySummary, agents: AgentDefinitions): string {
+  if (executorKindOf(repo, agents) !== OPENCODE_EXECUTOR) return "";
+  const anchor = `repo-agents-${String(repo.id)}`;
+  // The Configure link is the direct dashboard entry point for the
+  // repository-local editor: the client fetches the authenticated full-profile
+  // route (`/repos/:id/opencode-profile`) on click and mounts the editor here,
+  // so the anchor is a no-JS fallback rather than the only behavior.
+  const configure = `<a href="#${anchor}" data-repo-agents-configure data-repo-id="${String(repo.id)}" data-repo-agents-url="/repos/${String(repo.id)}/opencode-profile">Configure agents</a>`;
+  const heading = `<h4>OpenCode agents ${configure}</h4>`;
+  const profile = repo.opencodeProfile ?? null;
+  if (profile === null) {
+    return `<div class="repo-opencode-agents" id="${anchor}" data-opencode-agents data-repo-id="${String(repo.id)}" data-has-profile="0">${heading}<p class="repo-chips"><span class="chip">default behavior</span><span class="muted">No dashboard-managed agent team; OpenCode runs with its normal project and global configuration.</span></p></div>`;
+  }
+  const primaryModel =
+    repo.model && repo.model.length > 0 ? repo.model : "the repository's selected model";
+  const primary = `<li><span class="chip">primary <code>${escapeHtml(profile.primaryId)}</code></span><span class="chip">tools: ${escapeHtml(permissionPreset(profile.primaryPermissions))}</span>${stepLimitChip(profile.primaryStepLimit)}<small class="muted">${escapeHtml(profile.primaryDescription)}</small></li>`;
+  const children =
+    profile.subagents.length === 0
+      ? '<li><span class="chip">no subagents</span><small class="muted">The primary cannot call a child until one is added and enabled.</small></li>'
+      : profile.subagents
+          .map((subagent) => {
+            const callable = subagent.enabled ? "callable" : "disabled";
+            const model = subagent.model === null ? `inherits ${primaryModel}` : subagent.model;
+            return `<li><span class="chip"><code>${escapeHtml(subagent.id)}</code></span><span class="chip">${callable}</span><span class="chip">model: ${escapeHtml(model)}</span><span class="chip">tools: ${escapeHtml(permissionPreset(subagent.permissions))}</span>${stepLimitChip(subagent.stepLimit)}<small class="muted">${escapeHtml(subagent.description)}</small></li>`;
+          })
+          .join("");
+  const foot = `<p class="panel-foot"><span class="chip" data-revision-value>revision ${String(profile.revision)}</span><span class="muted"> Only enabled children are callable. External-directory access and nested delegation are always denied for managed agents.</span></p>`;
+  return `<div class="repo-opencode-agents" id="${anchor}" data-opencode-agents data-repo-id="${String(repo.id)}" data-has-profile="1" data-revision="${String(profile.revision)}">${heading}<ul class="cmd-list">${primary}${children}</ul>${foot}</div>`;
 }
 
 const CUSTOM_PROVIDER = "__custom__";
@@ -229,7 +303,8 @@ function repositoryCard(
   const head = `<header class="repo-head"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><span class="state state-${on ? "on" : "off"}" data-enabled>${on ? "enabled" : "disabled"}</span><button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${on ? "Disable" : "Enable"}</button></header>`;
   const chips = `<p class="repo-chips"><span class="chip">agent <code>${escapeHtml(repo.agent ?? "unknown")}</code></span><span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
   const validation = `<div class="repo-validation"><h4>Validation commands</h4>${validationLabel(repo)}</div>`;
-  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
+  const opencode = opencodeAgentsSection(repo, agents);
+  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${opencode}${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
 }
 
 /**

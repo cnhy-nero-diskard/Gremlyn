@@ -156,4 +156,53 @@ ALTER TABLE repositories ADD COLUMN timeout_seconds INTEGER;
 ALTER TABLE attempts ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  {
+    id: "0006_opencode_agent_profiles",
+    sql: `
+-- D1: one nullable, versioned dashboard profile per OpenCode repository, in a
+-- separate row keyed by repository id (never a column on repositories, so file
+-- configuration synchronization cannot touch it). profile_json is the canonical
+-- profile JSON, or NULL when the repository has no dashboard profile — a
+-- missing profile keeps the existing OpenCode invocation. revision is the
+-- compare-and-set counter; a missing row reads as revision 0, and no default
+-- profile is ever synthesized by the schema.
+CREATE TABLE opencode_agent_profiles (
+  repo_id INTEGER PRIMARY KEY REFERENCES repositories(id),
+  profile_json TEXT,
+  revision INTEGER NOT NULL DEFAULT 0
+);
+
+-- D2: jobs retain the exact profile captured at job-creation time, so queued
+-- jobs and their retries are unaffected by a later dashboard save. Both
+-- columns are nullable; a job created without a saved profile has no snapshot.
+ALTER TABLE jobs ADD COLUMN opencode_profile_json TEXT;
+ALTER TABLE jobs ADD COLUMN opencode_profile_revision INTEGER;
+`,
+  },
+  {
+    id: "0007_managed_attempt_evidence",
+    sql: `
+-- Task 4.4: durable diagnostic evidence for managed OpenCode attempts, because
+-- job detail is a database projection that must survive restart. Only ids,
+-- outcomes, and states are stored -- never the operator's private instruction
+-- text. failure_detail keeps the specific configuration or quiescence message
+-- (agent labels, session ids, paths); managed_child_sessions records every
+-- child the attempt settled with its terminal outcome, or marks an unproven
+-- child as unsettled/unknown with its id so the failure stays specific and
+-- fail-closed.
+ALTER TABLE attempts ADD COLUMN failure_detail TEXT;
+
+CREATE TABLE managed_child_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  session_id TEXT NOT NULL,
+  outcome TEXT,
+  state TEXT NOT NULL,
+  interrupted INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(attempt_id, session_id)
+);
+
+CREATE INDEX idx_managed_child_sessions_attempt ON managed_child_sessions(attempt_id);
+`,
+  },
 ];

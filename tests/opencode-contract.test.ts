@@ -14,8 +14,10 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { ClineExecutor, extractSessionId } from "../src/agent/cline.js";
 import type { ProcessRunner } from "../src/agent/launcher.js";
 import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "../src/agent/opencode.js";
+import { isOpenCodeAgentRuntimeId } from "../src/agent/materialize.js";
 import type { AgentRunOptions } from "../src/types.js";
 import { AgentVersionError } from "../src/agent/cline.js";
+import { OpenCodeAgentSelectionError } from "../src/agent/opencode.js";
 
 /** Captured verbatim from a real `opencode run --format json` run (text/reasoning/usage). */
 const REAL_STREAM_TEXT = [
@@ -198,4 +200,128 @@ test("a real session-level error event does not defeat session id extraction of 
   // still finds the id because it reads the top-level `sessionID` present on
   // every event, error included.
   assert.equal(extractSessionId(REAL_STREAM_ERROR), "ses_f9a8c9a4affeLTGg97zsvkQvOC");
+});
+
+test("OpenCode selects a captured primary with --agent only for a managed attempt", async () => {
+  const managedArgs: string[][] = [];
+  const managedRunner: ProcessRunner = (_binary, args) => {
+    managedArgs.push([...args]);
+    return okResult(REAL_STREAM_TEXT);
+  };
+  const plainArgs: string[][] = [];
+  const plainRunner: ProcessRunner = (_binary, args) => {
+    plainArgs.push([...args]);
+    return okResult(REAL_STREAM_TEXT);
+  };
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-opencode-"));
+  const plain = options(root);
+
+  await new OpenCodeExecutor("opencode-test", managedRunner).run({
+    ...plain,
+    primaryAgentId: "att-9/primary",
+  });
+  assert.deepEqual(managedArgs[0], [
+    "run",
+    "-m",
+    `${plain.model}#high`,
+    "--format",
+    "json",
+    "--auto",
+    "--thinking",
+    "--agent",
+    "att-9/primary",
+    plain.prompt,
+  ]);
+
+  await new OpenCodeExecutor("opencode-test", plainRunner).run(plain);
+  assert.deepEqual(plainArgs[0], [
+    "run",
+    "-m",
+    `${plain.model}#high`,
+    "--format",
+    "json",
+    "--auto",
+    "--thinking",
+    plain.prompt,
+  ]);
+  assert.equal(plainArgs[0]!.includes("--agent"), false, "an unmanaged attempt gets no --agent");
+});
+
+test("Cline argv is byte-identical when a captured primary id is supplied", async () => {
+  const plainArgs: string[][] = [];
+  const plainRunner: ProcessRunner = (_binary, args) => {
+    plainArgs.push([...args]);
+    return okResult('{"sessionId":"ses_plain"}');
+  };
+  const managedArgs: string[][] = [];
+  const managedRunner: ProcessRunner = (_binary, args) => {
+    managedArgs.push([...args]);
+    return okResult('{"sessionId":"ses_managed"}');
+  };
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-opencode-"));
+  const plain = options(root);
+
+  await new ClineExecutor("cline-test", plainRunner).run(plain);
+  await new ClineExecutor("cline-test", managedRunner).run({
+    ...plain,
+    primaryAgentId: "att-9/primary",
+  });
+
+  // OpenCode-specific selection must never leak into Cline's argv shape.
+  assert.deepEqual(managedArgs[0], plainArgs[0]);
+  assert.ok(!plainArgs[0]!.includes("--agent"), "Cline has no --agent surface at all");
+});
+
+test("OpenCode fails closed on an invalid captured primary agent id before spawning", async () => {
+  const calls: Parameters<ProcessRunner>[] = [];
+  const runner: ProcessRunner = (binary, args, runOptions) => {
+    calls.push([binary, args, runOptions]);
+    return okResult();
+  };
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-opencode-"));
+  const executor = new OpenCodeExecutor("opencode-test", runner);
+  const invalid = [
+    "-exploit/primary", // a leading dash could be misread as a flag
+    "ns/../escape", // traversal
+    "/primary", // empty namespace
+    "ns/", // empty id
+    "ns//primary", // empty segment
+    "ns/primary/extra", // too many segments
+    "a b/primary", // whitespace
+    "ns\\primary", // backslash separator
+    "con/primary", // reserved device name
+    "",
+  ];
+  for (const agentId of invalid) {
+    await assert.rejects(
+      () => executor.run(options(root, { primaryAgentId: agentId })),
+      (error: unknown) =>
+        error instanceof OpenCodeAgentSelectionError &&
+        error.agentId === agentId &&
+        /<namespace>\/<id>/u.test(String(error.message)),
+    );
+  }
+  assert.equal(calls.length, 0, "an invalid agent id must never reach the process argv");
+});
+
+test("isOpenCodeAgentRuntimeId matches only generated two-segment runtime ids", () => {
+  for (const valid of ["att-9/primary", "att.2/reviewer", "a1/b", "ns/primary"]) {
+    assert.equal(isOpenCodeAgentRuntimeId(valid), true, valid);
+  }
+  for (const invalid of [
+    "primary", // no namespace
+    "att-9/", // trailing slash
+    "/primary", // leading slash
+    "att-9//primary", // empty segment
+    "att-9/primary/extra", // extra segment
+    "-att/primary", // leading dash
+    "att/primary ", // trailing space
+    "att /primary", // embedded space
+    "att/../primary", // traversal
+    "att\\primary", // backslash
+    "con/primary", // reserved device name
+    "",
+  ]) {
+    assert.equal(isOpenCodeAgentRuntimeId(invalid), false, invalid);
+  }
 });
