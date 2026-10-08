@@ -5,6 +5,8 @@
  * shapes live in `github/client.ts`; persistence rows live in `store/`.
  */
 
+import type { OpenCodeWorker } from "./agent/opencode-worker.js";
+
 /**
  * Reasoning-effort tiers, ordered ascending.
  *
@@ -104,6 +106,12 @@ export interface AgentResult {
   timedOut: boolean;
 }
 
+/** Explicit OpenCode-only invocation intent; generated and native IDs stay distinct. */
+export type OpenCodeInvocationSelection =
+  | { readonly source: "default" }
+  | { readonly source: "native"; readonly agentId: string }
+  | { readonly source: "managed"; readonly agentId: string };
+
 export interface AgentRunOptions {
   cwd: string;
   model: string;
@@ -119,13 +127,15 @@ export interface AgentRunOptions {
   /** Observe the agent's stdout lines as they arrive, for live reporting. */
   onLine?: (line: string) => void;
   /**
-   * The captured primary agent runtime id for a managed OpenCode attempt
-   * (`<namespace>/<primary>`), selecting the generated primary through
-   * OpenCode's `--agent <id>`. Absent on unmanaged attempts and on executors
-   * with no `--agent` surface (Cline ignores it), so only a managed OpenCode
-   * run ever receives the flag.
+   * Legacy generated managed primary (`<namespace>/<primary>`). Prefer the
+   * discriminated openCodeSelection for new code. This cannot compete with
+   * that option and does not admit native IDs. Cline ignores both selectors.
    */
   primaryAgentId?: string;
+  /** Captured source; Cline does not consume this OpenCode-specific option. */
+  openCodeSelection?: OpenCodeInvocationSelection;
+  /** Resolved alias-aware context shared with preflight and session transport. */
+  openCodeWorker?: OpenCodeWorker;
 }
 
 /**
@@ -150,5 +160,11 @@ export interface AgentExecutor {
   checkVersion(env: Record<string, string>): Promise<void>;
   /** Additional per-executor environment, such as an XDG profile root. */
   additionalEnvironment(dataDir: string, credentialSource?: string): Record<string, string>;
+  /** OpenCode executors expose their actual binary and runner, not a default substitute. */
+  resolveWorker?(input: {
+    executorId: string;
+    cwd: string;
+    env: Record<string, string>;
+  }): OpenCodeWorker;
   run(opts: AgentRunOptions): Promise<AgentResult>;
 }

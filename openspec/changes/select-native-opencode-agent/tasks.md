@@ -1,9 +1,9 @@
 ## 1. Runtime contract and shared discovery
 
-- [ ] 1.1 Record pinned V2 inventory, primary-mode/hidden semantics, native `--agent`, initial runtime identity and early session-ID surfaces in a bounded probe artifact; verify against CLI help/read-only fixtures and keep real model calls explicitly opt-in.
-- [ ] 1.2 Extract a shared effective-inventory reader and safe public metadata projection from managed preflight; verify parser tests cover primary/all/subagent modes, hidden entries, descriptions, malformed records and instruction/credential exclusion.
-- [ ] 1.3 Introduce one alias-aware binary/cwd/environment worker descriptor for discovery, execution and session transport; verify injected-runner tests prove identical context and isolation across two repository aliases.
-- [ ] 1.4 Add bounded source discovery, keyed advisory caching, explicit refresh and abortable workspace-context preflight; verify cold convergence, timeout, cancellation, wrong-directory and source-versus-worktree mismatch tests.
+- [x] 1.1 Record pinned V2 inventory, primary-mode/hidden semantics, native `--agent`, initial runtime identity and early session-ID surfaces in a bounded probe artifact; verify against CLI help/read-only fixtures and keep real model calls explicitly opt-in.
+- [x] 1.2 Extract a shared effective-inventory reader and safe public metadata projection from managed preflight; verify parser tests cover primary/all/subagent modes, hidden entries, descriptions, malformed records and instruction/credential exclusion.
+- [x] 1.3 Introduce one alias-aware binary/cwd/environment worker descriptor for discovery, execution and session transport; verify injected-runner tests prove identical context and isolation across two repository aliases.
+- [x] 1.4 Add bounded source discovery, keyed advisory caching, explicit refresh and abortable workspace-context preflight; verify cold convergence, timeout, cancellation, wrong-directory and source-versus-worktree mismatch tests.
 
 ## 2. Durable selection and job capture
 
@@ -15,7 +15,7 @@
 
 ## 3. Executor selection and invocation ownership
 
-- [ ] 3.1 Extend executor options with validated default/native/managed intent and keep generated-ID guards intact; verify argv tests cover native `--agent`, default omission, invalid IDs and unchanged Cline options.
+- [x] 3.1 Extend executor options with validated default/native/managed intent and keep generated-ID guards intact; verify argv tests cover native `--agent`, default omission, invalid IDs and unchanged Cline options.
 - [ ] 3.2 Wire actual-workspace inventory validation before every explicit primary invocation; verify unavailable/ineligible choices cannot spawn and managed permission/model preflight regressions still pass.
 - [ ] 3.3 Journal generic OpenCode ownership before launch and capture attributable parent IDs/initial primary evidence during the stream; verify early persistence, missing/contradictory identity, multiple invocation ordinals and diagnostic-redaction tests.
 

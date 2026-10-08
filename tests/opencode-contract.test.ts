@@ -272,6 +272,120 @@ test("Cline argv is byte-identical when a captured primary id is supplied", asyn
   assert.ok(!plainArgs[0]!.includes("--agent"), "Cline has no --agent surface at all");
 });
 
+test("explicit native/default/managed intents preserve separate argv contracts", async () => {
+  const calls: Parameters<ProcessRunner>[] = [];
+  const runner: ProcessRunner = (binary, args, runOptions) => {
+    calls.push([binary, args, runOptions]);
+    return okResult(REAL_STREAM_TEXT);
+  };
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-native-contract-"));
+  const executor = new OpenCodeExecutor("alias-opencode", runner);
+  for (const selection of [
+    { source: "native", agentId: "review-planner" },
+    { source: "default" },
+    { source: "managed", agentId: "attempt-42/primary" },
+  ] as const) {
+    await executor.run(options(root, { openCodeSelection: selection }));
+  }
+  assert.equal(calls[0]![1][calls[0]![1].indexOf("--agent") + 1], "review-planner");
+  assert.equal(calls[1]![1].includes("--agent"), false);
+  assert.equal(calls[2]![1][calls[2]![1].indexOf("--agent") + 1], "attempt-42/primary");
+  for (const agentId of [
+    "",
+    "--agent",
+    " name",
+    "name\nother",
+    "name\u0000",
+    "attempt-42/primary",
+    "x".repeat(257),
+  ]) {
+    await assert.rejects(
+      executor.run(options(root, { openCodeSelection: { source: "native", agentId } })),
+      OpenCodeAgentSelectionError,
+    );
+  }
+  await assert.rejects(
+    executor.run(
+      options(root, {
+        primaryAgentId: "attempt-42/primary",
+        openCodeSelection: { source: "native", agentId: "review-planner" },
+      }),
+    ),
+    OpenCodeAgentSelectionError,
+  );
+  assert.equal(calls.length, 3, "invalid or competing sources cannot spawn");
+  for (const malformed of [
+    null,
+    "native",
+    [],
+    { source: "unknown" },
+    { source: "default", agentId: "planner" },
+    { source: "native", agentId: "planner", profile: {} },
+    { source: "managed", agentId: "build" },
+    { source: "managed" },
+    { source: "managed", agentId: 123 },
+    { source: "managed", agentId: null },
+    { source: "native" },
+    { source: "native", agentId: { instructions: "PRIVATE INVALID FIELD" } },
+  ]) {
+    await assert.rejects(
+      executor.run(
+        options(root, {
+          openCodeSelection: malformed as AgentRunOptions["openCodeSelection"],
+        }),
+      ),
+      OpenCodeAgentSelectionError,
+    );
+  }
+  assert.equal(calls.length, 3, "malformed discriminated intent cannot spawn");
+});
+
+test("Cline does not consume native OpenCode intent", async () => {
+  const calls: Parameters<ProcessRunner>[] = [];
+  const runner: ProcessRunner = (binary, args, runOptions) => {
+    calls.push([binary, args, runOptions]);
+    return okResult();
+  };
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-cline-native-contract-"));
+  const executor = new ClineExecutor("cline-test", runner);
+  await executor.run(options(root));
+  await executor.run(
+    options(root, { openCodeSelection: { source: "native", agentId: "planner" } }),
+  );
+  assert.deepEqual(calls[0]![1], calls[1]![1]);
+});
+
+test("executor-resolved worker preserves alias binary/cwd/environment/runner for execution", async () => {
+  const calls: Parameters<ProcessRunner>[] = [];
+  const runner: ProcessRunner = (binary, args, runOptions) => {
+    calls.push([binary, args, runOptions]);
+    return okResult(REAL_STREAM_TEXT);
+  };
+  const root = mkdtempSync(join(tmpdir(), "gremlyn-worker-execution-"));
+  const executor = new OpenCodeExecutor("custom-installation", runner);
+  const opts = options(root);
+  const worker = executor.resolveWorker({
+    executorId: "repository-alias",
+    cwd: opts.cwd,
+    env: opts.env,
+  });
+  assert.equal(worker.executorId, "repository-alias");
+  assert.equal(worker.binary, "custom-installation");
+  await executor.run({ ...opts, openCodeWorker: worker });
+  assert.equal(calls[0]![0], worker.binary);
+  assert.equal(calls[0]![2].cwd, worker.cwd);
+  assert.deepEqual(calls[0]![2].env, worker.env);
+  await assert.rejects(
+    executor.run({ ...opts, openCodeWorker: { ...worker, cwd: "another-repo" } }),
+    OpenCodeAgentSelectionError,
+  );
+  await assert.rejects(
+    executor.run({ ...opts, openCodeWorker: { ...worker, binary: "opencode" } }),
+    OpenCodeAgentSelectionError,
+  );
+  assert.equal(calls.length, 1, "mismatched discovery context never spawns");
+});
+
 test("OpenCode fails closed on an invalid captured primary agent id before spawning", async () => {
   const calls: Parameters<ProcessRunner>[] = [];
   const runner: ProcessRunner = (binary, args, runOptions) => {

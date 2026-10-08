@@ -71,8 +71,36 @@
 
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import {
+  OpenCodeAgentInventoryError,
+  readBoundedAgentInventory,
+  readCliAgentInventory,
+  type AgentInventory,
+  type AgentInventoryReader,
+  type AgentInventoryRecord,
+  type AgentInventoryRule,
+} from "./agent-inventory.js";
 import { defaultRunner, type ProcessRunner } from "./launcher.js";
 import { OPENCODE_AGENT_DIR, type SerializedOpenCodeAgents } from "./materialize.js";
+
+/**
+ * Compatibility reexports. The shared reader, parser and record shapes now
+ * live in `agent-inventory.ts` so native discovery consumes the exact same
+ * effective inventory and privacy projection. Existing managed-preflight
+ * callers keep importing them from here.
+ */
+export {
+  canonicalAgentModel,
+  parseAgentInventory,
+  readCliAgentInventory,
+} from "./agent-inventory.js";
+export type {
+  AgentInventory,
+  AgentInventoryReader,
+  AgentInventoryRecord,
+  AgentInventoryRule,
+} from "./agent-inventory.js";
+export { OpenCodeAgentInventoryError as OpenCodeAgentPreflightError } from "./agent-inventory.js";
 
 /** Default wait between inventory polls while the cold-location race settles. */
 export const OPENCODE_AGENT_PREFLIGHT_POLL_INTERVAL_MS = 500;
@@ -83,77 +111,6 @@ export const OPENCODE_AGENT_PREFLIGHT_POLL_INTERVAL_MS = 500;
  * anything still unverified after this budget fails closed.
  */
 export const OPENCODE_AGENT_PREFLIGHT_POLL_BUDGET_MS = 10_000;
-
-/** One effective V2 permission rule as the inventory reports it. */
-export interface AgentInventoryRule {
-  readonly action: string;
-  readonly resource: string;
-  readonly effect: string;
-}
-
-/** One effective agent record from the inventory source. */
-export interface AgentInventoryRecord {
-  /** The runtime agent id, e.g. `<namespace>/primary`. */
-  readonly id: string;
-  /** The effective mode: `primary` or `subagent` for the generated agents. */
-  readonly mode: string;
-  /** The effective ordered permission rules (base header plus generated tail). */
-  readonly permissions: readonly AgentInventoryRule[];
-  /** True when the source record actually carried a `model` value. */
-  readonly hasModel: boolean;
-  /**
-   * The canonical `provider/id[#variant]` of the record's model, when it is
-   * usable. Unusable (malformed) models keep `hasModel: true` and omit this.
-   */
-  readonly model?: string;
-}
-
-/**
- * An effective agent inventory for one directory: a list of agent records,
- * plus the directory the source reports it computed for when it reports one
- * (the server envelope's `location.directory`).
- */
-export interface AgentInventory {
-  readonly records: readonly AgentInventoryRecord[];
-  readonly directory?: string;
-}
-
-/**
- * Reads the effective agent inventory for an attempt location. The default
- * ({@link readCliAgentInventory}) runs the pinned CLI under that cwd and
- * environment; tests inject their own. A reader failure throws
- * {@link OpenCodeAgentPreflightError} — the preflight treats an unusable
- * source as an immediate configuration failure, and reserves the bounded poll
- * for the cold-location *race* (an empty or partial inventory), which is not
- * an error.
- */
-export type AgentInventoryReader = (input: {
-  readonly binary: string;
-  readonly cwd: string;
-  readonly env: Record<string, string>;
-  readonly runner: ProcessRunner;
-}) => Promise<AgentInventory>;
-
-/**
- * Raised whenever a managed attempt's generated agents cannot be proven
- * effective. This is a configuration failure distinct from the generic agent
- * failure classes: the operator's dashboard-managed team is what is wrong, not
- * the agent's work, and no amount of retrying the available agent fixes it.
- * {@link reasons} names every deviation found in one pass.
- */
-export class OpenCodeAgentPreflightError extends Error {
-  readonly reasons: readonly string[];
-
-  constructor(reasons: readonly string[]) {
-    super(
-      reasons.length === 0
-        ? "OpenCode managed-agent preflight failed"
-        : `OpenCode managed-agent preflight failed:\n- ${reasons.join("\n- ")}`,
-    );
-    this.name = "OpenCodeAgentPreflightError";
-    this.reasons = reasons;
-  }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -168,126 +125,6 @@ function sameResolvedPath(left: string, right: string): boolean {
   const r = resolve(right);
   return process.platform === "win32" ? l.toLowerCase() === r.toLowerCase() : l === r;
 }
-
-/**
- * Canonicalize an effective model into the profile's `provider/id[#variant]`
- * spelling. The CLI reports a model override as `{providerID, id, variant?}`;
- * a bare string is already canonical. Anything else is unusable.
- */
-export function canonicalAgentModel(model: unknown): string | undefined {
-  if (typeof model === "string") return model.length > 0 ? model : undefined;
-  if (isRecord(model)) {
-    const providerID = model.providerID;
-    const id = model.id;
-    if (
-      typeof providerID === "string" &&
-      providerID.length > 0 &&
-      typeof id === "string" &&
-      id.length > 0
-    ) {
-      const variant = model.variant;
-      return typeof variant === "string" && variant.length > 0
-        ? `${providerID}/${id}#${variant}`
-        : `${providerID}/${id}`;
-    }
-  }
-  return undefined;
-}
-
-function normalizeInventoryRecord(raw: unknown): AgentInventoryRecord | undefined {
-  if (!isRecord(raw)) return undefined;
-  const id = raw.id;
-  const mode = raw.mode;
-  if (typeof id !== "string" || id.length === 0) return undefined;
-  if (typeof mode !== "string" || mode.length === 0) return undefined;
-  const permissions: AgentInventoryRule[] = [];
-  if (raw.permissions !== undefined) {
-    if (!Array.isArray(raw.permissions)) return undefined;
-    for (const entry of raw.permissions) {
-      if (!isRecord(entry)) return undefined;
-      const action = entry.action;
-      const resource = entry.resource;
-      const effect = entry.effect;
-      if (
-        typeof action !== "string" ||
-        typeof resource !== "string" ||
-        typeof effect !== "string"
-      ) {
-        return undefined;
-      }
-      permissions.push({ action, resource, effect });
-    }
-  }
-  const hasModel = raw.model !== undefined && raw.model !== null;
-  const model = canonicalAgentModel(raw.model);
-  const base: AgentInventoryRecord = { id, mode, permissions, hasModel };
-  return model === undefined || !hasModel ? base : { ...base, model };
-}
-
-/**
- * Parse an inventory document into records. Accepts the CLI's bare JSON array
- * and the server envelope `{location:{directory}, data:[…]}`. Returns
- * `undefined` when the output is unusable: empty, not JSON, or carrying a
- * malformed record. `[]` is valid and parses to an empty inventory — that is
- * the cold-location race, handled by the caller's polling, not a parse error.
- */
-export function parseAgentInventory(stdout: string): AgentInventory | undefined {
-  const text = stdout.trim();
-  if (text === "") return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-
-  let rawRecords: unknown;
-  let directory: string | undefined;
-  if (Array.isArray(parsed)) {
-    rawRecords = parsed;
-  } else if (isRecord(parsed)) {
-    if (isRecord(parsed.location) && typeof parsed.location.directory === "string") {
-      directory = parsed.location.directory;
-    }
-    if (!Array.isArray(parsed.data)) return undefined;
-    rawRecords = parsed.data;
-  } else {
-    return undefined;
-  }
-  if (!Array.isArray(rawRecords)) return undefined;
-
-  const records: AgentInventoryRecord[] = [];
-  for (const raw of rawRecords) {
-    const record = normalizeInventoryRecord(raw);
-    // A record without id/mode/permission shape is not filterable noise: an
-    // agent we cannot read could be the one we must refuse to skip.
-    if (record === undefined) return undefined;
-    records.push(record);
-  }
-  return directory === undefined ? { records } : { records, directory };
-}
-
-/** The default inventory source: the pinned CLI under the attempt cwd + env. */
-export const readCliAgentInventory: AgentInventoryReader = async (input) => {
-  const result = await input.runner(input.binary, ["debug", "agents"], {
-    cwd: input.cwd,
-    env: input.env,
-  });
-  if (result.exitCode !== 0) {
-    throw new OpenCodeAgentPreflightError([
-      `${input.binary} debug agents exited ${String(result.exitCode)}: ` +
-        `${result.stderr.trim() || "(no stderr)"}`,
-    ]);
-  }
-  const inventory = parseAgentInventory(result.stdout);
-  if (inventory === undefined) {
-    throw new OpenCodeAgentPreflightError([
-      `${input.binary} debug agents printed no usable agent inventory ` +
-        "(empty, unparsable, or malformed output)",
-    ]);
-  }
-  return inventory;
-};
 
 /** The expected shape of one generated definition, parsed from its file. */
 interface GeneratedDefinition {
@@ -595,7 +432,7 @@ export function verifyManagedAgentInventory(input: {
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     if (signal?.aborted) {
-      reject(new OpenCodeAgentPreflightError(["preflight interrupted"]));
+      reject(new OpenCodeAgentInventoryError(["preflight interrupted"]));
       return;
     }
     const settle = (): void => {
@@ -604,7 +441,7 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
     };
     const onAbort = (): void => {
       clearTimeout(timer);
-      reject(new OpenCodeAgentPreflightError(["preflight interrupted"]));
+      reject(new OpenCodeAgentInventoryError(["preflight interrupted"]));
     };
     const timer = setTimeout(settle, ms);
     if (signal !== undefined) signal.addEventListener("abort", onAbort, { once: true });
@@ -680,16 +517,30 @@ export async function preflightManagedOpenCodeAgents(
 
   for (;;) {
     if (input.signal?.aborted) {
-      throw new OpenCodeAgentPreflightError([
+      throw new OpenCodeAgentInventoryError([
         "preflight interrupted: the attempt signal was aborted before the generated agents were verified",
       ]);
+    }
+    if (lastReasons.length > 0 && Date.now() >= deadline) {
+      throw new OpenCodeAgentInventoryError(lastReasons);
     }
     polls += 1;
     let inventory: AgentInventory;
     try {
-      inventory = await reader({ binary, cwd: input.cwd, env: input.env, runner });
+      // Bound every read by the remaining budget so a hung reader or CLI
+      // cannot stall the preflight past its own deadline.
+      inventory = await readBoundedAgentInventory({
+        inventory: reader,
+        binary,
+        cwd: input.cwd,
+        env: input.env,
+        runner,
+        timeoutMs: budget,
+        deadline,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
     } catch (error) {
-      throw new OpenCodeAgentPreflightError([`agent inventory source failed: ${describe(error)}`]);
+      throw new OpenCodeAgentInventoryError([`agent inventory source failed: ${describe(error)}`]);
     }
     lastReasons = verifyManagedAgentInventory({
       agents: input.agents,
@@ -707,8 +558,8 @@ export async function preflightManagedOpenCodeAgents(
       };
     }
     if (Date.now() >= deadline) {
-      throw new OpenCodeAgentPreflightError(lastReasons);
+      throw new OpenCodeAgentInventoryError(lastReasons);
     }
-    await delay(interval, input.signal);
+    await delay(Math.min(interval, Math.max(0, deadline - Date.now())), input.signal);
   }
 }
