@@ -10,6 +10,9 @@ import {
 } from "../src/runtime/repositories.js";
 import { setRepositoryModelProvider } from "../src/console/mutations.js";
 import type { RepoConfig } from "../src/config/loader.js";
+import { readOpenCodeSelection, saveOpenCodeSelection } from "../src/store/opencode-selections.js";
+import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
+import { JobStore } from "../src/store/jobs.js";
 
 function config(overrides: Partial<RepoConfig> = {}): RepoConfig {
   return {
@@ -101,4 +104,74 @@ test("syncRepositories seeds provider/model/effort from config for a brand-new r
   assert.equal(repository.provider, "openai-codex");
   assert.equal(repository.model, "gpt-5.6-luna");
   assert.equal(repository.effort, "xhigh");
+});
+
+test("repository synchronization seeds default and retains native intent across executor switches", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const [repository] = syncRepositories(store.db, [config({ agent: "opencode" })]);
+    assert.ok(repository);
+    assert.deepEqual(readOpenCodeSelection(store.db, repository.id), {
+      repoId: repository.id,
+      revision: 0,
+      selection: { source: "default" },
+      explicit: true,
+    });
+    assert.equal(
+      saveOpenCodeSelection(store.db, {
+        repoId: repository.id,
+        expectedRevision: 0,
+        candidate: { source: "native", agentId: "reviewer" },
+      }).ok,
+      true,
+    );
+    syncRepositories(store.db, [config({ agent: "cline" })]);
+    syncRepositories(store.db, [config({ agent: "opencode" })]);
+    assert.deepEqual(readOpenCodeSelection(store.db, repository.id)?.selection, {
+      source: "native",
+      agentId: "reviewer",
+    });
+    assert.equal(readOpenCodeSelection(store.db, repository.id)?.revision, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("saving a profile after registration remains dormant across synchronization and job capture", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const [repository] = syncRepositories(store.db, [config({ agent: "opencode" })]);
+    assert.ok(repository);
+    const saved = saveOpenCodeAgentProfile(store.db, {
+      repoId: repository.id,
+      expectedRevision: 0,
+      candidate: {
+        version: 1,
+        primary: { id: "reviewer", description: "Reviewer", permissions: [] },
+        subagents: [],
+      },
+    });
+    assert.equal(saved.ok, true);
+    syncRepositories(store.db, [config({ agent: "opencode" })]);
+    assert.deepEqual(readOpenCodeSelection(store.db, repository.id)?.selection, {
+      source: "default",
+    });
+    const created = new JobStore(store.db).createJob({
+      repoId: repository.id,
+      prNumber: 1,
+      commentId: 1,
+      command: "RESOLVE",
+      threadId: "1",
+      authorLogin: "owner",
+      observedAt: "2026-09-01T00:00:00Z",
+    });
+    assert.equal(created.kind, "created");
+    if (created.kind !== "created") throw new Error("fixture capture failed");
+    const capture = store.db
+      .prepare("SELECT opencode_source, opencode_profile_json FROM jobs WHERE id = ?")
+      .get(created.jobId);
+    assert.deepEqual(capture, { opencode_source: "default", opencode_profile_json: null });
+  } finally {
+    store.close();
+  }
 });

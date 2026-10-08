@@ -7,11 +7,11 @@
 
 ## 2. Durable selection and job capture
 
-- [ ] 2.1 Add additive repository-selection, job-capture and per-invocation ownership/identity migrations; verify fresh and legacy databases preserve existing profile bytes/revisions and seed managed/default sources correctly.
-- [ ] 2.2 Implement strict discriminated selection validation and revisioned source updates without touching other repository fields; verify malformed/conflicting choices, stale revisions, non-OpenCode aliases and safe audit tests.
-- [ ] 2.3 Implement explicit managed-profile activation/dormancy and atomic active-profile clearing; verify native/default switches retain profiles, dormant edits do not activate them, and active profile/revision races cannot split a selection.
-- [ ] 2.4 Capture source/native ID/revision and only active managed definitions in the job-claim transaction; verify concurrent-save, queued-job and legacy-job fallback tests.
-- [ ] 2.5 Make explicit retries and internal invocations resolve selection solely from job capture; verify selection stability after repository edits and database reopen without changing unrelated model/retry policy.
+- [x] 2.1 Add additive repository-selection, job-capture and per-invocation ownership/identity migrations; verify fresh and legacy databases preserve existing profile bytes/revisions and seed managed/default sources correctly.
+- [x] 2.2 Implement strict discriminated selection validation and revisioned source updates without touching other repository fields; verify malformed/conflicting choices, stale revisions, non-OpenCode aliases and safe audit tests.
+- [x] 2.3 Implement explicit managed-profile activation/dormancy and atomic active-profile clearing; verify native/default switches retain profiles, dormant edits do not activate them, and active profile/revision races cannot split a selection.
+- [x] 2.4 Capture source/native ID/revision and only active managed definitions in the job-claim transaction; verify concurrent-save, queued-job and legacy-job fallback tests.
+- [x] 2.5 Make explicit retries and internal invocations resolve selection solely from job capture; verify selection stability after repository edits and database reopen without changing unrelated model/retry policy.
 
 ## 3. Executor selection and invocation ownership
 

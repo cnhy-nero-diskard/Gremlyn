@@ -6,7 +6,14 @@ import {
   OpenCodeProfileValidationError,
   parseOpenCodeAgentProfile,
 } from "../config/opencode-profile.js";
+import {
+  OPENCODE_EXECUTOR_ID,
+  type OpenCodePrimarySelection,
+} from "../config/opencode-selection.js";
+import { resetManagedSelectionToDefault } from "./opencode-selections.js";
 import { recordOperatorAction } from "./actions.js";
+
+export { OPENCODE_EXECUTOR_ID };
 
 /**
  * Durable per-repository OpenCode profile read and atomic revision
@@ -33,9 +40,6 @@ import { recordOperatorAction } from "./actions.js";
  * when omitted it falls back to the repository's agent id, which is the
  * loader's default kind.
  */
-
-/** The registered executor kind that owns dashboard-managed agent profiles. */
-export const OPENCODE_EXECUTOR_ID = "opencode";
 
 /** A durable profile read: the parsed profile plus its compare-and-set revision. */
 export interface OpenCodeProfileRecord {
@@ -251,5 +255,98 @@ export function saveOpenCodeAgentProfile(
       detail: openCodeProfileAuditDetail(profile, revision),
     });
     return { ok: true, repoId: input.repoId, revision, profile };
+  })();
+}
+
+/**
+ * The outcome of deliberately clearing a saved profile (design D1; task 2.3).
+ * A successful clear nulls the profile payload and bumps its revision (never
+ * deletes the row, so the compare-and-set counter stays monotonic and a stale
+ * editor cannot re-apply), and — only when the current selection is managed —
+ * atomically returns the primary source to default at the next selection
+ * revision. A dormant (native/default) selection is left alone.
+ */
+export type ClearOpenCodeProfileResult =
+  | {
+      ok: true;
+      repoId: number;
+      /** The new profile revision after clearing. */
+      revision: number;
+      /** Whether an active managed selection was reset to default. */
+      selectionReset: boolean;
+      selection: OpenCodePrimarySelection;
+      selectionRevision: number;
+    }
+  | { ok: false; reason: "not-found" }
+  | { ok: false; reason: "not-opencode"; currentRevision: number }
+  | { ok: false; reason: "conflict"; currentRevision: number }
+  | { ok: false; reason: "no-profile"; currentRevision: number };
+
+/**
+ * Deliberately clear a repository's saved OpenCode profile with the same
+ * compare-and-set discipline as a save. `expectedRevision` is the profile
+ * revision the operator saw; a mismatch conflicts and changes nothing.
+ *
+ * Clearing an active managed profile is atomic: the profile payload is nulled
+ * and the selection returns to default in the same transaction, so no job can
+ * capture a managed source without a profile. Clearing a dormant profile only
+ * removes the definition; the current native/default source is preserved.
+ * Exactly one scoped operator action records the safe outcome and never the
+ * instruction text.
+ */
+export function clearOpenCodeAgentProfile(
+  db: Database.Database,
+  input: {
+    repoId: number;
+    /** The profile revision the operator saw; the key compare-and-set input. */
+    expectedRevision: number;
+    /** Resolved executor kind (`agents[agent].kind ?? agent`) when known. */
+    executorKind?: string;
+  },
+): ClearOpenCodeProfileResult {
+  return db.transaction((): ClearOpenCodeProfileResult => {
+    // Re-check repository identity/kind in the transaction so a concurrent
+    // executor resynchronization cannot clear an OpenCode profile after this
+    // alias changed to another executor.
+    const repository = db
+      .prepare("SELECT agent FROM repositories WHERE id = ?")
+      .get(input.repoId) as { agent: string } | undefined;
+    if (!repository) return { ok: false, reason: "not-found" };
+    const revisionNow = currentProfileRevision(db, input.repoId);
+    const executorKind = input.executorKind ?? repository.agent;
+    if (executorKind !== OPENCODE_EXECUTOR_ID) {
+      return { ok: false, reason: "not-opencode", currentRevision: revisionNow };
+    }
+    if (revisionNow !== input.expectedRevision) {
+      return { ok: false, reason: "conflict", currentRevision: revisionNow };
+    }
+    const existing = readProfileRow(db, input.repoId);
+    if (existing === undefined || existing.profileJson === null) {
+      return { ok: false, reason: "no-profile", currentRevision: revisionNow };
+    }
+    const revision = revisionNow + 1;
+    db.prepare(
+      "UPDATE opencode_agent_profiles SET profile_json = NULL, revision = ? WHERE repo_id = ?",
+    ).run(revision, input.repoId);
+    const reset = resetManagedSelectionToDefault(db, input.repoId);
+    recordOperatorAction(db, {
+      action: "opencode-agent-profile-clear",
+      target: `repository:${input.repoId}`,
+      effect: `v${revision}`,
+      detail: {
+        profileRevision: revision,
+        selectionReset: reset.reset,
+        selectionSource: reset.selection.source,
+        selectionRevision: reset.revision,
+      },
+    });
+    return {
+      ok: true,
+      repoId: input.repoId,
+      revision,
+      selectionReset: reset.reset,
+      selection: reset.selection,
+      selectionRevision: reset.revision,
+    };
   })();
 }

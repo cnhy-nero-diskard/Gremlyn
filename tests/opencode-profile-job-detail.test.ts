@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { Store } from "../src/store/db.js";
 import { JobStore } from "../src/store/jobs.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
+import { saveOpenCodeSelection } from "../src/store/opencode-selections.js";
 import { readDashboard, readJobDetail } from "../src/console/queries.js";
 import { jobRegions } from "../src/console/views/job.js";
 
@@ -75,6 +76,15 @@ function createCapturedJob(store: Store): { jobId: number; revision: number } {
   });
   assert.equal(saved.ok, true);
   if (!saved.ok) throw new Error(`profile save failed: ${saved.reason}`);
+  assert.equal(
+    saveOpenCodeSelection(store.db, {
+      repoId,
+      expectedRevision: 0,
+      expectedProfileRevision: saved.revision,
+      candidate: { source: "managed" },
+    }).ok,
+    true,
+  );
   const created = new JobStore(store.db).createJob({
     repoId,
     prNumber: 42,

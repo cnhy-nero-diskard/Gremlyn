@@ -26,6 +26,12 @@ import {
 
 /** The migration under test; every migration before it forms the "old" database. */
 const PROFILE_MIGRATION_ID = "0006_opencode_agent_profiles";
+/**
+ * The selection migration (0008) reads the profile table, so it must be left
+ * pending alongside the profile migration; otherwise the "old" database would
+ * apply a migration that depends on a table this fixture deliberately omits.
+ */
+const SELECTION_MIGRATION_ID = "0008_opencode_primary_selection";
 
 function openStoreAt(dir: string): Store {
   return new Store({ dataDir: dir });
@@ -45,7 +51,9 @@ function createPreProfileDatabase(file: string): void {
       applied_at TEXT NOT NULL
     );
   `);
-  const prior = MIGRATIONS.filter((migration) => migration.id !== PROFILE_MIGRATION_ID);
+  const prior = MIGRATIONS.filter(
+    (migration) => migration.id !== PROFILE_MIGRATION_ID && migration.id !== SELECTION_MIGRATION_ID,
+  );
   const record = db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)");
   for (const migration of prior) {
     db.transaction(() => {
