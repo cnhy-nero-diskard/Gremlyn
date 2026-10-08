@@ -38,5 +38,5 @@
 
 - [x] 6.1 Add seam integration proving two repositories run their own captured native IDs across queueing/retry/restart and managed switching; verify actual argv and injected effective-runtime configuration rather than the saved label alone.
 - [x] 6.2 Extend an opt-in temporary-repository acceptance harness to run a discovered native primary and prove its actual identity; verify it uses fixture GitHub/local publication only and skips without an explicit model opt-in.
-- [ ] 6.3 Run the full automated suite, build, lint and changed-file format checks; verify managed preflight/session/recovery, workspace isolation, cancellation and publication regression tests remain green.
+- [x] 6.3 Run the full automated suite, build, lint and changed-file format checks; verify managed preflight/session/recovery, workspace isolation, cancellation and publication regression tests remain green.
 - [x] 6.4 Document default-policy/native-ID snapshot semantics, unavailable worktree-local definitions, explicit source switching and the native safety compatibility change; verify upgrade/rollback guidance prohibits dropping unresolved ownership or bypassing quarantine.
