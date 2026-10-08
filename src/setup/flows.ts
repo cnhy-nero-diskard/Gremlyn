@@ -226,6 +226,7 @@ export async function reclaimConfiguredWorkspaces(options: ReclaimOptions): Prom
     const repositories = syncRepositories(store.db, config.repositories, config.agentTimeoutSec);
     const report = await reclaimWorkspaces({
       db: store.db,
+      dataDir: config.dataDir,
       repositories,
       minimumAgeMs: config.workspaceReclamation.minimumAgeSec * 1_000,
       actions: new OperatorActionStore(store.db),

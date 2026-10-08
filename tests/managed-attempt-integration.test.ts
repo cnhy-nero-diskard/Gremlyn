@@ -56,6 +56,7 @@ import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
+import { saveOpenCodeSelection } from "../src/store/opencode-selections.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
 import type { AgentExecutor, AgentResult, AgentRunOptions, NormalizedEvent } from "../src/types.js";
 import { workspacePathFor } from "../src/workspace/worktree.js";
@@ -225,7 +226,14 @@ class FakeSessionServer implements ManagedSessionHttp {
       return { status: 200, body: { data } };
     }
     if (query !== undefined && query.parentID !== undefined) {
-      const data = [...this.opts.childIds].map((id) => this.recordOf(id));
+      // Direct children only. The recursive settlement walk queries each child
+      // for ITS children too; this fixture models no nested sessions, so any
+      // other parent id yields an empty listing rather than echoing the root's
+      // children back as grandchildren.
+      const data =
+        query.parentID === this.opts.parentId
+          ? [...this.opts.childIds].map((id) => this.recordOf(id))
+          : [];
       return { status: 200, body: { data, cursor: { previous: null, next: null } } };
     }
     const id = sessionIdFromPath(path);
@@ -360,6 +368,16 @@ async function setupManaged(opts: ManagedFixtureOptions = {}) {
       executorKind: "opencode",
     });
     assert.ok(saved.ok, "profile save must succeed");
+    // Registration seeds an explicit default source; a saved profile is dormant
+    // until the test deliberately activates managed.
+    const activated = saveOpenCodeSelection(store.db, {
+      repoId: repository.id,
+      expectedRevision: 0,
+      candidate: { source: "managed" },
+      expectedProfileRevision: saved.revision,
+      executorKind: "opencode",
+    });
+    assert.ok(activated.ok, "managed activation must succeed");
   }
   const prNumber = 27;
   const github = new FixtureGitHubClient({
@@ -405,18 +423,15 @@ async function setupManaged(opts: ManagedFixtureOptions = {}) {
   const events: string[] = [];
   const executor = new FakeOpenCodeExecutor(opts.executor, events);
   const workspace = workspacePathFor(gitRepo.workspaceRoot, prNumber);
-  const server =
-    opts.childIds !== undefined
-      ? new FakeSessionServer({
-          parentId: opts.executor?.sessionId ?? "ses_parent",
-          directory: workspace,
-          childIds: opts.childIds,
-          runningChildIds: opts.runningChildIds,
-          contradictoryChildIds: opts.contradictoryChildIds,
-          settleOnInterrupt: opts.settleOnInterrupt,
-          events,
-        })
-      : undefined;
+  const server = new FakeSessionServer({
+    parentId: opts.executor?.sessionId ?? "ses_parent",
+    directory: workspace,
+    childIds: opts.childIds ?? [],
+    runningChildIds: opts.runningChildIds,
+    contradictoryChildIds: opts.contradictoryChildIds,
+    settleOnInterrupt: opts.settleOnInterrupt,
+    events,
+  });
   const operatorActions = new OperatorActionStore(store.db);
   const logger = new CancellingLogger({
     level: "error",
@@ -525,9 +540,12 @@ test("managed attempt runs ordered lifecycle: preflight, run with primary, settl
   assert.equal(completed.kind, "completed");
 
   // The generated namespace is derived from the attempt id and the run
-  // received the verified primary agent id.
-  const primaryAgentId = data.executor.runs[0]?.primaryAgentId;
-  assert.equal(primaryAgentId, `attempt-${queued.attemptId}/primary`);
+  // received the verified managed primary agent as its explicit selection.
+  const selection = data.executor.runs[0]?.openCodeSelection;
+  assert.deepEqual(selection, {
+    source: "managed",
+    agentId: `attempt-${queued.attemptId}/primary`,
+  });
 
   // Ordering: preflight inventory read, then the parent run, then the child
   // settlement transport — never settlement before the run.
@@ -558,7 +576,7 @@ test("managed attempt runs ordered lifecycle: preflight, run with primary, settl
   data.store.close();
 });
 
-test("an opencode attempt without a profile snapshot is unchanged: no primary id, no preflight, no settlement", async () => {
+test("an opencode attempt with no managed profile runs the default source and still settles its tree", async () => {
   const data = await setupManaged({
     withProfile: false,
     executor: { sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } },
@@ -566,11 +584,16 @@ test("an opencode attempt without a profile snapshot is unchanged: no primary id
   const queued = await resolveEvent(data);
   assert.equal((await queued.completed).kind, "completed");
   assert.equal(data.executor.runs.length, 1);
+  // Default source: no explicit primary selection reaches the executor and no
+  // managed preflight ran, but the generic ownership/settlement boundary still
+  // applies to the default OpenCode run.
+  assert.deepEqual(data.executor.runs[0]!.openCodeSelection, { source: "default" });
   assert.equal(data.executor.runs[0]!.primaryAgentId, undefined);
-  // No managed wiring touched any seam.
   assert.equal(data.events.filter((event) => event === "preflight").length, 0);
-  assert.equal(data.server, undefined);
+  assert.ok(data.server.calls.length > 0, "the default OpenCode tree must still be settled");
   assert.equal(existsSync(workspaceAttemptDir(data.workspace, queued.attemptId)), false);
+  // Proven quiescent, so the ownership journal and data dir were released.
+  assert.equal(existsSync(join(data.dataDir, "attempts", String(queued.attemptId))), false);
   const attempt = data.store.db
     .prepare("SELECT outcome FROM attempts WHERE id = ?")
     .get(queued.attemptId) as { outcome: string };
@@ -592,7 +615,7 @@ test("failed preflight never runs the agent, leaves a clean worktree, and record
   assert.equal(attempt.failure_stage, "running");
   assert.equal(attempt.failure_reason, "managed-preflight-failed");
   // Nothing spawned, so no child settlement was attempted.
-  assert.equal(data.server, undefined);
+  assert.equal(data.server.calls.length, 0, "a preflight failure must precede any launch");
   // The generated files were cleaned after the preflight failure, and the
   // attempt data dir was released normally.
   assert.equal(existsSync(workspaceAttemptDir(data.workspace, queued.attemptId)), false);
@@ -707,7 +730,7 @@ test("a cancel during a managed run still interrupts children first, then cancel
     childIds: ["ses_child"],
     runningChildIds: ["ses_child"],
     settleOnInterrupt: true,
-    cancelAt: "agent exited",
+    cancelAt: "agent launched",
     settlePollIntervalMs: 5,
   });
   const queued = await resolveEvent(data);
@@ -737,7 +760,7 @@ test("a cancelled run with an unsettled child records failure and retains recove
     executor: { sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } },
     childIds: ["ses_child"],
     runningChildIds: ["ses_child"],
-    cancelAt: "agent exited",
+    cancelAt: "agent launched",
     settlePollIntervalMs: 5,
     settleInterruptGraceMs: 20,
   });
@@ -824,7 +847,7 @@ test("a cancelled managed run that provably interrupted children persists their 
     childIds: ["ses_child"],
     runningChildIds: ["ses_child"],
     settleOnInterrupt: true,
-    cancelAt: "agent exited",
+    cancelAt: "agent launched",
     settlePollIntervalMs: 5,
     settleInterruptGraceMs: 20,
   });

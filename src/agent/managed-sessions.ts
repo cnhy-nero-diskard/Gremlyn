@@ -48,6 +48,21 @@
  * a running session seen there that we cannot attribute never becomes "our"
  * child.
  *
+ * Child discovery recurses. The same parentID-filtered listing, whose records
+ * echo their parent, is applied at every level so the attempt's *complete*
+ * descendant tree is enumerated, not just the direct children: a background
+ * child can itself run a background child, and a still-running ancestor could
+ * spawn a new descendant after a leaf check. Every edge requires an echoed
+ * parent id and the exact resolved workspace; the walk is bounded by the page
+ * cap per listing ({@link OPENCODE_SESSION_LIST_PAGE_LIMIT}), a depth cap
+ * ({@link OPENCODE_SESSION_TREE_DEPTH_LIMIT}) and a node cap
+ * ({@link OPENCODE_SESSION_TREE_NODE_LIMIT}). A repeated id (a cycle/duplicate)
+ * and any record that does not echo the queried parent — even one already
+ * attributed by an earlier round — are hard discovery failures. Tolerating a
+ * misattributed record would let a service that ignores the parentID filter
+ * hide a still-running native descendant and authorize unsafe publication, so
+ * the edge proof is never narrowed.
+ *
  * Settlement contract (design D4 and the `agent-execution` delta):
  *
  * - The wait for quiescence is bounded by the caller's `timeoutMs`, which is
@@ -117,9 +132,30 @@ export const OPENCODE_SESSION_INTERRUPT_GRACE_MS = 5_000;
 export const OPENCODE_SESSION_LIST_PAGE_LIMIT = 50;
 
 /**
+ * Hard cap on how deep the recursive descendant walk descends from the attempt
+ * root before failing closed. The root is level 0, its direct children level 1;
+ * a session at level 16 may still be enumerated, but a child at level 17 fails
+ * the attempt. Nested delegation is real (a background child can spawn its own
+ * background child), so the walk must recurse — but an implausibly deep store
+ * is a proof failure, never a reason to truncate the tree.
+ */
+export const OPENCODE_SESSION_TREE_DEPTH_LIMIT = 16;
+
+/**
+ * Hard cap on how many descendants the recursive walk may accumulate before
+ * failing closed. Exceeding it means the tree cannot be enumerated completely,
+ * which is exactly the state that must never authorize validation or
+ * publication; truncating instead would let an unseen running descendant pass.
+ */
+export const OPENCODE_SESSION_TREE_NODE_LIMIT = 1024;
+
+/**
  * Default timeout for one `opencode api` call. The settlement waits are bounded
- * by the remaining attempt timeout, but a hung CLI process would outlive even
- * that unless every individual call is bound too.
+ * by the remaining attempt timeout, but a hung CLI process — or a hung injected
+ * transport — would outlive even that unless every individual call is bound
+ * too. The same bound is applied to an injected {@link ManagedSessionHttp} so
+ * tests (and future non-CLI transports) cannot stall the settlement past its
+ * deadline.
  */
 export const OPENCODE_SESSION_CLI_TIMEOUT_MS = 5_000;
 
@@ -256,6 +292,13 @@ export interface OpenCodeSessionListingPage {
  * Parse one page of `GET /api/session` (`{data: Session.Info[], cursor}`).
  * Any item that is not a usable record makes the whole page unusable: a
  * session we cannot read could be a child we must refuse to skip.
+ *
+ * The cursor is just as load-bearing as the items: absence of a next page is
+ * ONLY the explicit `cursor.next === null` the pinned schema defines. A missing
+ * `cursor`, a missing `next`, or a `next` that is not a non-empty string is a
+ * malformed end-of-list shape, not proof that the page chain ended — treating
+ * it as final would silently truncate the child set and could hide a running
+ * descendant. Such shapes reject the page instead.
  */
 export function parseSessionListing(body: unknown): OpenCodeSessionListingPage | undefined {
   if (!isRecord(body)) return undefined;
@@ -267,8 +310,11 @@ export function parseSessionListing(body: unknown): OpenCodeSessionListingPage |
     if (item === undefined) return undefined;
     items.push(item);
   }
-  const cursor = isRecord(body.cursor) ? asString(body.cursor.next) : undefined;
-  return cursor === undefined ? { items } : { items, nextCursor: cursor };
+  const cursor = body.cursor;
+  if (!isRecord(cursor) || !("next" in cursor)) return undefined;
+  if (cursor.next === null) return { items };
+  if (typeof cursor.next !== "string" || cursor.next.length === 0) return undefined;
+  return { items, nextCursor: cursor.next };
 }
 
 /**
@@ -434,6 +480,81 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Reject `promise` when it does not settle within `timeoutMs`, or as soon as
+ * `signal` aborts. The CLI transport already bounds each process, but an
+ * injected transport (or a future non-CLI one) could hang forever; the
+ * settlement's own deadline is a fake-clock value and cannot interrupt a pending
+ * promise, so every call is put in a real race here. A timeout surfaces as a
+ * transport error, which the loops map to a bounded `glitch` — never to
+ * quiescence. The signal is passed only for observation reads (so a cancelled
+ * attempt stops reading promptly); interrupt POSTs are deliberately never
+ * aborted, because they must still reach the service, bounded by the remaining
+ * grace.
+ */
+function withCallTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (signal !== undefined) signal.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = (): void => finish(() => rejectPromise(new Error("session API call aborted")));
+    const timer = setTimeout(
+      () => finish(() => rejectPromise(new Error("session API call timed out"))),
+      Math.max(1, timeoutMs),
+    );
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    promise.then(
+      (value) => finish(() => resolvePromise(value)),
+      (error: unknown) => finish(() => rejectPromise(error)),
+    );
+  });
+}
+
+/**
+ * Wrap a session transport so every call is bounded by the SMALLER of the
+ * per-call cap and whatever budget remains of the active deadline (the attempt
+ * budget while observing, the interrupt grace while interrupting). Recomputing
+ * the bound per call from the live clock means a walk of 16/1024 nodes cannot
+ * spend the full per-call timeout on each one: once the budget is spent every
+ * remaining call fails fast as a transport glitch, which can never authorize
+ * quiescence.
+ *
+ * `getSignal` returns the abort signal to apply to GET (observation) calls; it
+ * is `undefined` once interrupting so the attributed interrupt POSTs and the
+ * confirming reads can still complete. POST calls are never aborted.
+ */
+function boundSessionHttp(
+  http: ManagedSessionHttp,
+  perCallTimeoutMs: number,
+  remaining: () => number,
+  getSignal: () => AbortSignal | undefined,
+): ManagedSessionHttp {
+  const callTimeout = (): number => {
+    const left = remaining();
+    if (left <= 0) return 1;
+    return Math.max(1, Math.min(perCallTimeoutMs, left));
+  };
+  return {
+    get: (path, query) => withCallTimeout(http.get(path, query), callTimeout(), getSignal()),
+    post: (path) => withCallTimeout(http.post(path), callTimeout()),
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Discovery
  * ------------------------------------------------------------------ */
@@ -455,6 +576,15 @@ export interface DiscoverAttemptChildrenInput {
    */
   readonly timeoutMs: number;
   readonly pollIntervalMs?: number;
+  /**
+   * Per-call bound for the transport in ms. Defaults to
+   * {@link OPENCODE_SESSION_CLI_TIMEOUT_MS}; a hung injected call is failed as
+   * a transport glitch rather than left to stall the settlement. Discovery is
+   * deliberately NOT abort-bound: cancellation must still enumerate the known
+   * children so the settlement can interrupt them, and the per-call bound
+   * already keeps a hung discovery call finite.
+   */
+  readonly perCallTimeoutMs?: number;
   /** Injectable clock and sleeper for deterministic tests. */
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -462,7 +592,10 @@ export interface DiscoverAttemptChildrenInput {
 
 export interface DiscoverAttemptChildrenResult {
   readonly parentSessionId: string;
-  /** Every child attributed to the parent under the attempt directory. */
+  /**
+   * Every descendant attributed to the parent under the attempt directory, in
+   * breadth-first discovery order (direct children first, then nested ones).
+   */
   readonly children: readonly OpenCodeSessionInfo[];
 }
 
@@ -522,20 +655,26 @@ async function readAttemptParent(
 
 /**
  * Page through `GET /api/session?parentID=<parent>&directory=<attempt>` and
- * return every record, validating attribution as it goes. The three-variant
- * result distinguishes a transient read failure (`glitch`, retried within the
- * bound) from a readable-but-unusable response (`unusable`, a state that must
- * fail immediately). A record that is readable but cannot be attributed to
- * this attempt throws {@link OpenCodeSessionDiscoveryError} the moment it is
- * seen: an unverifiable set can hide a still-running child and must never be
- * silently filtered.
+ * return the direct records that echo the parent, validating attribution as it
+ * goes. The three-variant result distinguishes a transient read failure
+ * (`glitch`, retried within the bound) from a readable-but-unusable response
+ * (`unusable`, a state that must fail immediately).
+ *
+ * EVERY returned record must echo the queried parent AND live in the attempt
+ * workspace. A record that names any other parent — even one we have already
+ * attributed with an unchanged recorded parent — throws
+ * {@link OpenCodeSessionDiscoveryError} the moment it is seen. Tolerating such
+ * a record would let a service that ignores the `parentID` filter (returning
+ * root siblings, or an already-seen child, for a nested query) hide a
+ * still-running native descendant and authorize publication; the edge proof is
+ * never narrowed for the sake of a lenient fake.
  *
  * The page chain must terminate: a repeated cursor is a non-terminating chain
  * (the child set can never be trusted complete), and {@link
  * OPENCODE_SESSION_LIST_PAGE_LIMIT} caps how many pages are followed. Both fail
  * closed rather than loop past the attempt budget.
  */
-async function listAttemptChildren(
+async function listChildrenForNode(
   http: ManagedSessionHttp,
   parentSessionId: string,
   attemptDirectory: string,
@@ -572,17 +711,17 @@ async function listAttemptChildren(
     const page = parseSessionListing(result.body);
     if (page === undefined) return { status: "unusable" };
     for (const item of page.items) {
+      if (!sameResolvedPath(item.directory, attemptDirectory)) {
+        throw new OpenCodeSessionDiscoveryError(
+          `session ${item.id} names parent ${parentSessionId} but runs in ${item.directory}, ` +
+            `not the attempt workspace ${attemptDirectory} — another run's child must not be settled here`,
+        );
+      }
       if (item.parentID !== parentSessionId) {
         throw new OpenCodeSessionDiscoveryError(
           `session ${item.id} was returned by the parentID=${parentSessionId} listing but ` +
             `its own record names parent ${item.parentID ?? "(none)"} — the child surface ` +
             "cannot be trusted",
-        );
-      }
-      if (!sameResolvedPath(item.directory, attemptDirectory)) {
-        throw new OpenCodeSessionDiscoveryError(
-          `session ${item.id} names parent ${parentSessionId} but runs in ${item.directory}, ` +
-            `not the attempt workspace ${attemptDirectory} — another run's child must not be settled here`,
         );
       }
       children.push(item);
@@ -599,6 +738,87 @@ async function listAttemptChildren(
     cursor = next;
   }
   return { status: "ok", children };
+}
+
+/** The full descendant picture produced by one complete recursive walk. */
+interface DescendantTree {
+  /** Every descendant, keyed by id (the attempt root is NOT included). */
+  readonly records: ReadonlyMap<string, OpenCodeSessionInfo>;
+  /** Descendant ids in breadth-first discovery order. */
+  readonly order: readonly string[];
+  /** Descendant id -> depth; direct children are depth 1. */
+  readonly depths: ReadonlyMap<string, number>;
+  /** Descendant id -> the session id it was listed under. */
+  readonly parents: ReadonlyMap<string, string | undefined>;
+}
+
+type DescendantTreeResult =
+  | { readonly status: "ok"; readonly tree: DescendantTree }
+  | { readonly status: "glitch" }
+  | { readonly status: "unusable" };
+
+/**
+ * Walk the attempt's complete descendant tree with the filtered parentID
+ * listing, one level at a time. The root is level 0; every record returned for
+ * `parentID=<node>` must echo that node and live in the attempt workspace (see
+ * {@link listChildrenForNode}) or the walk fails closed. A repeated id (a
+ * cycle or an id returned under two parents), an over-deep chain and an
+ * over-large tree all fail closed rather than truncate the proof. Returns
+ * `glitch`/`unusable` unchanged so the caller can retry or fail exactly as for
+ * a single listing.
+ */
+async function readDescendantTree(
+  http: ManagedSessionHttp,
+  rootSessionId: string,
+  attemptDirectory: string,
+): Promise<DescendantTreeResult> {
+  const records = new Map<string, OpenCodeSessionInfo>();
+  const depths = new Map<string, number>();
+  const order: string[] = [];
+  const parents = new Map<string, string | undefined>();
+  // The root is seeded so a child listing that tries to return the root itself
+  // is caught as a cycle rather than silently attributed.
+  parents.set(rootSessionId, undefined);
+
+  const queue: Array<{ readonly id: string; readonly depth: number }> = [
+    { id: rootSessionId, depth: 0 },
+  ];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    const listing = await listChildrenForNode(http, node.id, attemptDirectory);
+    if (listing.status === "glitch") return { status: "glitch" };
+    if (listing.status === "unusable") return { status: "unusable" };
+    for (const child of listing.children) {
+      if (parents.has(child.id)) {
+        throw new OpenCodeSessionDiscoveryError(
+          `session ${child.id} appeared more than once while walking the ` +
+            `parentID=${rootSessionId} descendant tree (listed under ${node.id}); a repeated ` +
+            "id is a cycle or duplicate and the descendant tree cannot be trusted",
+        );
+      }
+      const depth = node.depth + 1;
+      if (depth > OPENCODE_SESSION_TREE_DEPTH_LIMIT) {
+        throw new OpenCodeSessionDiscoveryError(
+          `the parentID=${rootSessionId} descendant tree exceeded ` +
+            `${String(OPENCODE_SESSION_TREE_DEPTH_LIMIT)} levels; the child set is implausibly ` +
+            "deep and cannot be trusted",
+        );
+      }
+      if (records.size >= OPENCODE_SESSION_TREE_NODE_LIMIT) {
+        throw new OpenCodeSessionDiscoveryError(
+          `the parentID=${rootSessionId} descendant tree exceeded ` +
+            `${String(OPENCODE_SESSION_TREE_NODE_LIMIT)} nodes; the child set is implausibly ` +
+            "large and cannot be trusted",
+        );
+      }
+      records.set(child.id, child);
+      depths.set(child.id, depth);
+      order.push(child.id);
+      parents.set(child.id, node.id);
+      queue.push({ id: child.id, depth });
+    }
+  }
+  return { status: "ok", tree: { records, order, depths, parents } };
 }
 
 /**
@@ -618,14 +838,20 @@ export async function discoverAttemptChildSessions(
   const now = input.now ?? (() => Date.now());
   const sleep = input.sleep ?? ((ms: number) => delay(ms));
   const deadline = now() + Math.max(0, input.timeoutMs);
+  // Discovery never aborts its reads: cancellation must still enumerate the
+  // known children so the settlement can interrupt them. Each call is instead
+  // capped by the remaining discovery budget so a hung transport cannot outlive
+  // it; unknown state after the budget still fails closed.
+  const http = boundSessionHttp(
+    input.http,
+    input.perCallTimeoutMs ?? OPENCODE_SESSION_CLI_TIMEOUT_MS,
+    () => deadline - now(),
+    () => undefined,
+  );
 
   let lastGlitch = "the parent session record could not be read";
   for (;;) {
-    const parent = await readAttemptParent(
-      input.http,
-      input.parentSessionId,
-      input.attemptDirectory,
-    );
+    const parent = await readAttemptParent(http, input.parentSessionId, input.attemptDirectory);
     if (parent.status === "unusable") {
       throw new OpenCodeSessionDiscoveryError(
         `the parent session record for ${input.parentSessionId} was returned but could not be ` +
@@ -642,18 +868,14 @@ export async function discoverAttemptChildSessions(
       await sleep(pollIntervalMs);
       continue;
     }
-    const listing = await listAttemptChildren(
-      input.http,
-      input.parentSessionId,
-      input.attemptDirectory,
-    );
-    if (listing.status === "unusable") {
+    const tree = await readDescendantTree(http, input.parentSessionId, input.attemptDirectory);
+    if (tree.status === "unusable") {
       throw new OpenCodeSessionDiscoveryError(
         `the parentID=${input.parentSessionId} child listing was returned but could not be ` +
           "parsed into the pinned SessionsResponse shape",
       );
     }
-    if (listing.status === "glitch") {
+    if (tree.status === "glitch") {
       lastGlitch = "the parentID-filtered child listing could not be read";
       if (now() >= deadline) {
         throw new OpenCodeSessionDiscoveryError(
@@ -664,7 +886,10 @@ export async function discoverAttemptChildSessions(
       await sleep(pollIntervalMs);
       continue;
     }
-    return { parentSessionId: input.parentSessionId, children: listing.children };
+    return {
+      parentSessionId: input.parentSessionId,
+      children: tree.tree.order.map((id) => tree.tree.records.get(id)!),
+    };
   }
 }
 
@@ -691,7 +916,7 @@ type SessionRecordRead =
 async function readAttemptChildRecord(
   http: ManagedSessionHttp,
   childSessionId: string,
-  parentSessionId: string,
+  expectedParentSessionId: string,
   attemptDirectory: string,
 ): Promise<SessionRecordRead> {
   let result: ManagedHttpResult;
@@ -705,7 +930,7 @@ async function readAttemptChildRecord(
   const record = parseSessionRecord(result.body);
   if (record === undefined) return { status: "unusable" };
   if (
-    record.parentID !== parentSessionId ||
+    record.parentID !== expectedParentSessionId ||
     !sameResolvedPath(record.directory, attemptDirectory)
   ) {
     return { status: "unusable" };
@@ -775,11 +1000,24 @@ export interface ChildSettlement {
   readonly outcome: OpenCodeSessionOutcome;
   /** True when this child had to be interrupted to reach quiescence. */
   readonly interrupted: boolean;
+  /**
+   * The parent session this descendant was listed under. Present only for
+   * nested descendants (depth > 1); direct children keep the original shape.
+   */
+  readonly parentID?: string;
+  /**
+   * The descendant's depth (direct children are 1). Present only for nested
+   * descendants so the flat result still conveys the tree shape.
+   */
+  readonly depth?: number;
 }
 
 export interface ManagedAttemptSettlement {
   readonly parentSessionId: string;
-  /** Every child of the attempt, in discovery order, with its final outcome. */
+  /**
+   * Every descendant of the attempt, direct children and nested background
+   * children alike, in breadth-first discovery order, with its final outcome.
+   */
   readonly children: readonly ChildSettlement[];
   /** The ids Gremlyn interrupted to reach quiescence (empty when none were needed). */
   readonly interruptedSessionIds: readonly string[];
@@ -802,6 +1040,12 @@ export interface SettleAttemptChildrenInput {
   readonly timeoutMs: number;
   readonly interruptGraceMs?: number;
   readonly pollIntervalMs?: number;
+  /**
+   * Per-call bound for the transport in ms. Defaults to
+   * {@link OPENCODE_SESSION_CLI_TIMEOUT_MS}; a hung injected transport is
+   * failed as a transport glitch rather than left to stall the settlement.
+   */
+  readonly perCallTimeoutMs?: number;
   /** Abort the attempt: immediately switches to interrupting remaining children. */
   readonly signal?: AbortSignal;
   /** Injectable clock and sleeper for deterministic tests. */
@@ -817,27 +1061,41 @@ export interface SettleAttemptChildrenInput {
  *
  * Bounded and fail-closed:
  *
- * - Children are enumerated only by the attributed parentID listing (see
- *   {@link discoverAttemptChildSessions}); nothing invents children, and the
- *   active map is never an enumeration source.
- * - A settled child needs a terminal `outcome` AND absence from the active
- *   map. No outcome means unsettled; a missing, unreadable, or contradictory
- *   child is unknown and fails the settlement.
- * - Quiescence is declared only on a round that produced a full, fresh
- *   picture: a successfully read listing (no unseen child could exist) AND a
- *   successfully read active map (every absence is a real absence). A glitched
- *   listing or active map never authorizes a return — a new child may have
- *   spawned, or a session become active, since the last successful read.
+ * - Children are enumerated only by the attributed recursive parentID listing
+ *   (see {@link discoverAttemptChildSessions}); nothing invents children, and
+ *   the active map is never an enumeration source.
+ * - A settled child needs a terminal `outcome` AND absence from the active map.
+ *   No outcome means unsettled; a missing, unreadable, or contradictory child
+ *   is unknown and fails the settlement.
+ * - Quiescence is declared only on a round that produced a full, fresh picture:
+ *   successfully read listings for the WHOLE descendant tree (no unseen child
+ *   could exist at any level) AND a successfully read active map (every absence
+ *   is a real absence). A glitched listing or active map never authorizes a
+ *   return — a new child may have spawned, or a session become active, since the
+ *   last successful read, and a still-running ancestor could spawn after a leaf
+ *   check.
  * - An empty tree is NOT trivially quiescent: the parent's own record must
  *   prove it cannot spawn — id == expected, the attempt directory, a terminal
  *   `outcome`, and absence from the active map ({@link settleParentOnlyTree}).
+ * - Every individual transport call is bounded by the SMALLER of
+ *   `perCallTimeoutMs` and the budget remaining on the active deadline (the
+ *   attempt budget while observing, the interrupt grace while interrupting), so
+ *   a walk over many nodes cannot spend the full per-call timeout on each one.
+ *   A cancel that arrives mid-observation aborts the in-flight observation
+ *   reads so the switch is prompt, and the default observe-phase poll wait also
+ *   returns on abort; once the interrupt phase begins the default wait is
+ *   always the full bounded interval (even with the signal aborted) so the
+ *   confirmation rounds poll rather than spin. A signal already aborted before
+ *   settlement still gets one observation pass so the tree can be attributed,
+ *   and attributed interrupt POSTs always proceed within the bounded grace.
  * - The whole wait is bounded by `timeoutMs` (the remaining attempt budget).
  *   When the budget is exhausted — or the attempt signal is cancelled — every
  *   still-running session is interrupted via
  *   `POST /api/session/{id}/interrupt` and settlement confirms each reaches a
  *   terminal outcome within `interruptGraceMs`, failing closed with the
  *   offending ids preserved if any cannot be confirmed. An unreadable surface
- *   at the bound fails the same way: quiescence cannot be proven.
+ *   at the bound fails the same way: quiescence cannot be proven. Only sessions
+ *   this attempt attributed are ever interrupted.
  *
  * Returns once quiescence is proven; throws {@link OpenCodeSessionDiscoveryError}
  * when the child surface cannot be enumerated reliably, and
@@ -849,10 +1107,35 @@ export async function settleAttemptChildren(
   const pollIntervalMs = input.pollIntervalMs ?? OPENCODE_SESSION_POLL_INTERVAL_MS;
   const interruptGraceMs = input.interruptGraceMs ?? OPENCODE_SESSION_INTERRUPT_GRACE_MS;
   const now = input.now ?? (() => Date.now());
-  const sleep = input.sleep ?? ((ms: number) => delay(ms));
+  const perCallTimeoutMs = input.perCallTimeoutMs ?? OPENCODE_SESSION_CLI_TIMEOUT_MS;
   const deadline = now() + Math.max(0, input.timeoutMs);
+  const callState: SettleCallState = { phase: "observe", deadline };
+  // The DEFAULT poll wait returns promptly on cancellation only while
+  // observing. Once interrupting it must always wait the bounded interval even
+  // when the original signal is already aborted: an abort-aware wait would
+  // resolve instantly on every interrupt/confirmation round, spinning the loop
+  // while the service is being asked to drain. Only the observation reads and
+  // the observe-phase wait race the signal; the interrupt POSTs are never
+  // aborted (boundSessionHttp drops the signal once interrupting).
+  const sleep =
+    input.sleep ??
+    ((ms: number) => (callState.phase === "observe" ? delay(ms, input.signal) : delay(ms)));
+  // A signal already aborted before settlement began does not abort the first
+  // observation pass: the attempt still needs a read to attribute its tree so
+  // the interrupt phase can target the right sessions (the loop flips to
+  // interrupt after that pass). A signal that aborts mid-observation aborts the
+  // in-flight reads so the switch is prompt.
+  const startedWithAbort = input.signal?.aborted ?? false;
   const ctx: SettleContext = {
-    http: input.http,
+    http: boundSessionHttp(
+      input.http,
+      perCallTimeoutMs,
+      () => callState.deadline - now(),
+      // Observation reads abort on a mid-flight cancel; once interrupting,
+      // reads/POSTs must still be able to prove/confirm quiescence.
+      () => (callState.phase === "observe" && !startedWithAbort ? input.signal : undefined),
+    ),
+    callState,
     parentSessionId: input.parentSessionId,
     attemptDirectory: input.attemptDirectory,
     pollIntervalMs,
@@ -869,18 +1152,27 @@ export async function settleAttemptChildren(
     http: input.http,
     timeoutMs: input.timeoutMs,
     pollIntervalMs,
+    perCallTimeoutMs,
     now,
     sleep,
   });
   // An empty listing leaves only the parent able to spawn more children: prove
   // it cannot before declaring the tree quiescent.
   if (discovered.children.length === 0) return settleParentOnlyTree(ctx);
-  return settleDiscoveredChildren(ctx, discovered.children);
+  return settleTree(ctx, discovered.children);
+}
+
+/** Mutable phase/budget driving the per-call transport bound. */
+interface SettleCallState {
+  phase: "observe" | "interrupt";
+  /** The deadline currently in force: the attempt budget, or the interrupt grace. */
+  deadline: number;
 }
 
 /** Shared clock/HTTP/budget state threaded through the settlement loops. */
 interface SettleContext {
   readonly http: ManagedSessionHttp;
+  readonly callState: SettleCallState;
   readonly parentSessionId: string;
   readonly attemptDirectory: string;
   readonly pollIntervalMs: number;
@@ -892,27 +1184,45 @@ interface SettleContext {
 }
 
 /**
- * Settle a non-empty child tree: observe each attributed child until it is
- * terminal AND absent from the active map, within the shared deadline. A round
- * only ever declares quiescence when its listing AND active map both read
- * successfully AND the parent itself is terminal and absent from that same
- * fresh active map (a still-running parent could spawn a new child after the
- * listing is trusted); see {@link settleAttemptChildren}. Anything else keeps
- * observing, and the bound turns a never-readable surface or never-quiescent
- * parent into a failed attempt rather than trusting a stale or empty picture.
+ * Switch the settlement into its interrupt phase: observation reads stop being
+ * aborted, and every subsequent transport call is capped by the interrupt grace
+ * (not the expired attempt budget). Returns the grace deadline.
  */
-async function settleDiscoveredChildren(
+function enterInterrupt(ctx: SettleContext): number {
+  const interruptDeadline = ctx.now() + Math.max(0, ctx.interruptGraceMs);
+  ctx.callState.phase = "interrupt";
+  ctx.callState.deadline = interruptDeadline;
+  return interruptDeadline;
+}
+
+/**
+ * Settle a non-empty descendant tree: observe EVERY attributed descendant,
+ * direct or nested, until it is terminal AND absent from the active map within
+ * the shared deadline. Each round re-reads the whole tree: a complete fresh
+ * listing for every node (no unseen descendant can exist at any level) plus a
+ * fresh active map, then proves every known descendant AND the root terminal
+ * and inactive. A still-running ancestor is never trusted — quiescence requires
+ * all of them terminal and inactive; see {@link settleAttemptChildren}. A
+ * glitched listing falls back to per-node reads of the already-known
+ * descendants but can never declare quiescence.
+ */
+async function settleTree(
   ctx: SettleContext,
   discoveredChildren: readonly OpenCodeSessionInfo[],
 ): Promise<ManagedAttemptSettlement> {
   const { http, parentSessionId, attemptDirectory } = ctx;
 
-  // Latest readable record per child, in first-seen order.
+  // Every descendant ever attributed in this settlement, in first-seen order,
+  // with the session it was listed under. Records are retained across rounds so
+  // a transient listing glitch never loses a known descendant.
   const seen = new Map<string, OpenCodeSessionInfo>();
   const seenOrder: string[] = [];
+  const knownParents = new Map<string, string | undefined>();
   for (const child of discoveredChildren) {
+    if (seen.has(child.id)) continue;
     seen.set(child.id, child);
     seenOrder.push(child.id);
+    knownParents.set(child.id, child.parentID ?? parentSessionId);
   }
 
   let active = new Set<string>();
@@ -924,27 +1234,52 @@ async function settleDiscoveredChildren(
   for (;;) {
     rounds += 1;
 
+    // Parent proof FIRST — before the authoritative listing. A parent that
+    // already carries a terminal outcome cannot spawn a new child, so the
+    // listing below is complete with respect to the parent's own spawns.
+    // Reading the parent only AFTER the listing (as an earlier revision did)
+    // lets the parent spawn between the two, then turn terminal before the
+    // parent read, and falsely prove a stale/empty tree quiescent. Attribution
+    // (id == expected, no parentID, attempt directory) is enforced by
+    // readAttemptParent. The parent's inactivity is still cross-checked against
+    // the active map, read later in the round.
+    const parentRead = await readAttemptParent(http, parentSessionId, attemptDirectory);
+    if (parentRead.status === "unusable") {
+      throw new OpenCodeSessionSettleError(
+        `the parent session record for ${parentSessionId} was returned but could not be ` +
+          "parsed into the pinned Session.Info shape; a parent that cannot be proven unable " +
+          "to spawn fails the attempt",
+        { unknownSessionIds: [parentSessionId] },
+      );
+    }
+
     const roundRecords = new Map<string, OpenCodeSessionInfo>();
+    const roundDepths = new Map<string, number>();
     let listingOk = false;
 
-    // Attributes + per-child records for this round. A readable listing is
-    // authoritative; a glitched listing falls back to per-child reads of the
-    // pinned `GET /api/session/{id}` route, but such a round can NEVER declare
-    // quiescence: the fallback cannot prove no NEW child appeared since the
-    // last successful page, so a transient listing failure can never by itself
-    // invent quiescence.
-    const listing = await listAttemptChildren(http, parentSessionId, attemptDirectory);
-    if (listing.status === "unusable") {
+    // A complete fresh walk of the WHOLE descendant tree is authoritative. A
+    // glitched listing falls back to per-node reads of the pinned
+    // `GET /api/session/{id}` route, but such a round can NEVER declare
+    // quiescence: the fallback cannot prove no NEW child appeared at any level
+    // since the last complete walk, so a transient listing failure can never by
+    // itself invent quiescence.
+    const treeRead = await readDescendantTree(http, parentSessionId, attemptDirectory);
+    if (treeRead.status === "unusable") {
       // Readable HTTP with an unusable list is a state, not a race: this round
-      // cannot verify any child, so quiescence is unproven.
+      // cannot verify any descendant, so quiescence is unproven.
       throw new OpenCodeSessionSettleError(
         `the parentID=${parentSessionId} child listing was returned but could not be parsed ` +
           "into the pinned SessionsResponse shape",
       );
     }
-    if (listing.status === "glitch") {
+    if (treeRead.status === "glitch") {
       for (const id of seenOrder) {
-        const read = await readAttemptChildRecord(http, id, parentSessionId, attemptDirectory);
+        const read = await readAttemptChildRecord(
+          http,
+          id,
+          knownParents.get(id) ?? parentSessionId,
+          attemptDirectory,
+        );
         if (read.status === "ok") {
           roundRecords.set(id, read.record);
           // Keep the latest readable record fresh so no later use of `seen`
@@ -967,31 +1302,46 @@ async function settleDiscoveredChildren(
             { unknownSessionIds: [id] },
           );
         }
-        // A glitched read leaves the child without a record this round: it
+        // A glitched read leaves the descendant without a record this round: it
         // stays unproven, and only a budget/grace expiry turns that into a
         // failure.
       }
     } else {
       listingOk = true;
-      const listedIds = new Set<string>();
-      for (const child of listing.children) {
-        if (!seen.has(child.id)) {
-          // A background child spawned late (e.g. right as the parent exited)
-          // is still inside the attempt boundary and must be settled too.
-          seenOrder.push(child.id);
-        }
-        seen.set(child.id, child);
-        listedIds.add(child.id);
-        roundRecords.set(child.id, child);
-      }
+      const tree = treeRead.tree;
+      // Disappearance and parent stability: a known descendant must still be
+      // present under the SAME parent; a vanished or moved session cannot be
+      // confirmed stopped and fails the attempt.
       for (const id of seenOrder) {
-        if (!listedIds.has(id)) {
+        const record = tree.records.get(id);
+        if (record === undefined) {
           throw new OpenCodeSessionSettleError(
             `child session ${id} vanished from the parentID listing mid-settlement; ` +
               "a child that cannot be confirmed stopped must fail the attempt",
             { unknownSessionIds: [id] },
           );
         }
+        const expectedParent = knownParents.get(id);
+        if (expectedParent !== undefined && tree.parents.get(id) !== expectedParent) {
+          throw new OpenCodeSessionSettleError(
+            `child session ${id} changed parent from ${expectedParent} to ` +
+              `${tree.parents.get(id) ?? "(none)"} mid-settlement; the descendant tree cannot be trusted`,
+            { unknownSessionIds: [id] },
+          );
+        }
+      }
+      // Adopt newly appeared descendants (a background child, or a nested child
+      // of a still-running ancestor, spawned since the last complete walk); they
+      // are inside the attempt boundary and must be settled too.
+      for (const id of tree.order) {
+        const record = tree.records.get(id)!;
+        if (!seen.has(id)) {
+          seenOrder.push(id);
+          knownParents.set(id, tree.parents.get(id) ?? parentSessionId);
+        }
+        seen.set(id, record);
+        roundRecords.set(id, record);
+        roundDepths.set(id, tree.depths.get(id) ?? 1);
       }
     }
 
@@ -1029,18 +1379,13 @@ async function settleDiscoveredChildren(
 
     // Parent proof for THIS round: the attempt's own session must be terminal
     // AND absent from the freshly read active map, or it could still spawn a
-    // brand new child the moment the listing we just read omits it. Attribution
+    // brand new child the moment the listing we just read omits it. The record
+    // was read at the top of the round — BEFORE the authoritative listing — so
+    // a terminal parent cannot have spawned into the listing we just trusted;
+    // the active map was read AFTER the listing so a child that finished during
+    // the round is not misread as "terminal while still active". Attribution
     // (id == expected, no parentID, attempt directory) is enforced by
     // readAttemptParent.
-    const parentRead = await readAttemptParent(http, parentSessionId, attemptDirectory);
-    if (parentRead.status === "unusable") {
-      throw new OpenCodeSessionSettleError(
-        `the parent session record for ${parentSessionId} was returned but could not be ` +
-          "parsed into the pinned Session.Info shape; a parent that cannot be proven unable " +
-          "to spawn fails the attempt",
-        { unknownSessionIds: [parentSessionId] },
-      );
-    }
     let parentProven = false;
     if (parentRead.status === "ok" && activeOk) {
       const parentOutcome = parentRead.record.outcome;
@@ -1064,14 +1409,26 @@ async function settleDiscoveredChildren(
       for (const id of seenOrder) {
         const record = roundRecords.get(id);
         if (record === undefined || record.outcome === undefined) {
-          // A settled child must carry a terminal outcome; refuse to fabricate
-          // one (a stale `seen` record must never be reported as interrupted).
+          // A settled descendant must carry a terminal outcome; refuse to
+          // fabricate one (a stale `seen` record must never be reported as
+          // interrupted).
           throw new OpenCodeSessionSettleError(
             `child session ${id} was classified settled without a terminal outcome`,
             { unknownSessionIds: [id] },
           );
         }
-        children.push({ id, outcome: record.outcome, interrupted: interrupted.has(id) });
+        const depth = roundDepths.get(id) ?? 1;
+        children.push(
+          depth > 1
+            ? {
+                id,
+                outcome: record.outcome,
+                interrupted: interrupted.has(id),
+                ...(record.parentID === undefined ? {} : { parentID: record.parentID }),
+                depth,
+              }
+            : { id, outcome: record.outcome, interrupted: interrupted.has(id) },
+        );
       }
       return {
         parentSessionId,
@@ -1088,7 +1445,7 @@ async function settleDiscoveredChildren(
     const cancelled = ctx.signal?.aborted ?? false;
     if (phase === "observe" && (cancelled || ctx.now() >= ctx.deadline)) {
       phase = "interrupt";
-      interruptDeadline = ctx.now() + Math.max(0, ctx.interruptGraceMs);
+      interruptDeadline = enterInterrupt(ctx);
     }
     if (phase === "interrupt") {
       for (const id of [...running, ...unreadable]) {
@@ -1164,6 +1521,7 @@ async function settleDiscoveredChildren(
       // guard exists so the bound is never exceeded no matter how the pieces
       // interleave.
       phase = "interrupt";
+      interruptDeadline = enterInterrupt(ctx);
       continue;
     }
     await ctx.sleep(ctx.pollIntervalMs);
@@ -1190,21 +1548,15 @@ async function settleParentOnlyTree(ctx: SettleContext): Promise<ManagedAttemptS
   for (;;) {
     rounds += 1;
 
-    // Fresh enumeration first: the tree must still have no children. When the
-    // parent spawned one while we waited, the full child settlement owns it.
-    const listing = await listAttemptChildren(http, parentSessionId, attemptDirectory);
-    if (listing.status === "unusable") {
-      throw new OpenCodeSessionDiscoveryError(
-        `the parentID=${parentSessionId} child listing was returned but could not be ` +
-          "parsed into the pinned SessionsResponse shape",
-      );
-    }
-    if (listing.status === "ok" && listing.children.length > 0) {
-      return settleDiscoveredChildren(ctx, listing.children);
-    }
-
-    // The parent record: id == expected and the attempt directory (attribution
-    // verified by readAttemptParent), plus a terminal outcome.
+    // Parent terminal proof FIRST — before the authoritative listing. A parent
+    // that already carries a terminal outcome cannot spawn a new child, so the
+    // listing below is complete with respect to the parent's own spawns.
+    // Listing first and reading the parent only afterwards (as an earlier
+    // revision did) lets the parent spawn between the two, then turn terminal
+    // before the parent read, and falsely prove an empty/quiescent tree.
+    // Attribution (id == expected, no parentID, attempt directory) is enforced
+    // by readAttemptParent; the parent's inactivity is cross-checked against
+    // the active map, read later in the round.
     const parent = await readAttemptParent(http, parentSessionId, attemptDirectory);
     if (parent.status === "unusable") {
       throw new OpenCodeSessionSettleError(
@@ -1213,6 +1565,22 @@ async function settleParentOnlyTree(ctx: SettleContext): Promise<ManagedAttemptS
           "to spawn fails the attempt",
         { unknownSessionIds: [parentSessionId] },
       );
+    }
+
+    // Fresh enumeration: the tree must still have no children. The parent
+    // record above was read first, so a listed child cannot have been spawned
+    // after a proven-terminal parent; when the parent spawned one while we
+    // waited, the full descendant settlement owns it (and any nested children
+    // it brings).
+    const listing = await listChildrenForNode(http, parentSessionId, attemptDirectory);
+    if (listing.status === "unusable") {
+      throw new OpenCodeSessionDiscoveryError(
+        `the parentID=${parentSessionId} child listing was returned but could not be ` +
+          "parsed into the pinned SessionsResponse shape",
+      );
+    }
+    if (listing.status === "ok" && listing.children.length > 0) {
+      return settleTree(ctx, listing.children);
     }
 
     // The active map proves the parent is not still draining (and could spawn).
@@ -1266,7 +1634,7 @@ async function settleParentOnlyTree(ctx: SettleContext): Promise<ManagedAttemptS
     const cancelled = ctx.signal?.aborted ?? false;
     if (phase === "observe" && (cancelled || ctx.now() >= ctx.deadline)) {
       phase = "interrupt";
-      interruptDeadline = ctx.now() + Math.max(0, ctx.interruptGraceMs);
+      interruptDeadline = enterInterrupt(ctx);
     }
     if (phase === "interrupt") {
       const result = await interruptAttemptChild(http, parentSessionId);
@@ -1300,6 +1668,7 @@ async function settleParentOnlyTree(ctx: SettleContext): Promise<ManagedAttemptS
 
     if (ctx.now() >= ctx.deadline) {
       phase = "interrupt";
+      interruptDeadline = enterInterrupt(ctx);
       continue;
     }
     await ctx.sleep(ctx.pollIntervalMs);

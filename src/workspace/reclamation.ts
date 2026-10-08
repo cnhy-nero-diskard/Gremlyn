@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type Database from "better-sqlite3";
+import { workspaceHasUnresolvedAttemptOwnership } from "../orchestrator/attempt-recovery.js";
 import type { OperatorActionStore } from "../store/actions.js";
 import { TERMINAL_STATUSES } from "../types.js";
 import { git, statusEntries } from "./gitops.js";
@@ -37,6 +38,13 @@ export interface WorkspaceReclamationOptions {
   repositories: readonly ReclamationRepository[];
   minimumAgeMs: number;
   actions: Pick<OperatorActionStore, "record">;
+  /**
+   * Gremlyn's data directory. Required: a workspace still owned by an
+   * unresolved OpenCode invocation tree (ownership journal / quarantine record /
+   * managed manifest) must be retained even if it looks inactive and clean, so
+   * reclamation can never destroy the only record of a possibly-live attempt.
+   */
+  dataDir: string;
   /** Used by tests and preview tooling; defaults to the current wall clock. */
   now?: number | Date;
   /** Report decisions without removing anything. */
@@ -104,6 +112,7 @@ export async function reclaimWorkspaces(
       item.path,
       nowMs,
       options.minimumAgeMs,
+      options.dataDir,
     );
     if (!eligibility.ok) {
       const decision: WorkspaceReclamationDecision = {
@@ -177,7 +186,18 @@ async function inspectCandidate(
   path: string,
   nowMs: number,
   minimumAgeMs: number,
+  dataDir: string | undefined,
 ): Promise<{ ok: true; reason: string } | { ok: false; reason: string }> {
+  // An unresolved OpenCode ownership marker (even before a durable quarantine
+  // record exists) keeps the workspace out of reclamation entirely: the tree
+  // may still be live, and the attempt data dir holds its only evidence.
+  if (dataDir !== undefined && workspaceHasUnresolvedAttemptOwnership(dataDir, path)) {
+    return {
+      ok: false,
+      reason: "retained: an unresolved OpenCode attempt owns this workspace",
+    };
+  }
+
   try {
     const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
     const active = db

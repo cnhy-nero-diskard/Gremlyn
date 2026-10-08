@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { parseOpenCodeAgentProfile } from "../src/config/opencode-profile.js";
 import {
@@ -33,6 +33,13 @@ import {
   materializeManagedOpencodeFiles,
 } from "../src/agent/managed-files.js";
 import { serializeOpenCodeAgents } from "../src/agent/materialize.js";
+import {
+  beginOpenCodeInvocation,
+  opencodeOwnershipPath,
+  recordOpenCodeInvocation,
+  settleOpenCodeInvocation,
+  type OpenCodeOwnershipDescriptor,
+} from "../src/agent/opencode-ownership.js";
 import type {
   ManagedHttpResult,
   ManagedSessionHttp,
@@ -42,9 +49,14 @@ import { retainArtifacts } from "../src/artifact-retention.js";
 import {
   AttemptRecoveryFatalError,
   attemptDataDirFor,
+  attemptRecoveryRecordPath,
+  isAttemptQuarantined,
   quarantineRecordsForWorkspace,
   readAttemptRecoveryRecord,
   recoverStaleManagedAttempts,
+  shouldDeferAttemptToRecovery,
+  workspaceHasUnresolvedAttemptOwnership,
+  type RecoverStaleManagedAttemptsInput,
 } from "../src/orchestrator/attempt-recovery.js";
 import { StageFailure } from "../src/orchestrator/failures.js";
 import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
@@ -151,7 +163,9 @@ class FakeSessionServer implements ManagedSessionHttp {
       return { status: 200, body: { data } };
     }
     if (query !== undefined && query.parentID !== undefined) {
-      const data = [...this.opts.childIds].map((id) => this.recordOf(id));
+      const data = [...this.opts.childIds]
+        .map((id) => this.recordOf(id))
+        .filter((record) => record.parentID === query.parentID);
       return { status: 200, body: { data, cursor: { previous: null, next: null } } };
     }
     const id = sessionIdFromPath(path);
@@ -305,8 +319,9 @@ function generatedPrimaryPath(fixture: RecoveryFixture): string {
 
 async function runRecovery(
   fixture: RecoveryFixture,
-  server?: FakeSessionServer,
+  server?: ManagedSessionHttp,
   clock = fakeClock(),
+  overrides: Partial<RecoverStaleManagedAttemptsInput> = {},
 ) {
   return recoverStaleManagedAttempts({
     dataDir: fixture.dataDir,
@@ -320,6 +335,7 @@ async function runRecovery(
     settleInterruptGraceMs: 20,
     now: clock.now,
     sleep: clock.sleep,
+    ...overrides,
   });
 }
 
@@ -588,6 +604,11 @@ test("legacy sweep still deletes an interrupted Cline attempt dir (backward comp
   const fixture = await setupRecovery({ materialize: false });
   try {
     const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+    // Mark the attempt as a genuine Cline run so the sweep's OpenCode-aware
+    // classifier (once wired by the parent) does not defer it to recovery.
+    fixture.store.db
+      .prepare("UPDATE attempts SET agent = 'cline' WHERE id = ?")
+      .run(fixture.attemptId);
     // The runtime created this dir and seeded credentials in it; re-create both
     // so the hook has something to rescue.
     mkdirSync(attemptDir, { recursive: true });
@@ -804,6 +825,653 @@ test("new job on an ignored generated path is refused at admission, never reusin
       fixture.initialSha,
       "nothing may be published from a quarantined attempt",
     );
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Generic (native/default) ownership recovery — task 3.3 / 4.4 / 4.5
+ * ------------------------------------------------------------------ */
+
+const OWNERSHIP_NOW = "2026-10-01T00:00:00.000Z";
+
+function ownershipDescriptor(
+  fixture: RecoveryFixture,
+  patch: Partial<OpenCodeOwnershipDescriptor> = {},
+): OpenCodeOwnershipDescriptor {
+  return {
+    executor: "opencode",
+    binary: "opencode",
+    version: "2.0.16",
+    workspacePath: fixture.workspace,
+    source: "native",
+    nativeId: "build",
+    ...patch,
+  };
+}
+
+/**
+ * Journal generic OpenCode ownership for the fixture attempt. Each entry is a
+ * new invocation: omit `parentSessionId` to leave the pre-launch uncertainty,
+ * pass `null` for a launched-but-unattributed invocation, or a session id to
+ * record the early parent identity. `settled` marks the tree already proven.
+ */
+function writeOwnership(
+  fixture: RecoveryFixture,
+  invocations: ReadonlyArray<{
+    parentSessionId?: string | null;
+    settled?: boolean;
+    descriptor?: Partial<OpenCodeOwnershipDescriptor>;
+  }>,
+): string {
+  const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+  for (const invocation of invocations) {
+    const journal = beginOpenCodeInvocation({
+      attemptDataDir: attemptDir,
+      attemptId: fixture.attemptId,
+      descriptor: ownershipDescriptor(fixture, invocation.descriptor),
+      now: OWNERSHIP_NOW,
+    });
+    const ordinal = journal.invocations.at(-1)!.ordinal;
+    if (invocation.parentSessionId !== undefined) {
+      recordOpenCodeInvocation({
+        attemptDataDir: attemptDir,
+        attemptId: fixture.attemptId,
+        ordinal,
+        parentSessionId: invocation.parentSessionId,
+        observedPrimaryId: "build",
+        now: OWNERSHIP_NOW,
+      });
+    }
+    if (invocation.settled === true) {
+      settleOpenCodeInvocation({
+        attemptDataDir: attemptDir,
+        attemptId: fixture.attemptId,
+        ordinal,
+        now: OWNERSHIP_NOW,
+      });
+    }
+  }
+  return attemptDir;
+}
+
+/**
+ * A pinned-session fake supporting SEVERAL parent trees, so a multi-invocation
+ * attempt can be settled as a whole. Every named parent is a root (no
+ * parentID, terminal outcome); every child echoes its parent and is terminal
+ * unless listed in `runningChildIds`.
+ */
+class MultiSessionServer implements ManagedSessionHttp {
+  readonly calls: Array<{ method: "GET" | "POST"; path: string }> = [];
+  private readonly parentIds = new Set<string>();
+  private readonly childParent = new Map<string, string>();
+  private readonly running = new Set<string>();
+
+  constructor(
+    private readonly directory: string,
+    parents: ReadonlyArray<{
+      id: string;
+      childIds?: readonly string[];
+      runningChildIds?: readonly string[];
+    }>,
+  ) {
+    for (const parent of parents) {
+      this.parentIds.add(parent.id);
+      for (const child of parent.childIds ?? []) this.childParent.set(child, parent.id);
+      for (const child of parent.runningChildIds ?? []) this.running.add(child);
+    }
+  }
+
+  private recordOf(id: string): Record<string, unknown> {
+    const record: Record<string, unknown> = { id, location: { directory: this.directory } };
+    if (!this.parentIds.has(id)) {
+      const parent = this.childParent.get(id);
+      if (parent !== undefined) record.parentID = parent;
+    }
+    if (!this.running.has(id)) record.outcome = "succeeded";
+    return record;
+  }
+
+  async get(path: string, query?: Record<string, string>): Promise<ManagedHttpResult> {
+    this.calls.push({ method: "GET", path });
+    if (path === "/api/session/active") {
+      const data: Record<string, unknown> = {};
+      for (const id of this.running) data[id] = { type: "running" };
+      return { status: 200, body: { data } };
+    }
+    if (query !== undefined && query.parentID !== undefined) {
+      const ids = [...this.childParent.entries()]
+        .filter(([, parent]) => parent === query.parentID)
+        .map(([child]) => child);
+      return {
+        status: 200,
+        body: { data: ids.map((id) => this.recordOf(id)), cursor: { previous: null, next: null } },
+      };
+    }
+    const id = sessionIdFromPath(path);
+    if (id === undefined) return { status: 404, body: undefined };
+    return { status: 200, body: { data: this.recordOf(id) } };
+  }
+
+  async post(path: string): Promise<ManagedHttpResult> {
+    this.calls.push({ method: "POST", path });
+    return { status: 200, body: { interrupted: true } };
+  }
+}
+
+test("generic ownership: a native pre-launch uncertainty quarantines with a durable record", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [{}]);
+    const report = await runRecovery(fixture);
+    assert.equal(report.candidates, 1);
+    assert.equal(report.recovered.length, 0);
+    assert.equal(report.quarantined.length, 1);
+    assert.equal(report.quarantined[0]!.reason, "launched-uncertain");
+
+    const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+    const record = readAttemptRecoveryRecord(attemptDir);
+    assert.equal(record?.status, "quarantined");
+    assert.equal(record?.workspacePath, fixture.workspace);
+    assert.equal(existsSync(attemptDir), true, "the journal and dir must be preserved");
+    assert.equal(
+      workspaceHasUnresolvedAttemptOwnership(fixture.dataDir, fixture.workspace),
+      true,
+      "an unresolved ownership journal blocks workspace admission even without a prior record",
+    );
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: a launched native invocation without a parent id quarantines", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [{ parentSessionId: null }]);
+    const report = await runRecovery(fixture);
+    assert.equal(report.quarantined[0]?.reason, "missing-parent-id");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: a still-running native child quarantines the whole attempt and preserves every parent id", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    // Both invocations were journaled; even the one marked settled must be
+    // re-proven fresh. The second has an unsettled child, so the attempt must
+    // not be recovered just because the first tree's marker says done.
+    writeOwnership(fixture, [
+      { parentSessionId: "ses_first", settled: true },
+      { parentSessionId: "ses_second" },
+    ]);
+    const server = new MultiSessionServer(fixture.workspace, [
+      { id: "ses_first" },
+      {
+        id: "ses_second",
+        childIds: ["ses_child"],
+        runningChildIds: ["ses_child"],
+      },
+    ]);
+    const report = await runRecovery(fixture, server);
+    assert.equal(report.quarantined.length, 1);
+    assert.equal(report.quarantined[0]!.reason, "child-state-unknown");
+
+    const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+    const record = readAttemptRecoveryRecord(attemptDir);
+    assert.ok(record);
+    assert.ok(record.sessionIds.includes("ses_first"), "the first invocation's parent is retained");
+    assert.ok(record.sessionIds.includes("ses_second"));
+    assert.ok(record.sessionIds.includes("ses_child"));
+    assert.ok(
+      server.calls.some((call) => call.method === "POST" && call.path.endsWith("/interrupt")),
+      "the unresolved child must be interrupted before quarantine",
+    );
+    // The re-proved first invocation was actually queried, not trusted.
+    assert.ok(
+      server.calls.some((call) => call.method === "GET" && call.path.includes("ses_first")),
+      "a settled marker must still be re-read through the session API",
+    );
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: all invocation trees quiescent recover and never touch native config", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    // A developer's native agent definition lives in the workspace. Native
+    // recovery must never remove it — only manifest-owned generated files are
+    // ever cleaned.
+    const nativeDir = join(fixture.workspace, ".opencode", "agents");
+    mkdirSync(nativeDir, { recursive: true });
+    const nativeFile = join(nativeDir, "native.md");
+    writeFileSync(nativeFile, "# native operator agent\n", "utf8");
+
+    writeOwnership(fixture, [
+      { parentSessionId: "ses_one", settled: true },
+      { parentSessionId: "ses_two" },
+    ]);
+    // Both invocations are re-proven (the settled marker is not trusted), so
+    // both roots must be scripted.
+    const server = new MultiSessionServer(fixture.workspace, [
+      { id: "ses_one" },
+      { id: "ses_two" },
+    ]);
+    const report = await runRecovery(fixture, server);
+
+    assert.equal(report.recovered.length, 1);
+    assert.equal(report.recovered[0]!.reason, "recovered-quiescent");
+    assert.equal(report.quarantined.length, 0);
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), false);
+    assert.equal(existsSync(nativeFile), true, "native configuration must survive recovery");
+    assert.equal(readFileSync(nativeFile, "utf8"), "# native operator agent\n");
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: an unavailable worker context quarantines instead of deleting", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [{ parentSessionId: "ses_native" }]);
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveWorker: () => undefined,
+    });
+    assert.equal(report.quarantined[0]?.reason, "worker-unavailable");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: a mismatched binary context quarantines rather than retargeting recovery", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [
+      { parentSessionId: "ses_native", descriptor: { binary: "opencode-native" } },
+    ]);
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveWorker: () => ({ cwd: fixture.workspace, env: {}, binary: "opencode" }),
+    });
+    assert.equal(report.quarantined[0]?.reason, "worker-mismatch");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: a stale settled marker is not trusted when the tree is now active", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    // The journal says the invocation settled, but the pinned API now shows a
+    // still-running descendant. A crashed attempt can retain a journal after an
+    // earlier settlement, so startup reuse must fail closed.
+    writeOwnership(fixture, [{ parentSessionId: "ses_stale", settled: true }]);
+    const server = new MultiSessionServer(fixture.workspace, [
+      { id: "ses_stale", childIds: ["ses_late"], runningChildIds: ["ses_late"] },
+    ]);
+    const report = await runRecovery(fixture, server);
+    assert.equal(report.recovered.length, 0);
+    assert.equal(report.quarantined[0]?.reason, "child-state-unknown");
+    const record = readAttemptRecoveryRecord(attemptDataDirFor(fixture.dataDir, fixture.attemptId));
+    assert.ok(record?.sessionIds.includes("ses_late"));
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: no worker availability quarantines even when every marker is settled", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [
+      { parentSessionId: "ses_a", settled: true },
+      { parentSessionId: "ses_b", settled: true },
+    ]);
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveWorker: () => undefined,
+    });
+    assert.equal(report.recovered.length, 0);
+    assert.equal(report.quarantined[0]?.reason, "worker-unavailable");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("workspace ownership: an unresolved journal blocks only its own workspace, and unaccountable markers block conservatively", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-ownership-scope-"));
+  try {
+    const workspaceA = join(dataDir, "workspaces", "repo-a", "pr-1");
+    const workspaceB = join(dataDir, "workspaces", "repo-b", "pr-1");
+    // Alias A journals an unresolved native invocation owning workspace A.
+    beginOpenCodeInvocation({
+      attemptDataDir: attemptDataDirFor(dataDir, 1),
+      attemptId: 1,
+      descriptor: {
+        executor: "opencode-a",
+        binary: "opencode-a",
+        version: "2.0.16",
+        workspacePath: workspaceA,
+        source: "native",
+        nativeId: "build",
+      },
+    });
+    assert.equal(workspaceHasUnresolvedAttemptOwnership(dataDir, workspaceA), true);
+    assert.equal(
+      workspaceHasUnresolvedAttemptOwnership(dataDir, workspaceB),
+      false,
+      "an unresolved attempt in repository A must not block repository B",
+    );
+
+    // A present-but-malformed manifest with no readable workspace is
+    // unaccountable and must fail closed.
+    const unaccountableDir = attemptDataDirFor(dataDir, 2);
+    mkdirSync(unaccountableDir, { recursive: true });
+    writeFileSync(managedOpencodeManifestPath(unaccountableDir), "{ not valid json\n", "utf8");
+    assert.equal(
+      workspaceHasUnresolvedAttemptOwnership(dataDir, workspaceB),
+      true,
+      "a malformed manifest must not be silently treated as absent",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("workspace ownership conservatively blocks on a malformed recovery record", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-recovery-record-scope-"));
+  const workspace = join(dataDir, "workspaces", "repo", "pr-1");
+  try {
+    const attemptDir = attemptDataDirFor(dataDir, 1);
+    mkdirSync(attemptDir, { recursive: true });
+    writeFileSync(attemptRecoveryRecordPath(attemptDir), "{ not valid json\n", "utf8");
+    assert.equal(
+      workspaceHasUnresolvedAttemptOwnership(dataDir, workspace),
+      true,
+      "an unreadable recovery record cannot silently admit an unrelated workspace",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("recovery never reports quiescent success when the ownership data dir remains", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [{ parentSessionId: "ses_retire" }]);
+    const server = new MultiSessionServer(fixture.workspace, [{ id: "ses_retire" }]);
+    const report = await runRecovery(fixture, server, fakeClock(), {
+      removeAttemptDataDir: () => {
+        // Simulate a locked/undeletable attempt directory.
+      },
+    });
+    assert.equal(report.recovered.length, 0);
+    assert.equal(report.quarantined.length, 1);
+    assert.equal(report.quarantined[0]!.reason, "cleanup-failed");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+    assert.equal(isAttemptQuarantined(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: recovery cleans only manifest-owned generated files and leaves native changes", async () => {
+  const fixture = await setupRecovery({ materialize: true });
+  try {
+    const nativeDir = join(fixture.workspace, ".opencode", "agents");
+    const nativeFile = join(nativeDir, "operator-native.md");
+    writeFileSync(nativeFile, "# operator-owned native agent\n", "utf8");
+    writeOwnership(fixture, [{ parentSessionId: "ses_managed" }]);
+    const server = new MultiSessionServer(fixture.workspace, [{ id: "ses_managed" }]);
+    const report = await runRecovery(fixture, server);
+    assert.equal(report.recovered.length, 1);
+    assert.equal(report.recovered[0]!.reason, "recovered-quiescent");
+    // Manifest-owned generated file removed; the developer's native file is not.
+    assert.equal(existsSync(generatedPrimaryPath(fixture)), false);
+    assert.equal(existsSync(nativeFile), true);
+    assert.equal(readFileSync(nativeFile, "utf8"), "# operator-owned native agent\n");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), false);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: an unreadable journal with no attributable workspace is a fatal startup refusal", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-ownership-fatal-"));
+  try {
+    const store = new Store({ dataDir, file: ":memory:" });
+    const attemptDir = attemptDataDirFor(dataDir, 999);
+    mkdirSync(attemptDir, { recursive: true });
+    writeFileSync(opencodeOwnershipPath(attemptDir), "{ not valid json\n", "utf8");
+    await assert.rejects(
+      recoverStaleManagedAttempts({
+        dataDir,
+        db: store.db,
+        resolveWorker: () => ({ cwd: "C:\\unused", env: {} }),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof AttemptRecoveryFatalError, `got ${String(error)}`);
+        return true;
+      },
+    );
+    assert.equal(existsSync(opencodeOwnershipPath(attemptDir)), true);
+    store.close();
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("generic ownership: a failed durable quarantine record is fatal", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    writeOwnership(fixture, [{ parentSessionId: null }]);
+    const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+    // Occupy the record target with a directory so the atomic rename cannot
+    // install the journal; without it the workspace would be silently reusable.
+    mkdirSync(join(attemptDir, "recovery.json"), { recursive: true });
+    await assert.rejects(
+      () => runRecovery(fixture),
+      (error: unknown) => {
+        assert.ok(error instanceof AttemptRecoveryFatalError, `got ${String(error)}`);
+        return true;
+      },
+    );
+    assert.equal(existsSync(attemptDir), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("legacy unmanaged OpenCode attempt with evidence quarantines rather than being swept as Cline", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    // No journal, no manifest: a pre-journal OpenCode attempt. With a resolver
+    // that maps its agent to OpenCode it must be recognized and quarantined.
+    const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+    mkdirSync(attemptDir, { recursive: true });
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveExecutorKind: (agent) => agent,
+      resolveWorker: () => undefined,
+    });
+    assert.equal(report.candidates, 1);
+    assert.equal(report.quarantined[0]?.reason, "legacy-ownership-unverifiable");
+    assert.equal(readAttemptRecoveryRecord(attemptDir)?.status, "quarantined");
+    assert.equal(existsSync(attemptDir), true);
+    // The legacy-sweep classifier must defer the dir once the resolver is
+    // supplied, so `cleanupStaleAttemptDirs` cannot delete it.
+    const attemptRow = fixture.store.db
+      .prepare("SELECT agent, workspace_path, agent_session_id FROM attempts WHERE id = ?")
+      .get(fixture.attemptId) as {
+      agent: string;
+      workspace_path: string | null;
+      agent_session_id: string | null;
+    };
+    assert.equal(
+      shouldDeferAttemptToRecovery({
+        attemptDataDir: attemptDir,
+        attempt: attemptRow,
+        resolveExecutorKind: (agent) => agent,
+      }),
+      true,
+    );
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("legacy unmanaged OpenCode attempt with a proven-quiescent parent is recovered without touching the workspace", async () => {
+  const fixture = await setupRecovery({ materialize: false, agentSessionId: "ses_legacy" });
+  try {
+    mkdirSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId), { recursive: true });
+    const nativeFile = join(fixture.workspace, "operator-notes.txt");
+    writeFileSync(nativeFile, "keep me\n", "utf8");
+    const server = new MultiSessionServer(fixture.workspace, [{ id: "ses_legacy" }]);
+    const report = await runRecovery(fixture, server, fakeClock(), {
+      resolveExecutorKind: (agent) => agent,
+    });
+    assert.equal(report.recovered.length, 1);
+    assert.equal(report.recovered[0]!.reason, "recovered-quiescent");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), false);
+    assert.equal(readFileSync(nativeFile, "utf8"), "keep me\n");
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("legacy unmanaged OpenCode attempt that is not terminal is never retired, even with a quiescent tree", async () => {
+  const fixture = await setupRecovery({ materialize: false, agentSessionId: "ses_live" });
+  try {
+    mkdirSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId), { recursive: true });
+    // Simulate a live owner: no terminal outcome on the attempt row.
+    fixture.store.db
+      .prepare("UPDATE attempts SET outcome = NULL WHERE id = ?")
+      .run(fixture.attemptId);
+    const server = new MultiSessionServer(fixture.workspace, [{ id: "ses_live" }]);
+    const report = await runRecovery(fixture, server, fakeClock(), {
+      resolveExecutorKind: (agent) => agent,
+    });
+    assert.equal(report.recovered.length, 0);
+    assert.equal(report.quarantined[0]?.reason, "owner-not-terminal");
+    const attemptDir = attemptDataDirFor(fixture.dataDir, fixture.attemptId);
+    assert.equal(existsSync(attemptDir), true, "a live owner's dir must never be retired");
+    assert.equal(readAttemptRecoveryRecord(attemptDir)?.status, "quarantined");
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("legacy unmanaged OpenCode attempt with a stale worker cwd quarantines rather than proving an unrelated tree", async () => {
+  const fixture = await setupRecovery({ materialize: false, agentSessionId: "ses_legacy" });
+  try {
+    mkdirSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId), { recursive: true });
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveExecutorKind: (agent) => agent,
+      resolveWorker: () => ({ cwd: join(fixture.dataDir, "stale-directory"), env: {} }),
+    });
+    assert.equal(report.quarantined[0]?.reason, "worker-mismatch");
+    assert.equal(existsSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("manifest-only recovery quarantines when the manifest workspace disagrees with the attempt row", async () => {
+  const fixture = await setupRecovery({ materialize: true });
+  try {
+    fixture.store.db
+      .prepare("UPDATE attempts SET workspace_path = ? WHERE id = ?")
+      .run(join(fixture.dataDir, "elsewhere"), fixture.attemptId);
+    const report = await runRecovery(fixture);
+    assert.equal(report.recovered.length, 0);
+    assert.equal(report.quarantined[0]?.reason, "worker-mismatch");
+    // Nothing was cleaned: the generated file and manifest survive.
+    assert.equal(existsSync(generatedPrimaryPath(fixture)), true);
+    assert.equal(
+      existsSync(
+        managedOpencodeManifestPath(attemptDataDirFor(fixture.dataDir, fixture.attemptId)),
+      ),
+      true,
+    );
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("manifest-only recovery quarantines a worker whose cwd is not the owned workspace", async () => {
+  const fixture = await setupRecovery({ materialize: true, agentSessionId: "ses_managed" });
+  try {
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveWorker: () => ({ cwd: join(fixture.dataDir, "stale-directory"), env: {} }),
+    });
+    assert.equal(report.quarantined[0]?.reason, "worker-mismatch");
+    assert.equal(existsSync(generatedPrimaryPath(fixture)), true);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("a Cline attempt is not a recovery candidate even with the resolver supplied", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    mkdirSync(attemptDataDirFor(fixture.dataDir, fixture.attemptId), { recursive: true });
+    fixture.store.db
+      .prepare("UPDATE attempts SET agent = 'cline' WHERE id = ?")
+      .run(fixture.attemptId);
+    const report = await runRecovery(fixture, undefined, fakeClock(), {
+      resolveExecutorKind: (agent) => (agent === "opencode" ? "opencode" : "cline"),
+    });
+    assert.equal(report.candidates, 0);
+  } finally {
+    fixture.store.close();
+    rmSync(fixture.gitRepo.root, { recursive: true, force: true });
+  }
+});
+
+test("artifact retention preserves an ownership-only attempt dir before recovery runs", async () => {
+  const fixture = await setupRecovery({ materialize: false });
+  try {
+    const attemptDir = writeOwnership(fixture, [{ parentSessionId: "ses_native" }]);
+    assert.equal(existsSync(opencodeOwnershipPath(attemptDir)), true);
+    const report = await retainArtifacts({
+      dataDir: fixture.dataDir,
+      db: fixture.store.db,
+      maximumAgeMs: 0,
+      maximumTotalBytes: 1,
+      now: Date.now() + 3_600_000,
+      actions: fixture.actions,
+    });
+    assert.equal(
+      report.decisions.some(
+        (decision) =>
+          decision.kind === "attempt-state" && resolve(decision.path) === resolve(attemptDir),
+      ),
+      false,
+      "the ownership-only attempt dir must not be a retention candidate",
+    );
+    assert.equal(existsSync(attemptDir), true);
+    assert.equal(existsSync(opencodeOwnershipPath(attemptDir)), true);
   } finally {
     fixture.store.close();
     rmSync(fixture.gitRepo.root, { recursive: true, force: true });

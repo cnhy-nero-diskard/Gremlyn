@@ -1,7 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { FakeExecutor } from "../src/agent/fake.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import {
@@ -10,6 +19,7 @@ import {
 } from "../src/orchestrator/walking-skeleton.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
+import { beginOpenCodeInvocation } from "../src/agent/opencode-ownership.js";
 import type { AgentExecutor, NormalizedEvent } from "../src/types.js";
 import { currentBranch, git, statusEntries } from "../src/workspace/gitops.js";
 import { reclaimWorkspaces, listReclamationCandidates } from "../src/workspace/reclamation.js";
@@ -30,6 +40,54 @@ test("reclamation candidates include only derived PR directories inside the root
   ]);
 });
 
+test("reclamation retains a workspace owned by an unresolved OpenCode attempt without a quarantine record", async () => {
+  const repo = await createTempRepo();
+  const prepared = await prepareWorkspace({
+    sourcePath: repo.sourcePath,
+    workspaceRoot: repo.workspaceRoot,
+    prNumber: 77,
+    headBranch: repo.headBranch,
+    headSha: await remoteSha(repo.remotePath, repo.headBranch),
+  });
+  const now = Date.now();
+  ageWorkspace(prepared.path, now, 10_000);
+
+  const dataDir = mkdtempSync(join(tmpdir(), "gremlyn-reclaim-ownership-"));
+  const store = new Store({ dataDir, file: ":memory:" });
+  try {
+    // An ownership journal (no recovery record yet) names this workspace: the
+    // reclamation sweep must leave it exactly where it is.
+    beginOpenCodeInvocation({
+      attemptDataDir: join(dataDir, "attempts", "1"),
+      attemptId: 1,
+      descriptor: {
+        executor: "opencode",
+        binary: "opencode",
+        version: "2.0.16",
+        workspacePath: prepared.path,
+        source: "native",
+        nativeId: "build",
+      },
+    });
+    const report = await reclaimWorkspaces({
+      db: store.db,
+      repositories: [{ id: 1, sourcePath: repo.sourcePath, workspaceRoot: repo.workspaceRoot }],
+      minimumAgeMs: 1_000,
+      now,
+      actions: new OperatorActionStore(store.db),
+      dataDir,
+    });
+    assert.equal(report.reclaimed, 0);
+    assert.equal(report.retained, 1);
+    assert.match(report.decisions[0]!.reason, /unresolved OpenCode/u);
+    assert.equal(existsSync(prepared.path), true, "the owned workspace must be retained");
+  } finally {
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
 test("reclamation removes an old clean linked worktree and audits the outcome", async () => {
   const repo = await createTempRepo();
   const fixture = await makeFixture(repo, 41, 4100);
@@ -44,6 +102,7 @@ test("reclamation removes an old clean linked worktree and audits the outcome", 
   ageWorkspace(prepared.path, now, 10_000);
   const report = await reclaimWorkspaces({
     db: fixture.store.db,
+    dataDir: fixture.options.dataDir,
     repositories: reclamationRepository(fixture),
     minimumAgeMs: 1_000,
     now,
@@ -81,6 +140,7 @@ test("reclamation removes an old clean standalone fallback clone", async () => {
   ageWorkspace(prepared.path, now, 10_000);
   const report = await reclaimWorkspaces({
     db: fixture.store.db,
+    dataDir: fixture.options.dataDir,
     repositories: reclamationRepository(fixture),
     minimumAgeMs: 1_000,
     now,
@@ -109,6 +169,7 @@ test("reclamation retains a dirty workspace byte-for-byte and reports the refusa
   ageWorkspace(prepared.path, now, 10_000);
   const report = await reclaimWorkspaces({
     db: fixture.store.db,
+    dataDir: fixture.options.dataDir,
     repositories: reclamationRepository(fixture),
     minimumAgeMs: 1_000,
     now,
@@ -148,6 +209,7 @@ test("reclamation retains active, recent, and indeterminate workspaces", async (
   ageWorkspace(unknownPath, now, 10_000);
   const report = await reclaimWorkspaces({
     db: fixture.store.db,
+    dataDir: fixture.options.dataDir,
     repositories: reclamationRepository(fixture),
     minimumAgeMs: 1_000,
     now,
@@ -189,6 +251,7 @@ test("reclamation preview reports eligible and retained workspaces without remov
   ageWorkspace(prepared.path, now, 10_000);
   const report = await reclaimWorkspaces({
     db: fixture.store.db,
+    dataDir: fixture.options.dataDir,
     repositories: reclamationRepository(fixture),
     minimumAgeMs: 1_000,
     now,

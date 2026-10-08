@@ -1,7 +1,9 @@
 import type {
   AttemptDetail,
+  CapturedOpenCodeSelectionSummary,
   JobDetail,
   ManagedChildSessionSummary,
+  OpenCodeInvocationSummary,
   ValidationRun,
 } from "../queries.js";
 import {
@@ -177,8 +179,82 @@ function jobHeader(model: JobDetail): string {
  */
 function capturedAgentChip(model: JobDetail): string {
   const profile = model.job.opencodeProfile ?? null;
-  if (profile === null) return "";
-  return `<span class="chip" title="Captured OpenCode agent profile at job creation">agent <code>${escapeHtml(profile.primaryId)}</code> · revision ${escapeHtml(String(profile.revision))}</span>`;
+  if (profile !== null) {
+    return `<span class="chip" title="Captured OpenCode agent profile at job creation">agent <code>${escapeHtml(profile.primaryId)}</code> · revision ${escapeHtml(String(profile.revision))}</span>`;
+  }
+  const captured = model.job.opencodeSelection ?? null;
+  if (captured?.source === "native" && captured.nativeAgentId) {
+    return `<span class="chip" title="Captured OpenCode primary source at job creation">agent <code>${escapeHtml(captured.nativeAgentId)}</code> · native</span>`;
+  }
+  return "";
+}
+
+/** One readable phrase for a job's captured primary source. */
+function capturedSelectionSentence(captured: CapturedOpenCodeSelectionSummary): string {
+  if (captured.source === "native") {
+    return captured.nativeAgentId
+      ? `native agent <code>${escapeHtml(captured.nativeAgentId)}</code>`
+      : "native agent (the captured id is missing)";
+  }
+  if (captured.source === "managed") {
+    return captured.profileRevision === null
+      ? "managed team"
+      : `managed team revision ${escapeHtml(String(captured.profileRevision))}`;
+  }
+  return "OpenCode default";
+}
+
+/**
+ * One OpenCode parent invocation's requested-versus-effective evidence. The
+ * requested source is the captured policy; the effective primary is the actual
+ * runtime identity when observed, or an explicit "unknown" when it was not.
+ */
+function invocationRow(invocation: OpenCodeInvocationSummary): string {
+  const requested =
+    invocation.requestedSource === "native" && invocation.requestedNativeAgentId
+      ? `native <code>${escapeHtml(invocation.requestedNativeAgentId)}</code>`
+      : invocation.requestedSource === "managed"
+        ? `managed${invocation.requestedProfileRevision === null ? "" : ` revision ${escapeHtml(String(invocation.requestedProfileRevision))}`}`
+        : escapeHtml(invocation.requestedSource);
+  const actual =
+    invocation.actualPrimaryAgent === null
+      ? '<span class="muted" data-invocation-actual-unknown>unknown</span>'
+      : `<code>${escapeHtml(invocation.actualPrimaryAgent)}</code>`;
+  const model =
+    invocation.actualModel === null
+      ? ""
+      : ` · model <code>${escapeHtml(invocation.actualModel)}</code>`;
+  const parent =
+    invocation.parentSessionId === null
+      ? '<span class="muted">no parent session captured</span>'
+      : `<code class="session-id">${escapeHtml(invocation.parentSessionId)}</code>`;
+  return `<li class="opencode-invocation" data-invocation-ordinal="${String(invocation.ordinal)}"><span class="chip">invocation ${String(invocation.ordinal)}</span><span class="chip">requested ${requested}</span><span class="opencode-invocation-effective">effective ${actual}${model}</span><span class="muted">${parent} · ${escapeHtml(invocation.status)}/${escapeHtml(invocation.ownershipState)}</span></li>`;
+}
+
+/**
+ * The captured primary source and the per-invocation requested-versus-effective
+ * identity. Native/default diagnostics state that external definitions are not
+ * snapshotted. Rendered only when the job recorded a source or invocation
+ * evidence, so non-OpenCode jobs are unchanged and no private instructions are
+ * ever read out.
+ */
+function opencodeSelectionPanel(model: JobDetail): string {
+  const captured = model.job.opencodeSelection ?? null;
+  const invocations = model.attempts.flatMap((attempt) => attempt.invocations ?? []);
+  if (captured === null && invocations.length === 0) return "";
+  const capturedLine =
+    captured === null
+      ? '<p class="muted">No captured primary source recorded for this job.</p>'
+      : `<p class="opencode-captured">Requested runner: ${capturedSelectionSentence(captured)}${captured.selectionRevision === null ? "" : ` <span class="muted">(selection revision ${escapeHtml(String(captured.selectionRevision))})</span>`}.</p>`;
+  const note =
+    captured !== null && captured.source !== "managed"
+      ? '<p class="muted">Default and native sources snapshot the selection policy, not a copy of external instruction files; the effective definition is resolved when the job runs.</p>'
+      : "";
+  const rows =
+    invocations.length > 0
+      ? `<ul class="opencode-invocations">${invocations.map(invocationRow).join("")}</ul>`
+      : '<p class="muted">No OpenCode invocation evidence recorded; effective identity is unknown.</p>';
+  return `<section class="panel presentation-inset span-all" data-presentation="inset" aria-label="OpenCode primary source and invocation identity"><h2>OpenCode primary source</h2>${capturedLine}${note}${rows}</section>`;
 }
 
 /**
@@ -302,7 +378,7 @@ function jobAside(model: JobDetail, timeZone?: string): string {
   const review = `<section class="panel presentation-inset span-all" data-presentation="inset"><h2>Review feedback</h2>${reviewContext(model.job.review_context)}</section>`;
   const attemptPanel = `<section class="panel presentation-panel span-all" data-presentation="panel"><h2>Attempts <span class="muted panel-note">${String(model.attempts.length)}</span></h2><div class="attempt-grid">${attempts}</div></section>`;
   const validation = `<section class="panel presentation-inset span-2" data-presentation="inset">${validationTable(model.validation)}</section>`;
-  return `<div class="job-aside">${timeline}${validation}${review}${managedOpenCodePanel(model)}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
+  return `<div class="job-aside">${timeline}${validation}${review}${managedOpenCodePanel(model)}${opencodeSelectionPanel(model)}${attemptPanel}${dangerZone(model.job.repo_id, model.job.pr_number)}</div>`;
 }
 
 export function jobRegions(

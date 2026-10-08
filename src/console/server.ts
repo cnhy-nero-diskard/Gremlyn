@@ -32,6 +32,17 @@ import {
   readOpenCodeProfile,
   saveOpenCodeAgentProfile,
 } from "../store/opencode-profiles.js";
+import { readOpenCodeSelection, saveOpenCodeSelection } from "../store/opencode-selections.js";
+import {
+  discoverNativeAgents as defaultDiscoverNativeAgents,
+  nativeAgentDiscoveryCache,
+  type NativeAgentDiscoveryCache,
+  type DiscoverNativeAgentsInput,
+  type NativeDiscoveryOutcome,
+} from "../agent/native-discovery.js";
+import type { AgentInventoryReader } from "../agent/agent-inventory.js";
+import type { OpenCodeWorker } from "../agent/opencode-worker.js";
+import { createRedactor } from "../log/redact.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 import { CONSOLE_SESSION_COOKIE, ConsoleSessionStore, constantTimeEqual } from "./session.js";
 
@@ -40,6 +51,42 @@ export interface ConsoleActions {
   cancel?: (jobId: number) => Promise<unknown> | unknown;
   resetWorkspace?: (repoId: number, prNumber: number) => Promise<unknown> | unknown;
   repositorySettingsChanged?: (repoId: number) => Promise<unknown> | unknown;
+}
+
+/** The server-derived inputs a worker resolver receives for one repository. */
+export interface OpenCodeWorkerResolverInput {
+  repoId: number;
+  /** The configured executor alias id (an `agents` key). */
+  executorId: string;
+  /** The alias's configured binary, defaulting to the alias id. */
+  binary: string;
+  /** The repository's server-derived source checkout; never a browser value. */
+  cwd: string;
+  /** The alias's configured credential source directory, when present. */
+  credentialSource?: string;
+}
+
+/**
+ * Resolve the exact OpenCode worker (binary, pinned version, cwd and the
+ * sanitized environment including the configured executor's
+ * `additionalEnvironment`) for one repository. When absent, the native-agent
+ * discovery route reports that discovery is unavailable rather than guessing a
+ * binary — the console never silently falls back to a default `opencode`.
+ */
+export type OpenCodeWorkerResolver = (
+  input: OpenCodeWorkerResolverInput,
+) => OpenCodeWorker | undefined;
+
+/**
+ * Injectable seams for the authenticated native-agent discovery route so tests
+ * can fake discovery without credentials or subprocesses. Production uses the
+ * shared bounded discovery and its advisory cache.
+ */
+export interface ConsoleNativeDiscovery {
+  discover?: (input: DiscoverNativeAgentsInput) => Promise<NativeDiscoveryOutcome>;
+  cache?: NativeAgentDiscoveryCache;
+  /** Injectable inventory reader passed through to the discovery default. */
+  inventory?: AgentInventoryReader;
 }
 export interface ConsoleOptions {
   db: Database.Database;
@@ -65,6 +112,15 @@ export interface ConsoleOptions {
    * kind and declared tiers, not from one global setting.
    */
   agents?: Record<string, AgentDefinition>;
+  /**
+   * Resolves the repository's exact OpenCode worker for advisory native-agent
+   * discovery. Wired by the process entry point from the configured executor
+   * alias (its `additionalEnvironment` and pinned binary). Omitting it disables
+   * discovery with a safe error; the routes never fall back to another binary.
+   */
+  opencodeWorker?: OpenCodeWorkerResolver;
+  /** Test seams for the discovery route (fake discovery/cache/inventory). */
+  nativeDiscovery?: ConsoleNativeDiscovery;
 }
 export interface ConsoleServer extends FastifyInstance {
   endLiveUpdateStreams(): void;
@@ -134,8 +190,46 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
     pollIntervalSec: options.pollIntervalSec ?? 60,
     concurrency: options.concurrency ?? 1,
     dataDir: options.dataDir ?? ".gremlyn",
+    // Legacy job detail resolves whether a recorded attempt/agent is OpenCode
+    // through the configured definitions rather than assuming the alias id.
+    resolveExecutorKind: (agentId) =>
+      agentId === undefined ? undefined : (options.agents?.[agentId]?.kind ?? agentId),
   });
   const ticker = new SharedChangeTicker(options.db, 250, options.dataDir ?? ".gremlyn");
+  const redactDiscoveryReason = createRedactor(options.secrets);
+  const discoverySeam = options.nativeDiscovery ?? {};
+  const runNativeDiscovery = discoverySeam.discover ?? defaultDiscoverNativeAgents;
+  const discoveryCache = discoverySeam.cache ?? nativeAgentDiscoveryCache;
+  interface ConsoleRepositoryRow {
+    id: number;
+    agent: string;
+    source_path: string;
+  }
+  const readRepositoryRow = (repoId: number): ConsoleRepositoryRow | undefined =>
+    options.db
+      .prepare("SELECT id, agent, source_path FROM repositories WHERE id = ?")
+      .get(repoId) as ConsoleRepositoryRow | undefined;
+  /**
+   * Resolve the exact OpenCode worker for one repository using the injected
+   * resolver and the repository's server-derived source path. Returns undefined
+   * when the resolver is absent or declines, which the route reports as an
+   * unavailable discovery source — never a silent default binary.
+   */
+  const openCodeWorkerFor = (repo: ConsoleRepositoryRow): OpenCodeWorker | undefined => {
+    const definition = options.agents?.[repo.agent];
+    const executorKind = definition?.kind ?? repo.agent;
+    if (executorKind !== OPENCODE_EXECUTOR_ID) return undefined;
+    if (!options.opencodeWorker) return undefined;
+    return options.opencodeWorker({
+      repoId: repo.id,
+      executorId: repo.agent,
+      binary: definition?.binary ?? repo.agent,
+      cwd: repo.source_path,
+      ...(definition?.credentialSource === undefined
+        ? {}
+        : { credentialSource: definition.credentialSource }),
+    });
+  };
   const publicAssetPaths = new Set([
     "/assets/app.css",
     "/assets/app.js",
@@ -441,7 +535,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
     }
   });
   app.post<{ Params: { id: string } }>("/repos/:id/toggle", async (request, reply) => {
-    const id = positiveInteger(request.params.id);
+    const id = repositoryIdParam(request.params.id);
+    if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
     if (!repositoryExists(options.db, id))
       return reply.code(404).send({ error: "repository-not-found" });
     const enabled = toggleRepository(options.db, id);
@@ -455,7 +550,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.post<{ Params: { id: string }; Body: { model?: string } }>(
     "/repos/:id/model",
     async (request, reply) => {
-      const id = positiveInteger(request.params.id);
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
       const model = request.body?.model;
       if (typeof model !== "string" || model.length === 0)
         return reply.code(400).send({ error: "model-required" });
@@ -475,7 +571,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.post<{ Params: { id: string }; Body: { provider?: string } }>(
     "/repos/:id/provider",
     async (request, reply) => {
-      const id = positiveInteger(request.params.id);
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
       const provider = request.body?.provider;
       if (typeof provider !== "string") return reply.code(400).send({ error: "provider-required" });
       const { providerRequired } = agentOptionsFor(options.agents, repositoryAgent(options.db, id));
@@ -496,7 +593,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
     Params: { id: string };
     Body: { provider?: string; model?: string; effort?: string };
   }>("/repos/:id/model-provider", async (request, reply) => {
-    const id = positiveInteger(request.params.id);
+    const id = repositoryIdParam(request.params.id);
+    if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
     const provider = request.body?.provider;
     const model = request.body?.model;
     const effort = request.body?.effort;
@@ -536,7 +634,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.post<{ Params: { id: string }; Body: { effort?: string } }>(
     "/repos/:id/effort",
     async (request, reply) => {
-      const id = positiveInteger(request.params.id);
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
       const effort = request.body?.effort;
       if (typeof effort !== "string") return reply.code(400).send({ error: "effort-required" });
       const { efforts } = agentOptionsFor(options.agents, repositoryAgent(options.db, id));
@@ -556,7 +655,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.post<{ Params: { id: string }; Body: { timeoutSeconds?: unknown } }>(
     "/repos/:id/timeout",
     async (request, reply) => {
-      const id = positiveInteger(request.params.id);
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
       const result = setRepositoryTimeout(options.db, id, request.body?.timeoutSeconds);
       if (!result.ok) {
         return reply.code(result.reason === "not-found" ? 404 : 400).send({ error: result.reason });
@@ -570,17 +670,203 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       return reply.send({ ok: true, timeoutSeconds: result.timeoutSeconds });
     },
   );
+  // Authenticated advisory discovery of the eligible existing OpenCode primary
+  // agents for one repository's configured executor alias. Paths are derived on
+  // the server from the repository row; a browser never supplies a cwd. The
+  // response carries only safe projected metadata (id/name/bounded description/
+  // mode/hidden/eligibility/evidenced origin) plus the saved source — never
+  // permissions, prompts, credentials or arbitrary configuration contents.
+  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
+    "/repos/:id/opencode-agents",
+    async (request, reply) => {
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
+      const repo = readRepositoryRow(id);
+      if (!repo) return reply.code(404).send({ error: "repository-not-found" });
+      const kind = resolvedExecutorKind(options.db, id, options.agents);
+      if (kind !== OPENCODE_EXECUTOR_ID) return reply.code(404).send({ error: "not-opencode" });
+      const selectionRecord = readOpenCodeSelection(options.db, id);
+      // A corrupt dormant profile must not break discovery; it reads as no
+      // profile so the source/id projection stays available.
+      const profile = tryReadOpenCodeProfile(options.db, id);
+      const base = {
+        repoId: id,
+        selection: selectionRecord?.selection ?? { source: "default" },
+        revision: selectionRecord?.revision ?? 0,
+        explicit: selectionRecord?.explicit ?? false,
+        profileRevision: savedProfileRevision(profile),
+      };
+      const worker = openCodeWorkerFor(repo);
+      if (!worker) {
+        return reply.code(503).send({
+          ok: false,
+          status: "unavailable",
+          error: "discovery-unavailable",
+          ...base,
+        });
+      }
+      const outcome = await runNativeDiscovery({
+        worker,
+        repositoryId: String(id),
+        cache: discoveryCache,
+        ...(request.query.refresh === "1" ? { refresh: true } : {}),
+        ...(discoverySeam.inventory === undefined ? {} : { inventory: discoverySeam.inventory }),
+      });
+      if (outcome.status === "failed") {
+        return reply.code(502).send({
+          ok: false,
+          status: "failed",
+          error: "discovery-failed",
+          // Discovery reasons name the binary/context, never a prompt; redact
+          // against the console's configured secrets anyway so a transport
+          // diagnostic can never echo one back.
+          reason: redactDiscoveryReason(outcome.reason),
+          ...base,
+        });
+      }
+      if (outcome.status === "pending") {
+        // A cold location that never converged is neither an empty success nor
+        // a transport error; the advisory picker can retry without pretending
+        // the inventory is empty.
+        return reply.send({
+          ok: false,
+          status: "pending",
+          reason: "native agent discovery is still settling",
+          ...base,
+        });
+      }
+      return reply.send({
+        ok: true,
+        status: outcome.status,
+        agents: outcome.agents,
+        recordCount: outcome.recordCount,
+        fromCache: outcome.fromCache,
+        ...(outcome.directory === undefined ? {} : { directory: outcome.directory }),
+        ...base,
+      });
+    },
+  );
+  // Authenticated, revisioned primary-source update for one repository. The
+  // store validates the discriminated selection strictly, checks the selection
+  // (and, for managed activation, the active profile) revision in one
+  // transaction, and records exactly one scoped operator action. This route
+  // records the runtime-settings notification the client and orchestrator
+  // observe; a stale or conflicting update changes nothing.
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/repos/:id/opencode-selection",
+    async (request, reply) => {
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
+      const repo = readRepositoryRow(id);
+      if (!repo) return reply.code(404).send({ error: "repository-not-found" });
+      const kind = resolvedExecutorKind(options.db, id, options.agents);
+      if (kind !== OPENCODE_EXECUTOR_ID) return reply.code(404).send({ error: "not-opencode" });
+      const body = request.body;
+      if (!isRecord(body)) return invalidRequest(reply, "body", "body must be an object");
+      const expectedRevision = body.expectedRevision;
+      if (!Number.isInteger(expectedRevision) || (expectedRevision as number) < 0) {
+        return invalidRequest(
+          reply,
+          "expectedRevision",
+          "expectedRevision must be a non-negative integer",
+        );
+      }
+      const selection = body.selection;
+      if (!isRecord(selection)) {
+        return invalidRequest(reply, "selection", "selection must be an object");
+      }
+      const expectedProfileRevision = body.expectedProfileRevision;
+      if (
+        expectedProfileRevision !== undefined &&
+        (!Number.isInteger(expectedProfileRevision) || (expectedProfileRevision as number) < 0)
+      ) {
+        return invalidRequest(
+          reply,
+          "expectedProfileRevision",
+          "expectedProfileRevision must be a non-negative integer when present",
+        );
+      }
+      const result = saveOpenCodeSelection(options.db, {
+        repoId: id,
+        expectedRevision: expectedRevision as number,
+        candidate: selection,
+        executorKind: kind,
+        ...(expectedProfileRevision === undefined
+          ? {}
+          : { expectedProfileRevision: expectedProfileRevision as number }),
+      });
+      if (result.ok) {
+        await options.actions?.repositorySettingsChanged?.(id);
+        // The selection is already committed; a corrupt dormant profile must
+        // not turn a successful save into a 500. It simply reports no revision.
+        const profile = tryReadOpenCodeProfile(options.db, id);
+        return reply.send({
+          ok: true,
+          repoId: id,
+          revision: result.revision,
+          selection: result.selection,
+          profileRevision: savedProfileRevision(profile),
+        });
+      }
+      switch (result.reason) {
+        case "not-found":
+          return reply.code(404).send({ error: "repository-not-found" });
+        case "not-opencode":
+          return reply.code(404).send({ error: "not-opencode" });
+        case "validation":
+          return reply.code(400).send({
+            error: "validation",
+            currentRevision: result.currentRevision,
+            issues: result.issues,
+          });
+        case "conflict":
+          return reply
+            .code(409)
+            .send({ error: "conflict", currentRevision: result.currentRevision });
+        case "no-profile":
+          return reply.code(409).send({
+            error: "no-profile",
+            currentRevision: result.currentRevision,
+            currentProfileRevision: result.currentProfileRevision,
+          });
+        case "profile-revision-required":
+          return reply.code(400).send({
+            error: "profile-revision-required",
+            currentRevision: result.currentRevision,
+            currentProfileRevision: result.currentProfileRevision,
+          });
+        case "profile-conflict":
+          return reply.code(409).send({
+            error: "profile-conflict",
+            currentRevision: result.currentRevision,
+            currentProfileRevision: result.currentProfileRevision,
+          });
+      }
+      return reply.code(500).send({ error: "save-failed" });
+    },
+  );
   // Authenticated editor access to the full OpenCode agent profile. The full
   // document — including the operators' private instruction text — is never
   // projected in ordinary dashboard HTML or live SSE fragments; it is read
   // here only when the operator explicitly opens the repository-local editor.
   app.get<{ Params: { id: string } }>("/repos/:id/opencode-profile", async (request, reply) => {
-    const id = positiveInteger(request.params.id);
+    const id = repositoryIdParam(request.params.id);
+    if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
     const executorKind = resolvedExecutorKind(options.db, id, options.agents);
     if (executorKind === undefined) return reply.code(404).send({ error: "repository-not-found" });
     if (executorKind !== OPENCODE_EXECUTOR_ID)
       return reply.code(404).send({ error: "not-opencode" });
-    const record = readOpenCodeProfile(options.db, id);
+    // A stored payload that no longer parses is a scoped corruption error, not
+    // a server crash and not a silent fallback to the default workflow.
+    let record: ReturnType<typeof readOpenCodeProfile>;
+    try {
+      record = readOpenCodeProfile(options.db, id);
+    } catch {
+      return reply
+        .header("cache-control", "no-store")
+        .code(422)
+        .send({ error: "opencode-profile-corrupt", repoId: id });
+    }
     if (!record) return reply.code(404).send({ error: "repository-not-found" });
     return reply.header("cache-control", "no-store").send({
       ok: true,
@@ -599,7 +885,8 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
   app.post<{ Params: { id: string }; Body: { expectedRevision?: unknown; candidate?: unknown } }>(
     "/repos/:id/opencode-profile",
     async (request, reply) => {
-      const id = positiveInteger(request.params.id);
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
       const executorKind = resolvedExecutorKind(options.db, id, options.agents);
       if (executorKind === undefined)
         return reply.code(404).send({ error: "repository-not-found" });
@@ -755,4 +1042,47 @@ function positiveInteger(value: string): number {
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/** One field-scoped 400 for a malformed route body, matching the editor route. */
+function invalidRequest(reply: FastifyReply, path: string, message: string): FastifyReply {
+  return reply.code(400).send({ error: "invalid-request", issues: [{ path, message }] });
+}
+/**
+ * The saved managed-profile revision to report to the picker, whether the team
+ * is active or dormant. The client needs it to CAS a deliberate managed
+ * activation; null when no profile is saved. The `selection.source` still tells
+ * the client whether the team is currently controlling runs.
+ */
+function savedProfileRevision(
+  profile: { profile: unknown; revision: number } | undefined,
+): number | null {
+  return profile?.profile != null ? profile.revision : null;
+}
+/**
+ * Read a stored OpenCode profile without letting a corrupt payload throw out of
+ * a route. `undefined` means the repository/profile could not be read (or the
+ * payload no longer parses); callers that must report corruption explicitly do
+ * their own guarded read.
+ */
+function tryReadOpenCodeProfile(
+  db: Database.Database,
+  repoId: number,
+): ReturnType<typeof readOpenCodeProfile> {
+  try {
+    return readOpenCodeProfile(db, repoId);
+  } catch {
+    return undefined;
+  }
+}
+/**
+ * Parse a `/repos/:id` path parameter safely: a non-numeric or out-of-range id
+ * is reported as a scoped not-found rather than echoing a 500 for an internal
+ * parse error.
+ */
+function repositoryIdParam(value: string): number | undefined {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : undefined;
 }
