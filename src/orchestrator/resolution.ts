@@ -381,7 +381,7 @@ interface OpenCodeAttemptContext {
   launched: boolean;
   /** True once managed generated files have been cleaned for this attempt. */
   managedFinalized: boolean;
-  /** Set when quiescence/ownership could not be proven; bars reuse + publication. */
+  /** Set when quiescence, settlement persistence, or managed cleanup is unproven. */
   unproven: StageFailure | undefined;
 }
 
@@ -928,9 +928,9 @@ export class ResolutionOrchestrator {
     command: ParsedCommand,
     retainedWorkspace?: RetainedWorkspace,
   ): QueuedJob {
-    // Shared with the running attempt: when a managed attempt ends with
-    // unproven quiescence, both the failure path and the cancellation handler
-    // must leave the manifest and data dir in place for recovery.
+    // Shared with the running attempt: when OpenCode ownership or managed
+    // cleanup is unresolved, both failure and cancellation must leave the
+    // manifest and data dir in place for recovery.
     const preserveDataDir: { value: boolean; failure?: StageFailure } = { value: false };
     const completed = this.queue.enqueue({
       jobId,
@@ -970,8 +970,8 @@ export class ResolutionOrchestrator {
             reason: failure.reason,
             hasUncommittedChanges: true,
           });
-          // Task 4.4: a managed attempt cancelled with unproven quiescence
-          // persists the specific failure detail alongside the failure reason.
+          // Task 4.4: an OpenCode attempt cancelled with unresolved ownership or
+          // cleanup persists the specific failure detail alongside its reason.
           if (failure.message.length > 0 && failure.message !== failure.reason) {
             this.recordManagedFailureDetail(attemptId, failure.message);
           }
@@ -985,10 +985,9 @@ export class ResolutionOrchestrator {
           : false;
         this.jobs.cancelJob(jobId, attemptId, hasChanges);
         await this.reactToStatus(repository, commentId, "cancelled");
-        // 4.3: seeded credential must be removed even on cancellation. A
-        // managed attempt with unproven quiescence keeps its manifest and data
-        // dir instead (tasks 3.2-3.5) so recovery can still account for the
-        // generated content.
+        // 4.3: seeded credential must be removed even on cancellation. An
+        // OpenCode attempt with unresolved ownership or cleanup keeps its
+        // manifest and data dir instead so recovery can account for its state.
         const attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
         if (!preserveDataDir.value) removeAttemptDataDir(attemptDataDir);
       },
@@ -1581,16 +1580,34 @@ export class ResolutionOrchestrator {
       throw context.unproven;
     }
     this.recordManagedChildrenSettled({ attemptId: context.attemptId, settlement });
-    this.markOpenCodeInvocationSettled(context, invocation);
     if (context.managed !== undefined) {
-      await this.cleanupManagedAttempt({
-        managed: context.managed,
-        workspacePath: context.worker.cwd,
-        jobId: input.jobId,
-        attemptId: context.attemptId,
-        stage: input.stage,
-      });
+      try {
+        await this.cleanupManagedAttempt({
+          managed: context.managed,
+          workspacePath: context.worker.cwd,
+          jobId: input.jobId,
+          attemptId: context.attemptId,
+          stage: input.stage,
+        });
+      } catch (error) {
+        this.markOpenCodeInvocationUnproven(invocation, "managed cleanup failed");
+        context.unproven =
+          error instanceof StageFailure ? error : classifyFailure(error, input.stage);
+        throw context.unproven;
+      }
       context.managedFinalized = true;
+    }
+    try {
+      this.markOpenCodeInvocationSettled(context, invocation);
+    } catch (error) {
+      this.markOpenCodeInvocationUnproven(invocation, "settlement persistence failed");
+      context.unproven = new StageFailure(
+        input.stage,
+        "managed-session-discovery-failed",
+        `the OpenCode invocation ${String(invocation.ordinal)} was quiescent, but its settlement ` +
+          `could not be durably recorded: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw context.unproven;
     }
     this.options.logger.info("opencode invocation tree settled", {
       jobId: input.jobId,
@@ -1604,24 +1621,24 @@ export class ResolutionOrchestrator {
   }
 
   /**
-   * Durably mark one invocation's tree quiescent: the filesystem ownership
-   * journal first, then the database row. A failed durability write here throws
-   * (fatal to the attempt), because a proven tree that cannot be recorded is
-   * indistinguishable from an unresolved one on the next startup.
+   * Durably mark one invocation's tree quiescent: the database projection first,
+   * then the filesystem ownership journal that gates workspace reuse. If either
+   * write fails, the filesystem journal stays unresolved and recovery must
+   * re-prove the tree before admitting the workspace.
    */
   private markOpenCodeInvocationSettled(
     context: OpenCodeAttemptContext,
     invocation: OpenCodeInvocationState,
   ): void {
-    settleOpenCodeOwnershipInvocation({
-      attemptDataDir: context.attemptDataDir,
-      attemptId: context.attemptId,
-      ordinal: invocation.ordinal,
-    });
     this.jobs.settleOpenCodeInvocation({
       invocationId: invocation.invocationId,
       status: "settled",
       ownershipState: "proven",
+    });
+    settleOpenCodeOwnershipInvocation({
+      attemptDataDir: context.attemptDataDir,
+      attemptId: context.attemptId,
+      ordinal: invocation.ordinal,
     });
   }
 
@@ -2077,8 +2094,8 @@ export class ResolutionOrchestrator {
     signal: AbortSignal;
     /**
      * Per-attempt flag shared with the queue's cancellation handler: when a
-     * managed attempt ends with unproven quiescence, its manifest and data dir
-     * must survive for recovery, and neither path may erase them.
+     * OpenCode ownership or managed cleanup is unresolved, its manifest and
+     * data dir must survive for recovery, and neither path may erase them.
      */
     preserveDataDir: { value: boolean; failure?: StageFailure };
   }): Promise<{ commitSha?: string }> {
@@ -2508,12 +2525,11 @@ export class ResolutionOrchestrator {
       this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       return { commitSha: publication.commitSha };
     } catch (error) {
-      // Every OpenCode failure path still settled the launched invocation tree
-      // BEFORE this classification (see runTrackedOpenCodeInvocations), so an
-      // unproven tree is already recorded as unresolved on disk — the durable
+      // Every post-launch OpenCode settlement/cleanup failure is recorded as
+      // unresolved on disk by runTrackedOpenCodeInvocations, the durable
       // quarantine that bars reuse. Here we only finish a managed attempt whose
-      // generated files were materialized but never launched, and make sure any
-      // unproven state preserves that evidence instead of releasing it.
+      // generated files were materialized but never launched, and preserve any
+      // unresolved evidence instead of releasing it.
       if (openCode !== undefined) {
         if (openCode.managed !== undefined && !openCode.launched && !openCode.managedFinalized) {
           try {
@@ -2540,7 +2556,7 @@ export class ResolutionOrchestrator {
           preserveDataDir.value = true;
           preserveDataDir.failure = openCode.unproven;
           this.options.logger.error(
-            "OpenCode attempt ended with unproven quiescence; ownership evidence and data dir preserved",
+            "OpenCode attempt ended with unresolved ownership or cleanup; evidence and data dir preserved",
             {
               jobId,
               attemptId,

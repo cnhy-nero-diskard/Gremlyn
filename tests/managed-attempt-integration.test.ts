@@ -32,11 +32,13 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
+import { opencodeOwnershipPath, readOpenCodeOwnership } from "../src/agent/opencode-ownership.js";
 import { MANAGED_OPENCODE_MANIFEST_FILE } from "../src/agent/managed-files.js";
 import type { AgentPermissionRule } from "../src/agent/materialize.js";
 import type {
@@ -106,6 +108,7 @@ class FakeOpenCodeExecutor implements AgentExecutor {
       exitCode?: number;
       edits?: Record<string, string>;
       delayMs?: number;
+      generatedAgentDirectory?: boolean;
     } = {},
     private readonly events?: string[],
   ) {}
@@ -128,6 +131,14 @@ class FakeOpenCodeExecutor implements AgentExecutor {
         const abs = join(opts.cwd, rel);
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, content, "utf8");
+      }
+      if (b.generatedAgentDirectory === true) {
+        const agentId =
+          opts.openCodeSelection?.source === "managed" ? opts.openCodeSelection.agentId : undefined;
+        if (agentId === undefined) throw new Error("managed selection was not passed to executor");
+        const generatedPath = join(opts.cwd, ".opencode", "agents", `${agentId}.md`);
+        rmSync(generatedPath);
+        mkdirSync(generatedPath);
       }
     }
     if (b.delayMs !== undefined) {
@@ -324,6 +335,7 @@ interface ManagedFixtureOptions {
     exitCode?: number;
     edits?: Record<string, string>;
     delayMs?: number;
+    generatedAgentDirectory?: boolean;
   };
   /** Defaults to true; false exercises the no-profile unchanged path. */
   withProfile?: boolean;
@@ -573,6 +585,79 @@ test("managed attempt runs ordered lifecycle: preflight, run with primary, settl
     data.initialSha,
   );
   assert.match(data.github.replies[0]!.body, /Resolved in commit/);
+  data.store.close();
+});
+
+test("managed cleanup failure keeps the ownership journal and prevents retrying the workspace", async () => {
+  const data = await setupManaged({
+    executor: { sessionId: "ses_parent", generatedAgentDirectory: true },
+  });
+  const queued = await resolveEvent(data);
+  await assert.rejects(() => queued.completed);
+  assert.ok(data.server.calls.length > 0, "cleanup must fail only after session settlement runs");
+
+  const attempt = data.store.db
+    .prepare("SELECT failure_reason FROM attempts WHERE id = ?")
+    .get(queued.attemptId) as { failure_reason: string };
+  assert.equal(attempt.failure_reason, "managed-cleanup-failed");
+  const attemptDir = join(data.dataDir, "attempts", String(queued.attemptId));
+  assert.equal(existsSync(manifestPath(attemptDir)), true, "the cleanup manifest must survive");
+  assert.equal(
+    existsSync(opencodeOwnershipPath(attemptDir)),
+    true,
+    "the ownership journal must survive",
+  );
+  assert.equal(readOpenCodeOwnership(attemptDir)?.invocations[0]?.settled, false);
+
+  const retry = await data.orchestrator.retry(queued.jobId);
+  await assert.rejects(() => retry.completed);
+  const retryAttempt = data.store.db
+    .prepare("SELECT failure_reason FROM attempts WHERE id = ?")
+    .get(retry.attemptId) as { failure_reason: string };
+  assert.equal(retryAttempt.failure_reason, "workspace-quarantined");
+  assert.equal(
+    data.executor.runs.length,
+    1,
+    "a retry must not launch over the retained generated path",
+  );
+  data.store.close();
+});
+
+test("a settlement persistence failure retains an unresolved journal and blocks workspace reuse", async () => {
+  const data = await setupManaged({
+    withProfile: false,
+    executor: { sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } },
+  });
+  // This settlement-row write used to happen after the filesystem journal was
+  // marked settled; failing it must leave that admission gate unresolved.
+  data.store.db.exec(`
+    CREATE TRIGGER fail_opencode_settlement
+    BEFORE UPDATE OF status ON opencode_invocations
+    WHEN NEW.status = 'settled'
+    BEGIN
+      SELECT RAISE(ABORT, 'simulated settlement persistence failure');
+    END;
+  `);
+
+  const queued = await resolveEvent(data);
+  await assert.rejects(() => queued.completed);
+
+  const attempt = data.store.db
+    .prepare("SELECT failure_reason FROM attempts WHERE id = ?")
+    .get(queued.attemptId) as { failure_reason: string };
+  assert.equal(attempt.failure_reason, "managed-session-discovery-failed");
+  const attemptDir = join(data.dataDir, "attempts", String(queued.attemptId));
+  assert.equal(existsSync(attemptDir), true, "the failed attempt data dir must be retained");
+  assert.equal(existsSync(opencodeOwnershipPath(attemptDir)), true);
+  assert.equal(readOpenCodeOwnership(attemptDir)?.invocations[0]?.settled, false);
+
+  const retry = await data.orchestrator.retry(queued.jobId);
+  await assert.rejects(() => retry.completed);
+  const retryAttempt = data.store.db
+    .prepare("SELECT failure_reason FROM attempts WHERE id = ?")
+    .get(retry.attemptId) as { failure_reason: string };
+  assert.equal(retryAttempt.failure_reason, "workspace-quarantined");
+  assert.equal(data.executor.runs.length, 1, "the unresolved journal must prevent another launch");
   data.store.close();
 });
 
