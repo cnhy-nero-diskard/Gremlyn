@@ -13,11 +13,11 @@
 
 ## 3. Live attributed collection
 
-- [ ] 3.1 Connect an early verified parent-session callback to an invocation-scoped observer using the exact worker descriptor; verify root arrival before process exit, duplicate IDs, missing roots and multiple parent invocations are attributed correctly.
-- [ ] 3.2 Add bounded recursive child enumeration with each parent edge and workspace verified before active-map use; verify two simultaneous/background children, cross-job contamination, ignored filters, nested edges, cycles and depth/node/pagination bounds.
-- [ ] 3.3 Implement coalesced periodic reconciliation with per-call/global concurrency bounds and optional verified event acceleration; verify slow calls, disconnected streams, missed events, reconnect deduplication and partial coverage tests.
-- [ ] 3.4 Continue observation through post-parent settlement and dispose on attempt/daemon teardown without independent session interruption; verify timer/helper leaks, shutdown races and observer failure cannot alter quiescence or publication gates.
-- [ ] 3.5 Preserve verified parent/child attribution in new activity blocks and sanitize delegation-tool prompt arguments; verify old snapshots remain readable and child events are not flattened into the parent's transcript.
+- [x] 3.1 Connect an early verified parent-session callback to an invocation-scoped observer using the exact worker descriptor; verify root arrival before process exit, duplicate IDs, missing roots and multiple parent invocations are attributed correctly.
+- [x] 3.2 Add bounded recursive child enumeration with each parent edge and workspace verified before active-map use; verify two simultaneous/background children, cross-job contamination, ignored filters, nested edges, cycles and depth/node/pagination bounds.
+- [x] 3.3 Implement coalesced periodic reconciliation with per-call/global concurrency bounds and optional verified event acceleration; verify slow calls, disconnected streams, missed events, reconnect deduplication and partial coverage tests.
+- [x] 3.4 Continue observation through post-parent settlement and dispose on attempt/daemon teardown without independent session interruption; verify timer/helper leaks, shutdown races and observer failure cannot alter quiescence or publication gates.
+- [x] 3.5 Preserve verified parent/child attribution in new activity blocks and sanitize delegation-tool prompt arguments; verify old snapshots remain readable and child events are not flattened into the parent's transcript.
 
 ## 4. Console projections and live interaction
 

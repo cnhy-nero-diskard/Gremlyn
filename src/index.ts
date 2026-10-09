@@ -21,7 +21,7 @@ import {
   recoverStaleManagedAttempts,
   shouldDeferAttemptToRecovery,
 } from "./orchestrator/attempt-recovery.js";
-import { ResolutionOrchestrator } from "./orchestrator/resolution.js";
+import { createStoreDelegationSink, ResolutionOrchestrator } from "./orchestrator/resolution.js";
 import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
 import {
@@ -39,6 +39,8 @@ const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const
 
 export interface ShutdownHandlerOptions {
   clearTimer: () => void;
+  /** Stop observational helpers only; this must not cancel or settle agent work. */
+  stopObservation?: () => void;
   endStreams: () => void;
   closeConsole: () => Promise<void>;
   closeStore: () => void;
@@ -65,6 +67,13 @@ export function createShutdownHandler(options: ShutdownHandlerOptions): () => Pr
     stopping = true;
     try {
       options.clearTimer();
+      // Telemetry teardown cannot prevent normal shutdown or turn into an
+      // execution-safety decision. Stop helpers before closing their store.
+      try {
+        options.stopObservation?.();
+      } catch {
+        // An observer defect must not keep the console/store alive.
+      }
       // A poll cycle already running when shutdown began must finish before
       // the store closes underneath it, or its next query throws.
       await options.awaitInFlightPoll?.().catch(() => undefined);
@@ -263,6 +272,13 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const registry = createDefaultCommandRegistry();
     const orchestrator = new ResolutionOrchestrator({
       db: store.db,
+      ...(process.env.GREMLYN_DELEGATION_OBSERVATION === "off"
+        ? {}
+        : {
+            delegationObservation: {
+              createSink: (identity) => createStoreDelegationSink(store.db, identity),
+            },
+          }),
       dataDir: config.dataDir,
       allowedAuthors: config.allowedAuthors,
       orchestratorLogin: config.orchestratorLogin,
@@ -430,6 +446,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     });
     const stop = createShutdownHandler({
       clearTimer: () => clearInterval(timer),
+      stopObservation: () => orchestrator.disposeDelegationObservation(),
       endStreams: () => consoleServer.endLiveUpdateStreams(),
       closeConsole: () => consoleServer.close(),
       closeStore,
