@@ -18,14 +18,16 @@
  *
  * 1. The repository carries a dashboard profile whose primary must NOT edit
  *    files itself (no `edit`/`shell` permission) and whose single enabled
- *    child `reviewer` has `edit`. The trusted profile instructions and the
+ *    child `reviewer` has `edit` and a bounded shell wait. The trusted profile instructions and the
  *    repository's agent instructions both oblige the primary to delegate every
  *    edit to `reviewer`.
  * 2. The `!RESOLVE` feedback asks for `marker.txt` to become exactly
  *    `REVIEWED-OK` and forbids any other file change.
  * 3. The real model run must therefore invoke the child, the child must edit
  *    the marker (only it structurally can), and the parent must return.
- * 4. The orchestrator settles the child sessions through the real CLI session
+ * 4. The child waits thirty seconds before editing, so the live observer must
+ *    capture it running while the parent is still executing. The orchestrator
+ *    settles the child sessions through the real CLI session
  *    API, removes the generated `.opencode` agent files, then validates. The
  *    validation command asserts the marker's content and the absence of the
  *    generated agents — i.e. the child's work is provably present and complete
@@ -82,12 +84,20 @@ import { readCliAgentInventory } from "../src/agent/managed-preflight.js";
 import { discoverNativeAgents } from "../src/agent/native-discovery.js";
 import { readOpenCodeInitialIdentity } from "../src/agent/opencode-identity.js";
 import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "../src/agent/opencode.js";
+import { buildConsoleServer } from "../src/console/server.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
 import { Logger } from "../src/log/logger.js";
-import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
+import {
+  createStoreDelegationSink,
+  ResolutionOrchestrator,
+} from "../src/orchestrator/resolution.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
+import {
+  projectDelegationState,
+  readDelegationObservations,
+} from "../src/store/delegation-observations.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
 import {
   currentSelectionRevision,
@@ -98,6 +108,7 @@ import type { NormalizedEvent } from "../src/types.js";
 import { git } from "../src/workspace/gitops.js";
 import { workspacePathFor } from "../src/workspace/worktree.js";
 import { createTempRepo, pushCommit, remoteSha } from "./helpers/gitrepo.js";
+import { watchJobFragments } from "./helpers/delegation-live-stream.js";
 
 /** Env opt-in: `provider/model` id for the real model run. Unset skips the test. */
 const LIVE_MODEL_ENV = "GREMLYN_LIVE_OPENCODE_MODEL";
@@ -123,7 +134,7 @@ const MARKER_INITIAL = "0\n";
 /**
  * The trusted dashboard profile. The primary has no `edit`/`shell` permission
  * (structurally unable to modify files), and its allowlist grants exactly the
- * single enabled child. The child has `edit`, so any successful marker edit is,
+ * single enabled child. The child has `edit` and `shell` for a bounded wait, so any successful marker edit is,
  * by construction, the child's work — OpenCode's permission engine enforces it,
  * not a prompt promise.
  */
@@ -148,11 +159,12 @@ function liveProfile(): Record<string, unknown> {
         id: "reviewer",
         description: "Reviewer child that performs the requested marker edit",
         enabled: true,
-        permissions: ["edit"],
+        permissions: ["edit", "shell"],
         instructions: [
           "You are the reviewer subagent performing exactly the file change described in the prompt you receive.",
           "Edit only the named target file. Do not create, delete, or modify any other file.",
-          "Do not run git commands, do not invoke any other agent, and do not use the shell.",
+          'Before editing, use the shell once to run exactly: node -e "setTimeout(() => {}, 30000)". Wait for that command to finish. This bounded delay verifies live delegation observation.',
+          "Do not run git commands or invoke any other agent. Use the shell only for the bounded wait above.",
         ].join("\n"),
       },
     ],
@@ -248,6 +260,8 @@ interface LiveFixture {
   prNumber: number;
   model: string;
   bin: string;
+  /** Instrumentation only: every process still uses the real production runner. */
+  parentProcess: { running: boolean; exitedAt: number | null };
   nativeAgentId?: string;
 }
 
@@ -383,11 +397,24 @@ async function setupLiveFixture(bin: string, model: string, native = false): Pro
       },
     ],
   });
-  const executor = new OpenCodeExecutor(bin);
+  const parentProcess = { running: false, exitedAt: null as number | null };
+  const executor = new OpenCodeExecutor(bin, async (binary, args, options) => {
+    if (args[0] !== "run") return defaultRunner(binary, args, options);
+    parentProcess.running = true;
+    try {
+      return await defaultRunner(binary, args, options);
+    } finally {
+      parentProcess.running = false;
+      parentProcess.exitedAt = Date.now();
+    }
+  });
   const operatorActions = new OperatorActionStore(store.db);
   const logger = new Logger({ level: "error", secrets: [], db: store.db });
   const orchestrator = new ResolutionOrchestrator({
     db: store.db,
+    delegationObservation: {
+      createSink: (identity) => createStoreDelegationSink(store.db, identity),
+    },
     dataDir,
     allowedAuthors: ["developer"],
     orchestratorLogin: "gremlyn-bot",
@@ -439,6 +466,7 @@ async function setupLiveFixture(bin: string, model: string, native = false): Pro
     prNumber,
     model,
     bin,
+    parentProcess,
     ...(nativeAgentId === undefined ? {} : { nativeAgentId }),
   };
 }
@@ -720,8 +748,56 @@ test("gated live acceptance: a real OpenCode 2.0.16 run delegates the edit to th
   }
 
   const data = await setupLiveFixture(bin, model);
+  const consoleToken = "fixture-live-console-token";
+  const app = buildConsoleServer({
+    db: data.store.db,
+    dataDir: data.dataDir,
+    token: consoleToken,
+    secrets: [],
+    operatorActions: new OperatorActionStore(data.store.db),
+  });
+  let watcher: ReturnType<typeof watchJobFragments> | undefined;
   try {
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const queued = await resolveEvent(data);
+    let runningSessionId: string | undefined;
+    let terminalSeen!: () => void;
+    const terminal = new Promise<void>((resolve) => {
+      terminalSeen = resolve;
+    });
+    watcher = watchJobFragments({
+      port: Number(new URL(address).port),
+      jobId: queued.jobId,
+      token: consoleToken,
+      onFragment: (html) => {
+        const observations = readDelegationObservations(data.store.db, [queued.attemptId]);
+        for (const node of observations.get(queued.attemptId)?.nodes ?? []) {
+          if (node.depth === null || node.depth === 0) continue;
+          const state = projectDelegationState(node, { now: Date.now() });
+          // Both metadata and the authenticated live fragment must agree. These
+          // attributes describe observation only, never execution permission.
+          const rendered = new RegExp(
+            `<[^>]+(?=[^>]*data-observed-session="${node.sessionId}")(?=[^>]*data-observed-state="${state}")[^>]*>`,
+            "u",
+          ).test(html);
+          if (!rendered) continue;
+          if (
+            state === "running" &&
+            data.parentProcess.running &&
+            data.parentProcess.exitedAt === null
+          ) {
+            runningSessionId ??= node.sessionId;
+          }
+          if (
+            node.sessionId === runningSessionId &&
+            ["succeeded", "failed", "interrupted"].includes(state)
+          ) {
+            terminalSeen();
+          }
+        }
+      },
+    });
+    await withDeadline(watcher.ready, 10_000, "initial authenticated delegation fragment");
     let completed;
     try {
       completed = await withDeadline(
@@ -749,12 +825,22 @@ test("gated live acceptance: a real OpenCode 2.0.16 run delegates the edit to th
     }
 
     await assertLiveAcceptance(data, queued.attemptId, attempt.agent_session_id);
+    assert.ok(
+      runningSessionId,
+      "an attributed child must render running BEFORE the parent process exits",
+    );
+    await withDeadline(terminal, 10_000, "terminal child on the same authenticated SSE connection");
+    assert.deepEqual(watcher.errors, [], "live fragments must not require a reconnect or reload");
 
     console.log(
       `live OpenCode acceptance passed: ${bin} ${data.model}, attempt ${queued.attemptId}, ` +
         `parent ${attempt.agent_session_id}, commit ${outcome.value.commitSha ?? "(none)"}`,
     );
   } finally {
+    watcher?.close();
+    app.endLiveUpdateStreams();
+    await app.close();
+    data.orchestrator.disposeDelegationObservation();
     data.store.close();
   }
 });

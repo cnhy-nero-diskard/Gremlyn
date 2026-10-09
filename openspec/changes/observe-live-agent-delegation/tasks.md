@@ -31,5 +31,6 @@
 
 - [ ] 5.1 Add a fixture integration spanning concurrent children, failed/cancelled jobs, internal retries, restart, source loss and reconciliation; verify session ownership and historical outcomes remain correct while safety behavior is unchanged.
 - [ ] 5.2 Extend the explicit opt-in real OpenCode harness with a sufficiently long-lived delegated child; verify it is observed running before parent completion, then terminal without reload, with fixture GitHub/local-only publication and normal-suite skipping.
+  - Harness implemented with a thirty-second child wait and same-connection authenticated SSE assertions. Real-runtime proof remains pending: `GREMLYN_LIVE_OPENCODE_MODEL` is unset. The reader fixture and normal-suite skipping pass, but do not satisfy the opt-in live proof.
 - [ ] 5.3 Run full tests, build, lint and changed-file format checks including managed settlement/recovery, cancellation and publication regressions; verify observer errors cannot authorize or suppress execution safety.
 - [x] 5.4 Document verified coverage, metadata retention/bounds, polling/event gaps and rollback that disables only observation; verify operator guidance does not equate missing telemetry with no delegation or stopped sessions.
