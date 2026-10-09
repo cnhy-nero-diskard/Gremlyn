@@ -29,8 +29,9 @@
 
 ## 5. End-to-end proof and guidance
 
-- [ ] 5.1 Add a fixture integration spanning concurrent children, failed/cancelled jobs, internal retries, restart, source loss and reconciliation; verify session ownership and historical outcomes remain correct while safety behavior is unchanged.
+- [x] 5.1 Add a fixture integration spanning concurrent children, failed/cancelled jobs, internal retries, restart, source loss and reconciliation; verify session ownership and historical outcomes remain correct while safety behavior is unchanged.
 - [ ] 5.2 Extend the explicit opt-in real OpenCode harness with a sufficiently long-lived delegated child; verify it is observed running before parent completion, then terminal without reload, with fixture GitHub/local-only publication and normal-suite skipping.
   - Harness implemented with a thirty-second child wait and same-connection authenticated SSE assertions. Real-runtime proof remains pending: `GREMLYN_LIVE_OPENCODE_MODEL` is unset. The reader fixture and normal-suite skipping pass, but do not satisfy the opt-in live proof.
-- [ ] 5.3 Run full tests, build, lint and changed-file format checks including managed settlement/recovery, cancellation and publication regressions; verify observer errors cannot authorize or suppress execution safety.
+- [x] 5.3 Run full tests, build, lint and changed-file format checks including managed settlement/recovery, cancellation and publication regressions; verify observer errors cannot authorize or suppress execution safety.
+  - Full rerun: 958 passed, 3 explicit opt-in skips, 0 failures. Subsequent model-variant fix: 68 parser/store/observer-integration tests passed. Build, lint, all changed-file format checks and strict OpenSpec validation passed; desktop/narrow fixture inspection found no horizontal overflow.
 - [x] 5.4 Document verified coverage, metadata retention/bounds, polling/event gaps and rollback that disables only observation; verify operator guidance does not equate missing telemetry with no delegation or stopped sessions.
