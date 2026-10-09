@@ -979,8 +979,9 @@ type SessionRecordRead =
 
 /**
  * Read one child's session record through the pinned `GET /api/session/{id}`
- * route and re-verify its attribution. `missing` is definitive (a 404 says the
- * session no longer exists — the "missing child state" that must fail closed);
+ * route and re-verify its id and attribution. `missing` is definitive (a 404
+ * says the session no longer exists — the "missing child state" that must fail
+ * closed);
  * `unusable` is a readable response that no longer classifies as this attempt's
  * child (both must fail immediately); transport/non-404 errors are `glitch`,
  * which the settle loop retries within the bound. A readable record that no
@@ -1004,6 +1005,7 @@ async function readAttemptChildRecord(
   const record = parseSessionRecord(result.body);
   if (record === undefined) return { status: "unusable" };
   if (
+    record.id !== childSessionId ||
     record.parentID !== expectedParentSessionId ||
     !sameResolvedPath(record.directory, attemptDirectory)
   ) {

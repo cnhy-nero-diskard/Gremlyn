@@ -534,6 +534,43 @@ test("a descendant spawned after its own listing blocks settlement until it term
   assert.equal(settlement.children.find((child) => child.id === "ses_b")?.outcome, "succeeded");
 });
 
+test("settlement rejects a terminal sibling returned from a descendant session endpoint", async () => {
+  const server = makeServer({
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : id === "ses_a"
+          ? sessionEnvelope("ses_sibling", {
+              parentID: PARENT,
+              outcome: "succeeded",
+            })
+          : { status: 404, body: {} },
+    list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
+    children: () => listEnvelope([]),
+    active: () => activeEnvelope([]),
+  });
+  const { now, sleep } = fakeClock();
+
+  await assert.rejects(
+    () =>
+      settleAttemptChildren({
+        parentSessionId: PARENT,
+        attemptDirectory: CWD,
+        http: server.http,
+        timeoutMs: 1_000_000,
+        now,
+        sleep,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof OpenCodeSessionSettleError);
+      assert.deepEqual(error.unknownSessionIds, ["ses_a"]);
+      assert.ok(error.message.includes("cannot be attributed"));
+      return true;
+    },
+  );
+  assert.deepEqual(posts(server), [], "a mismatched record must not authorize settlement");
+});
+
 /* ------------------------------------------------------------------ *
  * Fail-closed edges
  * ------------------------------------------------------------------ */
