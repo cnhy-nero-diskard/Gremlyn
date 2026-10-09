@@ -21,11 +21,11 @@
 
 ## 4. Console projections and live interaction
 
-- [ ] 4.1 Add batched redacted dashboard/detail queries for observed counters, invocation trees, configured-versus-observed agents and coverage; verify empty, partial, unknown-identity, repeated-agent and legacy fixtures without per-row unbounded reads.
-- [ ] 4.2 Render subdued dashboard delegation summaries and expandable keyed attempt/invocation trees; verify managed/native/default/unsupported Cline views distinguish no observations from unavailable telemetry and never show percent-complete guesses.
-- [ ] 4.3 Extend change-ticker signatures and authenticated fragments with observation generations; verify child-only state changes refresh without manual reload and unauthorized SSE exposes no telemetry.
-- [ ] 4.4 Preserve expansion, focused nodes, reading/scroll and follow state through child updates and reconnect; verify client reconciliation tests cover sibling changes, repeated sessions and attempt switches.
-- [ ] 4.5 Add scoped meaningful announcements and explicit observed-time/activity/gap copy; verify routine polls/timestamps remain quiet and stale running nodes become unknown without inferred child cancellation.
+- [x] 4.1 Add batched redacted dashboard/detail queries for observed counters, invocation trees, configured-versus-observed agents and coverage; verify empty, partial, unknown-identity, repeated-agent and legacy fixtures without per-row unbounded reads.
+- [x] 4.2 Render subdued dashboard delegation summaries and expandable keyed attempt/invocation trees; verify managed/native/default/unsupported Cline views distinguish no observations from unavailable telemetry and never show percent-complete guesses.
+- [x] 4.3 Extend change-ticker signatures and authenticated fragments with observation generations; verify child-only state changes refresh without manual reload and unauthorized SSE exposes no telemetry.
+- [x] 4.4 Preserve expansion, focused nodes, reading/scroll and follow state through child updates and reconnect; verify client reconciliation tests cover sibling changes, repeated sessions and attempt switches.
+- [x] 4.5 Add scoped meaningful announcements and explicit observed-time/activity/gap copy; verify routine polls/timestamps remain quiet and stale running nodes become unknown without inferred child cancellation.
 
 ## 5. End-to-end proof and guidance
 

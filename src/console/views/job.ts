@@ -1,6 +1,10 @@
 import type {
   AttemptDetail,
   CapturedOpenCodeSelectionSummary,
+  DelegationAttemptDetail,
+  DelegationConfiguredAgent,
+  DelegationInvocationView,
+  DelegationNodeView,
   JobDetail,
   ManagedChildSessionSummary,
   OpenCodeInvocationSummary,
@@ -9,12 +13,15 @@ import type {
 import {
   agentActivity,
   attemptCard,
+  clockTime,
   dangerZone,
   elapsedTimeElement,
   escapeHtml,
   keyValueTable,
   logEntries,
+  relativeTimeElement,
   statusPill,
+  timeElement,
   timelineStepper,
   validationTable,
 } from "./components.js";
@@ -354,6 +361,342 @@ function managedOpenCodePanel(model: JobDetail): string {
   return `<section class="panel presentation-inset span-all" data-presentation="inset" aria-label="Managed OpenCode agent and delegated sessions"><h2>Managed OpenCode agent</h2>${body}</section>`;
 }
 
+/* ------------------------------------------------------------------ *
+ * Delegated execution (design D5; capability agent-delegation-observability)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A bounded observed-state tally for one attempt/invocation. Root invocation
+ * sessions are excluded: they are the parent, not delegated children.
+ */
+function observedCounts(nodes: readonly DelegationNodeView[]): string {
+  const children = nodes.filter((node) => !node.isRoot);
+  const tally = (state: string): number => children.filter((node) => node.state === state).length;
+  const parts: string[] = [];
+  const invoked = tally("invoked");
+  const running = tally("running");
+  const idle = tally("idle");
+  const succeeded = tally("succeeded");
+  const failed = tally("failed");
+  const interrupted = tally("interrupted");
+  const unknown = tally("unknown");
+  if (invoked > 0) parts.push(`${String(invoked)} invoked`);
+  if (running > 0) parts.push(`${String(running)} active`);
+  if (idle > 0) parts.push(`${String(idle)} idle`);
+  if (succeeded > 0) parts.push(`${String(succeeded)} completed`);
+  if (failed > 0) parts.push(`${String(failed)} failed`);
+  if (interrupted > 0) parts.push(`${String(interrupted)} interrupted`);
+  if (unknown > 0) parts.push(`${String(unknown)} unknown`);
+  return parts.length > 0 ? parts.join(" · ") : "none observed";
+}
+
+/**
+ * Honest durations. The observed span is first/last observation reads; a
+ * supported source record span is shown only when both source-created and
+ * source-updated are available and is explicitly labeled not-execution-end.
+ * `time.updated` is never used as an execution end instant.
+ */
+function delegationDuration(node: DelegationNodeView, timeZone?: string): string {
+  const parts: string[] = [];
+  if (node.firstObservedAt !== null && node.lastObservedAt !== null) {
+    parts.push(
+      `<span class="delegation-observed-duration">${elapsedTimeElement(node.firstObservedAt, node.lastObservedAt)} <span class="muted">observed span</span></span>`,
+    );
+  }
+  if (node.sourceCreatedAt !== null && node.sourceUpdatedAt !== null) {
+    parts.push(
+      `<span class="delegation-source-duration">${elapsedTimeElement(node.sourceCreatedAt, node.sourceUpdatedAt)} <span class="muted">source record span (not execution end)</span></span>`,
+    );
+  } else if (node.sourceCreatedAt !== null) {
+    parts.push(
+      `${timeElement(node.sourceCreatedAt, "clock", clockTime(node.sourceCreatedAt, timeZone), { timeZone })} <span class="muted">source created</span>`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : '<span class="muted">not established</span>';
+}
+
+/** The observed state plus its separate cancellation-request note. */
+function delegationNodeState(node: DelegationNodeView): string {
+  const cancelled = node.cancellationRequested
+    ? '<span class="chip" data-cancellation-request>cancellation requested</span>'
+    : "";
+  const limited = node.limitedUncertainty
+    ? '<span class="chip" data-limited-evidence>limited evidence</span>'
+    : "";
+  return `${statusPill(node.state)}${cancelled}${limited}`;
+}
+
+/**
+ * How the identity reads. A friendly configured label appears only on an exact
+ * generated runtime-id match; otherwise the raw safe runtime id or explicit
+ * unknown identity is shown, never a borrowed configured definition.
+ */
+function delegationIdentity(node: DelegationNodeView): string {
+  if (node.agentLabel === null) {
+    return '<span class="muted" data-delegation-identity-unknown>unknown identity</span>';
+  }
+  if (node.agentFriendly) {
+    return `<code data-delegation-identity="${escapeHtml(node.agentLabel)}">${escapeHtml(node.agentLabel)}</code> <span class="muted">configured definition</span>`;
+  }
+  return `<code data-delegation-identity-raw>${escapeHtml(node.agentLabel)}</code>`;
+}
+
+/**
+ * A stable, state/poll/time-free announcement label for one node. The parent's
+ * semantic hook can announce it verbatim when a meaningful state changes and
+ * deduplicate repeated status pills by this identity.
+ */
+function delegationAnnouncementLabel(
+  node: DelegationNodeView,
+  attemptNumber: number,
+  ordinal: number,
+): string {
+  const agent = node.agentLabel ?? "unknown";
+  return `Attempt ${String(attemptNumber)}, invocation ${String(ordinal)}, agent ${agent}, session ${node.sessionId}`;
+}
+
+/** One observed session as a self-keyed expandable node. */
+function delegationNode(
+  node: DelegationNodeView,
+  attemptNumber: number,
+  attemptId: number,
+  ordinal: number,
+  timeZone?: string,
+): string {
+  const key = `delegation-session-${String(attemptId)}-${String(ordinal)}-${node.sessionId}`;
+  const rootChip = node.isRoot
+    ? '<span class="chip" data-delegation-root>invocation root</span>'
+    : "";
+  const model = node.model === null ? "" : ` · model <code>${escapeHtml(node.model)}</code>`;
+  const modelFact =
+    node.model === null
+      ? '<span class="muted" data-delegation-model-unknown>unknown model</span>'
+      : `<code>${escapeHtml(node.model)}</code>`;
+  const parent =
+    node.parentSessionId === null
+      ? '<span class="muted">not captured</span>'
+      : `parent <code class="session-id">${escapeHtml(node.parentSessionId)}</code>`;
+  const lastObserved =
+    node.lastObservedAt === null
+      ? '<span class="muted">never observed</span>'
+      : relativeTimeElement(node.lastObservedAt);
+  const sourceUpdated =
+    node.sourceUpdatedAt === null
+      ? '<span class="muted">not exposed by the source</span>'
+      : timeElement(node.sourceUpdatedAt, "clock", clockTime(node.sourceUpdatedAt, timeZone), {
+          timeZone,
+        });
+  // `time.updated` is a verified record update, never a heartbeat or an
+  // execution end. The retained outcome is always presented as last observed.
+  const outcome =
+    node.outcome === null
+      ? ""
+      : ` <span class="muted">last observed outcome ${escapeHtml(node.outcome)}</span>`;
+  const contradiction =
+    node.outcome !== null && node.state !== node.outcome
+      ? `<p class="delegation-note muted">Current state is unknown; retained evidence records a last observed outcome of ${escapeHtml(node.outcome)}.</p>`
+      : "";
+  const history = node.historyPartial
+    ? '<p class="delegation-note muted">Retained state history is partial; older transitions were trimmed.</p>'
+    : "";
+  const label = delegationAnnouncementLabel(node, attemptNumber, ordinal);
+  return `<details class="delegation-session" data-live-key="${escapeHtml(key)}" data-details-key="${escapeHtml(key)}" data-observed-session="${escapeHtml(node.sessionId)}" data-observed-state="${escapeHtml(node.state)}" data-announcement-label="${escapeHtml(label)}"><summary><span class="delegation-session-head">${delegationNodeState(node)}${rootChip}${delegationIdentity(node)}${model} <code class="session-id">${escapeHtml(node.sessionId)}</code></span></summary><dl class="kv delegation-facts"><div><dt>State</dt><dd>${statusPill(node.state)}${outcome}</dd></div><div><dt>Model</dt><dd>${modelFact}</dd></div><div><dt>Duration</dt><dd>${delegationDuration(node, timeZone)}</dd></div><div><dt>Last observed</dt><dd>${lastObserved}</dd></div><div><dt>Source updated</dt><dd>${sourceUpdated}</dd></div><div><dt>Parent</dt><dd>${parent}</dd></div></dl>${contradiction}${history}</details>`;
+}
+
+interface DelegationTreeNode {
+  node: DelegationNodeView;
+  children: DelegationTreeNode[];
+}
+
+/**
+ * Build the bounded parent/child tree for one invocation from verified parent
+ * edges. A node whose parent was not observed is a top-level entry (a present
+ * root node is a real parent, so its children nest under it); a cycle guard
+ * keeps a malformed edge from recursing.
+ */
+function delegationTree(nodes: readonly DelegationNodeView[]): DelegationTreeNode[] {
+  const present = new Set(nodes.map((node) => node.sessionId));
+  const childrenByParent = new Map<string, DelegationNodeView[]>();
+  const roots: DelegationNodeView[] = [];
+  for (const node of nodes) {
+    const parent = node.parentSessionId;
+    if (parent === null || parent === node.sessionId || !present.has(parent)) {
+      roots.push(node);
+    } else {
+      const list = childrenByParent.get(parent);
+      if (list === undefined) childrenByParent.set(parent, [node]);
+      else list.push(node);
+    }
+  }
+  const visited = new Set<string>();
+  const build = (node: DelegationNodeView): DelegationTreeNode => {
+    visited.add(node.sessionId);
+    const children = (childrenByParent.get(node.sessionId) ?? [])
+      .filter((child) => !visited.has(child.sessionId))
+      .map(build);
+    return { node, children };
+  };
+  const tree = roots.map(build);
+  for (const node of nodes) {
+    if (!visited.has(node.sessionId)) tree.push(build(node));
+  }
+  return tree;
+}
+
+function delegationTreeList(
+  tree: readonly DelegationTreeNode[],
+  attemptNumber: number,
+  attemptId: number,
+  ordinal: number,
+  timeZone?: string,
+): string {
+  return `<ul class="child-sessions delegation-tree">${tree
+    .map(
+      (entry) =>
+        `<li>${delegationNode(entry.node, attemptNumber, attemptId, ordinal, timeZone)}${
+          entry.children.length > 0
+            ? delegationTreeList(entry.children, attemptNumber, attemptId, ordinal, timeZone)
+            : ""
+        }</li>`,
+    )
+    .join("")}</ul>`;
+}
+
+/** Coverage/gap copy for one invocation, never a completion percentage. */
+function delegationInvocationNotes(invocation: DelegationInvocationView): string {
+  const notes: string[] = [];
+  if (invocation.coverage === "unavailable") {
+    notes.push(
+      '<p class="delegation-note muted">Observation source is unavailable for this invocation.</p>',
+    );
+  } else if (invocation.coverage === "partial") {
+    notes.push(
+      '<p class="delegation-note muted">Coverage is partial; the tree may be incomplete.</p>',
+    );
+  } else if (invocation.coverage === "none") {
+    notes.push('<p class="delegation-note muted">No observation coverage recorded.</p>');
+  }
+  if (invocation.nodeLimitReached) {
+    notes.push(
+      '<p class="delegation-note muted">The observation node bound was reached; deeper nodes are not shown.</p>',
+    );
+  } else if (invocation.truncated) {
+    notes.push('<p class="delegation-note muted">The observed tree was truncated.</p>');
+  }
+  if (invocation.historyPartial) {
+    notes.push('<p class="delegation-note muted">Retained state history is partial.</p>');
+  }
+  if (invocation.reconciledGaps > 0) {
+    notes.push(
+      `<p class="delegation-note muted">${String(invocation.reconciledGaps)} earlier observation gap${invocation.reconciledGaps === 1 ? "" : "s"} reconciled; intermediate activity may have been missed.</p>`,
+    );
+  }
+  for (const gap of invocation.openGaps) {
+    notes.push(`<p class="delegation-gap muted">Observation gap: ${escapeHtml(gap)}</p>`);
+  }
+  return notes.join("");
+}
+
+/** One root invocation's expandable, keyed child tree. */
+function delegationInvocation(
+  invocation: DelegationInvocationView,
+  attemptNumber: number,
+  attemptId: number,
+  timeZone?: string,
+): string {
+  const key = `delegation-invocation-${String(attemptId)}-${String(invocation.ordinal)}`;
+  const root =
+    invocation.rootSessionId === null
+      ? '<span class="muted">root session not captured</span>'
+      : `root session <code class="session-id">${escapeHtml(invocation.rootSessionId)}</code>`;
+  const rootNodes = invocation.nodes.filter((node) => node.isRoot);
+  const childNodes = invocation.nodes.filter((node) => !node.isRoot);
+  const counts = observedCounts(childNodes);
+  // The root node stays in the tree (when observed) but has no children of its
+  // own shown as delegations. Children whose parent is the root nest under it
+  // when it is present, otherwise they sit at the top level.
+  const rootRows = rootNodes
+    .map((node) => delegationNode(node, attemptNumber, attemptId, invocation.ordinal, timeZone))
+    .join("");
+  const tree = delegationTree(childNodes);
+  const childBody =
+    childNodes.length > 0
+      ? delegationTreeList(tree, attemptNumber, attemptId, invocation.ordinal, timeZone)
+      : '<p class="muted">No child sessions observed under this invocation.</p>';
+  const body = rootRows.length > 0 ? `${rootRows}${childBody}` : childBody;
+  return `<li class="delegation-invocation"><details class="delegation-invocation-tree" data-live-key="${escapeHtml(key)}" data-details-key="${escapeHtml(key)}"><summary><span class="chip">root invocation ${String(invocation.ordinal)}</span> ${root} <span class="muted">${escapeHtml(counts)}</span></summary>${delegationInvocationNotes(invocation)}${body}</details></li>`;
+}
+
+/** Configured managed definitions, kept visibly separate from observed nodes. */
+function delegationConfiguredList(configured: readonly DelegationConfiguredAgent[]): string {
+  if (configured.length === 0) return "";
+  return `<div class="delegation-configured"><h3>Configured callable agents</h3><p class="muted">Configured definitions are capability, not evidence that an agent ran; only observed sessions appear below.</p><ul class="cmd-list">${configured
+    .map((agent) => {
+      const role = agent.primary ? "primary" : agent.callable ? "callable" : "disabled";
+      const model =
+        agent.model === null ? "" : `<span class="chip">model: ${escapeHtml(agent.model)}</span>`;
+      return `<li data-delegation-configured="${escapeHtml(agent.id)}"><code>${escapeHtml(agent.id)}</code><span class="chip">${role}</span>${model}</li>`;
+    })
+    .join("")}</ul></div>`;
+}
+
+/** The one-line truthful summary of an attempt's observed execution. */
+function delegationAttemptHeadline(delegation: DelegationAttemptDetail): string {
+  if (delegation.availability === "unsupported") {
+    return "Delegation not observable for this executor";
+  }
+  if (delegation.availability === "unavailable") {
+    return "Delegation not observable: no attributed session source";
+  }
+  if (delegation.observed === 0) {
+    return delegation.availability === "partial"
+      ? "No delegations observed yet (partial coverage)"
+      : "No delegations observed yet";
+  }
+  const counts = observedCounts(delegation.invocations.flatMap((invocation) => invocation.nodes));
+  const partial = delegation.availability === "partial" ? " · partial coverage" : "";
+  return `${String(delegation.observed)} observed · ${counts}${partial}`;
+}
+
+/** One attempt's expandable parent/child execution tree. */
+function delegationAttempt(attempt: AttemptDetail, timeZone?: string): string {
+  const delegation = attempt.delegation;
+  if (delegation === undefined) return "";
+  const key = `delegation-attempt-${String(attempt.id)}`;
+  const invocations =
+    delegation.invocations.length > 0
+      ? `<ol class="delegation-invocations">${delegation.invocations
+          .map((invocation) =>
+            delegationInvocation(invocation, attempt.attempt_number, attempt.id, timeZone),
+          )
+          .join("")}</ol>`
+      : "";
+  const configured = delegationConfiguredList(delegation.configured);
+  return `<details class="delegation-attempt" data-live-key="${escapeHtml(key)}" data-details-key="${escapeHtml(key)}"><summary>Attempt ${String(attempt.attempt_number)} · ${escapeHtml(delegationAttemptHeadline(delegation))}</summary>${configured}${invocations}</details>`;
+}
+
+/**
+ * The delegated-execution panel: configured-versus-observed agents, per-attempt
+ * keyed trees, explicit gaps and truthful coverage. Unknown identity and an
+ * unobservable executor never read as an empty managed team, and no percentage
+ * is inferred. Rendered for every job so a non-OpenCode executor is explicitly
+ * limited rather than silent.
+ */
+function delegationPanel(model: JobDetail, timeZone?: string): string {
+  const attempts = model.attempts
+    .map((attempt) => delegationAttempt(attempt, timeZone))
+    .filter((html) => html.length > 0);
+  const captured = model.job.opencodeSelection ?? null;
+  const isOpenCodeJob = captured !== null || (model.job.opencodeProfile ?? null) !== null;
+  const body =
+    attempts.length > 0
+      ? attempts.join("")
+      : isOpenCodeJob
+        ? '<p class="muted">No delegations observed yet.</p>'
+        : '<p class="muted">Delegation is not observable for this executor; attributed child sessions are unavailable.</p>';
+  return `<section class="panel presentation-inset span-all delegation-panel" data-presentation="inset" aria-label="Delegated agent execution"><h2>Delegated execution <span class="muted panel-note">observed evidence</span></h2>${body}</section>`;
+}
+
 /**
  * Everything that is context rather than live state, in a card grid below.
  *
@@ -390,7 +733,7 @@ export function jobRegions(
 } {
   const logControls = `<div class="actions log-controls"><label class="log-search">Search <input data-log-filter placeholder="Filter entries"></label><label>Level <select data-log-level><option value="">All</option><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label class="log-follow"><input type="checkbox" data-log-follow checked> Follow</label></div>`;
   return {
-    "job-detail-region": `${jobHeader(model)}${activityPanel(model, timeZone)}${jobAside(model, timeZone)}`,
+    "job-detail-region": `${jobHeader(model)}${activityPanel(model, timeZone)}${delegationPanel(model, timeZone)}${jobAside(model, timeZone)}`,
     "job-log-region": `<section class="panel presentation-inset" data-presentation="inset" id="log-viewer" data-resizable="log"><h2 data-focus-fallback tabindex="-1">Live log ${liveBadge(model.job.status)} <span class="muted panel-note">${logCount(model)}</span></h2>${logControls}<div class="log-stream" data-scroll-keep="log" data-log-items>${logEntries(model.logs, timeZone)}</div></section>`,
   };
 }
