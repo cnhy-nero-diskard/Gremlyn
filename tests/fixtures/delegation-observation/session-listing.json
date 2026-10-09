@@ -1,0 +1,22 @@
+{
+  "data": [
+    {
+      "id": "ses_fixture_parent",
+      "agent": "build",
+      "model": { "id": "model-large", "providerID": "fixture" },
+      "outcome": "succeeded",
+      "location": { "directory": "C:\\work\\fixture-workspace" },
+      "time": { "created": 1788408290000, "updated": 1788408400000 }
+    },
+    {
+      "id": "ses_fixture_child",
+      "parentID": "ses_fixture_parent",
+      "agent": "attempt-42/reviewer",
+      "model": { "id": "model-large", "providerID": "fixture", "variant": "high" },
+      "outcome": "succeeded",
+      "location": { "directory": "C:\\work\\fixture-workspace" },
+      "time": { "created": 1788408300000, "updated": 1788408390000 }
+    }
+  ],
+  "cursor": { "previous": null, "next": null }
+}

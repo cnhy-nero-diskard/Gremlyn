@@ -1,0 +1,11 @@
+{
+  "data": {
+    "id": "ses_fixture_running",
+    "projectID": "prj_fixture",
+    "agent": "native-reviewer",
+    "model": { "id": "model-large", "providerID": "fixture" },
+    "location": { "directory": "C:\\work\\fixture-workspace" },
+    "time": { "created": 1788408300000, "updated": 1788408395000 },
+    "title": "still running"
+  }
+}

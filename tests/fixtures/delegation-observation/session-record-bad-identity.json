@@ -1,0 +1,10 @@
+{
+  "data": {
+    "id": "ses_fixture_bad_identity",
+    "agent": "sk-abcdef0123456789",
+    "model": "not-an-object",
+    "location": { "directory": "C:\\work\\fixture-workspace" },
+    "time": { "created": "not-a-number", "updated": -1, "idle": 99999999999999999999 },
+    "title": "unknown identity"
+  }
+}

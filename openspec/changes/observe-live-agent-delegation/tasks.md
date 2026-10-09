@@ -1,8 +1,8 @@
 ## 1. Pinned telemetry contract
 
-- [ ] 1.1 Produce a redacted pinned-runtime coverage matrix and fixtures for early parent IDs, agent/model/time fields, filtered sessions, active state and foreground/background delegation; verify read-only probes do not upgrade OpenCode or require a paid invocation.
-- [ ] 1.2 Verify whether the configured CLI can safely consume supported events and record either the event adapter contract or polling-only fallback; verify the delivered evidence states disconnect/overflow and unsupported-field limitations explicitly.
-- [ ] 1.3 Implement a safe observation parser/projector with actual identity, validated timestamps and no raw metadata/tool prompts; verify malformed/unknown-field, secret, instruction and oversized-payload tests.
+- [x] 1.1 Produce a redacted pinned-runtime coverage matrix and fixtures for early parent IDs, agent/model/time fields, filtered sessions, active state and foreground/background delegation; verify read-only probes do not upgrade OpenCode or require a paid invocation.
+- [x] 1.2 Verify whether the configured CLI can safely consume supported events and record either the event adapter contract or polling-only fallback; verify the delivered evidence states disconnect/overflow and unsupported-field limitations explicitly.
+- [x] 1.3 Implement a safe observation parser/projector with actual identity, validated timestamps and no raw metadata/tool prompts; verify malformed/unknown-field, secret, instruction and oversized-payload tests.
 
 ## 2. Durable observation state
 
