@@ -129,6 +129,12 @@ function activeEnvelope(ids: readonly string[]): ManagedHttpResult {
 interface Script {
   session?(id: string): Scripted;
   list?(query: Record<string, string>): Scripted;
+  /**
+   * Direct listing for a NESTED parent (parentID other than {@link PARENT}).
+   * Omitted means "no grandchildren", which keeps the original flat fixtures
+   * behaving exactly as before the descendant walk existed.
+   */
+  children?(parentId: string, query: Record<string, string>): Scripted;
   active?(): Scripted;
   interrupt?(id: string): Scripted;
 }
@@ -157,7 +163,13 @@ function makeServer(script: Partial<Script> = {}): FakeServer {
     async get(path, query) {
       calls.push({ method: "GET", path, ...(query === undefined ? {} : { query: { ...query } }) });
       if (path === sessionActivePath()) return resolve(script.active?.(), activeEnvelope([]));
-      if (path === sessionListPath()) return resolve(script.list?.(query ?? {}), listEnvelope([]));
+      if (path === sessionListPath()) {
+        const q = query ?? {};
+        if (q.parentID !== undefined && q.parentID !== PARENT) {
+          return resolve(script.children?.(q.parentID, q), listEnvelope([]));
+        }
+        return resolve(script.list?.(q), listEnvelope([]));
+      }
       const id = decodeURIComponent(path.slice(sessionRecordPath("").length));
       return resolve(script.session?.(id), { status: 404, body: {} });
     },
@@ -294,6 +306,45 @@ test("parseSessionListing treats an empty page with no next page as final", () =
   assert.ok(listing !== undefined);
   assert.deepEqual(listing.items, []);
   assert.equal(listing.nextCursor, undefined);
+});
+
+test("parseSessionListing only treats an explicit null cursor as the last page", () => {
+  const last = parseSessionListing(
+    result200({ data: [], cursor: { previous: null, next: null } }).body,
+  );
+  assert.ok(last !== undefined);
+  assert.deepEqual(last.items, []);
+  assert.equal(last.nextCursor, undefined);
+
+  const next = parseSessionListing(
+    result200({ data: [], cursor: { previous: "c1", next: "c2" } }).body,
+  );
+  assert.ok(next !== undefined);
+  assert.deepEqual(next.items, []);
+  assert.equal(next.nextCursor, "c2");
+});
+
+test("parseSessionListing rejects a missing or malformed cursor instead of treating it as final", () => {
+  // A malformed end-of-list shape is not proof the page chain ended; treating it
+  // as final would silently truncate the child set and could hide a running
+  // descendant, so every non-`null` `next` shape must reject the page.
+  for (const body of [
+    { data: [] }, // no cursor at all
+    { data: [], cursor: null },
+    { data: [], cursor: 42 },
+    { data: [], cursor: [] },
+    { data: [], cursor: {} }, // missing next
+    { data: [], cursor: { previous: null } }, // still missing next
+    { data: [], cursor: { next: 7 } }, // non-string next
+    { data: [], cursor: { next: true } },
+    { data: [], cursor: { next: "" } }, // empty string is not a cursor
+  ]) {
+    assert.equal(
+      parseSessionListing(body),
+      undefined,
+      `expected ${JSON.stringify(body)} to be rejected`,
+    );
+  }
 });
 
 test("parseSessionListing fails closed when any item is unusable", () => {
@@ -765,7 +816,10 @@ test("settle cannot declare quiescence until the active map has been read succes
   // not proven, so the settlement must NOT return on that round.
   let activeCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
     active: () => {
       activeCalls += 1;
@@ -790,7 +844,10 @@ test("settle cannot declare quiescence until the active map has been read succes
 
 test("a never-readable active map fails the settlement at the bound instead of trusting an empty map", async () => {
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
     active: () => ({ status: 500, body: {} }),
   });
@@ -853,7 +910,10 @@ test("an empty parent-only tree hands an appeared child to the full settlement",
   // the parent-only proof hands off to the full child settlement.
   let listCalls = 0;
   const server = makeServer({
-    session: (id) => (id === PARENT ? parentEnvelope() : sessionEnvelope("ses_a")),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => {
       listCalls += 1;
       return listCalls === 1
@@ -876,6 +936,50 @@ test("an empty parent-only tree hands an appeared child to the full settlement",
     ["ses_a"],
   );
   assert.deepEqual(settlement.interruptedSessionIds, []);
+});
+
+test("an empty tree cannot prove quiescence when the parent spawns around the listing", async () => {
+  // The parent is still running at the first settlement round; the listing the
+  // OLD ordering trusted as final is empty, and the parent then spawns a child
+  // and turns terminal. Because the parent record is read BEFORE the
+  // authoritative listing (the fix), that round cannot prove quiescence and the
+  // child is adopted by a later full listing. Reading the listing first and the
+  // parent afterwards would falsely return an empty tree.
+  let listCalls = 0;
+  let parentDone = false;
+  const server = makeServer({
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope({ outcome: parentDone ? "succeeded" : undefined })
+        : sessionEnvelope("ses_late", { outcome: "succeeded" }),
+    list: () => {
+      listCalls += 1;
+      if (listCalls === 1) return listEnvelope([]); // discovery: nothing spawned yet
+      if (listCalls === 2) {
+        // Spawn + terminal transition lands right after the listing the old
+        // ordering would have trusted, so only a later listing can see it.
+        parentDone = true;
+        return listEnvelope([]);
+      }
+      return listEnvelope([sessionRecord("ses_late", { outcome: "succeeded" })]);
+    },
+    active: () => activeEnvelope(parentDone ? [] : [PARENT]),
+  });
+  const { now, sleep } = fakeClock();
+  const settlement = await settleAttemptChildren({
+    parentSessionId: PARENT,
+    attemptDirectory: CWD,
+    http: server.http,
+    timeoutMs: 1_000_000,
+    pollIntervalMs: 10,
+    now,
+    sleep,
+  });
+  assert.deepEqual(
+    settlement.children.map((child) => child.id),
+    ["ses_late"],
+    "the late-spawned child must be adopted, never proved as an empty tree",
+  );
 });
 
 test("non-empty settlement refuses to return while the parent could still spawn", async () => {
@@ -975,7 +1079,10 @@ test("the parent record must not carry a parentID: a root attempt is never a chi
 
 test("settle proves quiescence in one round when every child is already settled", async () => {
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
   });
   const settlement = await settleAttemptChildren({
@@ -996,7 +1103,13 @@ test("settle proves quiescence in one round when every child is already settled"
 test("settle waits for a running child to complete instead of interrupting it", async () => {
   let listCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(listCalls >= 3 ? { outcome: "succeeded" } : {}),
+          }),
     list: () => {
       listCalls += 1;
       return listEnvelope([
@@ -1026,7 +1139,13 @@ test("settle waits for a running child to complete instead of interrupting it", 
 test("settle tracks a late-spawned background child as long as it attributes to the parent", async () => {
   let listCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(id === "ses_a" || listCalls >= 3 ? { outcome: "succeeded" } : {}),
+          }),
     list: () => {
       listCalls += 1;
       if (listCalls === 1) return listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]);
@@ -1056,7 +1175,13 @@ test("expiring the remaining timeout interrupts backend children and confirms th
   let interrupted = false;
   const { now, sleep } = fakeClock();
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([
         sessionRecord("ses_bg", {
@@ -1088,7 +1213,13 @@ test("expiring the remaining timeout interrupts backend children and confirms th
 test("cancellation interrupts active children on the next observation", async () => {
   let interrupted = false;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([sessionRecord("ses_bg", { outcome: interrupted ? "interrupted" : undefined })]),
     interrupt: () => {
@@ -1114,10 +1245,49 @@ test("cancellation interrupts active children on the next observation", async ()
   ]);
 });
 
+test("a cancelled settlement keeps polling in the interrupt phase instead of spinning", async () => {
+  // With an already-aborted signal, the DEFAULT sleeper must still wait the
+  // bounded poll interval once the interrupt phase begins; an abort-aware wait
+  // would resolve instantly every round and hammer the interrupt route. The
+  // number of interrupt POSTs must therefore be bounded by the grace / poll
+  // budget rather than by how fast the loop can spin.
+  let interrupts = 0;
+  const server = makeServer({
+    session: () => parentEnvelope(),
+    list: () => listEnvelope([sessionRecord("ses_bg")]), // never settles
+    interrupt: () => {
+      interrupts += 1;
+      return result200({ interrupted: true });
+    },
+  });
+  const controller = new AbortController();
+  controller.abort();
+  const pollIntervalMs = 50;
+  const interruptGraceMs = 300;
+  await assert.rejects(
+    () =>
+      settleAttemptChildren({
+        parentSessionId: PARENT,
+        attemptDirectory: CWD,
+        http: server.http,
+        timeoutMs: 1_000_000,
+        pollIntervalMs,
+        interruptGraceMs,
+        signal: controller.signal,
+        // Real clock and the DEFAULT sleeper: the finding is in the default wait.
+      }),
+    OpenCodeSessionSettleError,
+  );
+  assert.ok(
+    interrupts <= Math.ceil(interruptGraceMs / pollIntervalMs) + 5,
+    `interrupt rounds must be bounded by the grace/poll budget, got ${interrupts}`,
+  );
+});
+
 test("a child that ignores interrupt until the grace expires fails the attempt", async () => {
   const { now, sleep } = fakeClock();
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) => (id === PARENT ? parentEnvelope() : sessionEnvelope(id, { parentID: PARENT })),
     list: () => listEnvelope([sessionRecord("ses_stubborn")]),
     interrupt: () => result200({ interrupted: true }),
   });
@@ -1230,7 +1400,10 @@ test("a child whose outcome contradicts the active map is unknown and fails", as
 
 test("an unusable active map fails the settlement: quiescence cannot be cross-checked", async () => {
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
     active: () => result200({ data: { ses_a: { type: "idle" } } }),
   });
@@ -1337,7 +1510,13 @@ test("the active map never enumerates children: unrelated running sessions are i
   // so it must neither appear in the settlement nor be interrupted.
   let interrupted = false;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([sessionRecord("ses_bg", { outcome: interrupted ? "interrupted" : undefined })]),
     // Per the pinned probe, interrupt removes the child from the active map;
@@ -1370,7 +1549,13 @@ test("the active map never enumerates children: unrelated running sessions are i
 test("the whole flow uses exactly the pinned routes", async () => {
   let interrupted = false;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([sessionRecord("ses_bg", { outcome: interrupted ? "interrupted" : undefined })]),
     interrupt: () => {
@@ -1391,9 +1576,17 @@ test("the whole flow uses exactly the pinned routes", async () => {
   assert.equal(settlement.interruptedSessionIds.includes("ses_bg"), true);
   assert.ok(hasGet(server, sessionRecordPath(PARENT)), "parent record via GET /api/session/{id}");
   assert.equal(listQueries(server).length > 0, true);
+  // Every listing uses the pinned filtered route: the attempt directory, an
+  // ascending order, and an attributed session as the parent. The root listing
+  // must appear; the descendant walk legitimately lists nested parents too.
+  assert.ok(listQueries(server).some((query) => query.parentID === PARENT));
   for (const query of listQueries(server)) {
-    assert.equal(query.parentID, PARENT);
+    assert.ok(
+      typeof query.parentID === "string" && query.parentID.startsWith("ses_"),
+      `every listing filters by an attributed session, got ${JSON.stringify(query)}`,
+    );
     assert.equal(query.directory, CWD);
+    assert.equal(query.order, "asc");
   }
   assert.ok(hasGet(server, sessionActivePath()), "active map via GET /api/session/active");
   assert.ok(
@@ -1607,8 +1800,15 @@ test("the CLI adapter drives discovery with exactly the pinned child-list argv",
       return cliResult(JSON.stringify({ data: sessionRecord(PARENT, { parentID: null }) }));
     }
     if (target?.startsWith(`${sessionListPath()}?`)) {
+      // Honor the parentID filter: the root has CHILD, every nested parent is
+      // empty. The recursive walk now lists each admitted descendant, and a
+      // root child echoed for a nested query would (correctly) fail closed.
+      const isRoot = target.includes(`parentID=${PARENT}`);
       return cliResult(
-        JSON.stringify({ data: [sessionRecord(CHILD, { outcome: "succeeded" })], cursor: {} }),
+        JSON.stringify({
+          data: isRoot ? [sessionRecord(CHILD, { outcome: "succeeded" })] : [],
+          cursor: { previous: null, next: null },
+        }),
       );
     }
     return cliResult("", { stderr: "HTTP 404 Not Found", exitCode: 1 });

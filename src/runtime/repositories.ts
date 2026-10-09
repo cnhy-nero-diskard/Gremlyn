@@ -64,6 +64,11 @@ export function syncRepositories(
   const select = db.prepare(
     "SELECT id, model, provider, effort, timeout_seconds FROM repositories WHERE owner = ? AND name = ?",
   );
+  const seedSelection = db.prepare(
+    `INSERT INTO opencode_primary_selections (repo_id, source, native_agent_id, revision)
+     VALUES (?, 'default', NULL, 0)
+     ON CONFLICT(repo_id) DO NOTHING`,
+  );
   return db.transaction(() =>
     repositories.map((repository) => {
       upsert.run(
@@ -92,6 +97,10 @@ export function syncRepositories(
         effort: ReasoningEffort;
         timeout_seconds: number | null;
       };
+      // New registrations start with explicit default policy. Resynchronizing
+      // configuration must never reactivate a dormant profile or reset an
+      // operator's selection/revision (including across executor switches).
+      seedSelection.run(row.id);
       return {
         ...repository,
         id: row.id,

@@ -7,7 +7,7 @@ import {
   removeAttemptDataDir,
   verifyCredentialSource,
 } from "./agent/credentials.js";
-import { EXECUTOR_FACTORIES } from "./agent/registry.js";
+import { EXECUTOR_FACTORIES, EXECUTOR_EXPECTED_VERSIONS } from "./agent/registry.js";
 import { buildConsoleServer, consoleListenOptions } from "./console/server.js";
 import { loadConfig } from "./config/loader.js";
 import { OctokitGitHubClient } from "./github/octokit.js";
@@ -19,6 +19,7 @@ import {
   attemptDataDirFor,
   isManagedAttemptDataDir,
   recoverStaleManagedAttempts,
+  shouldDeferAttemptToRecovery,
 } from "./orchestrator/attempt-recovery.js";
 import { ResolutionOrchestrator } from "./orchestrator/resolution.js";
 import { OperatorActionStore } from "./store/actions.js";
@@ -138,6 +139,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     // credentials are written back — the crash skipped the runtime path that
     // normally rescues them.
     cleanupStaleAttemptDirs(config.dataDir, store.db, interrupted, {
+      resolveExecutorKind: (agent) =>
+        config.agents[agent]?.kind ?? executors.get(agent)?.id ?? agent,
       onRemoveAttempt: ({ attemptId, agent, attemptDataDir }) => {
         if (agent === null) return;
         const executor = executors.get(agent);
@@ -175,9 +178,18 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       db: store.db,
       actions: operatorActions,
       logger,
+      // Recognize a pre-journal OpenCode attempt from its recorded agent alias
+      // so recovery quarantines it instead of leaving it to the Cline-style
+      // sweep. The alias kind is the file-config kind, falling back to the
+      // registered executor id.
+      resolveExecutorKind: (agent) =>
+        config.agents[agent]?.kind ?? executors.get(agent)?.id ?? agent,
       resolveWorker: (attempt, workspacePath) => {
         const executor = executors.get(attempt.agent);
         if (executor === undefined) return undefined;
+        const definition = config.agents[attempt.agent];
+        const version =
+          definition === undefined ? undefined : EXECUTOR_EXPECTED_VERSIONS[definition.kind];
         return {
           cwd: workspacePath,
           env: buildAgentEnvironment(
@@ -187,6 +199,10 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
               credentialSources.get(attempt.agent),
             ),
           ),
+          // Exact alias-aware worker context: never fall back to a hardcoded
+          // `opencode` when the crashed attempt ran another installation.
+          binary: definition?.binary ?? attempt.agent,
+          ...(version === undefined ? {} : { version }),
         };
       },
     });
@@ -201,6 +217,10 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         repositories: reclamationRepositories,
         minimumAgeMs: config.workspaceReclamation.minimumAgeSec * 1_000,
         actions: operatorActions,
+        // Protect a workspace still owned by an unresolved OpenCode invocation
+        // tree (ownership journal / quarantine record / manifest) from being
+        // reclaimed as inactive-clean.
+        dataDir: config.dataDir,
       });
       logger.info("workspace reclamation sweep", {
         phase,
@@ -260,6 +280,21 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       // Effort tiers and provider semantics are resolved per repository from its
       // configured agent's kind and declared tiers.
       agents: config.agents,
+      // Native-agent discovery for the console uses the configured executor's
+      // exact binary, pinned version, source cwd and sanitized environment —
+      // never a hardcoded default `opencode` and never a test runner.
+      opencodeWorker: (input) => {
+        const executor = executors.get(input.executorId);
+        if (executor?.resolveWorker === undefined) return undefined;
+        return executor.resolveWorker({
+          executorId: input.executorId,
+          cwd: input.cwd,
+          env: buildAgentEnvironment(
+            process.env,
+            executor.additionalEnvironment(config.dataDir, input.credentialSource),
+          ),
+        });
+      },
       actions: {
         retry: (jobId) => orchestrator.retry(jobId),
         cancel: (jobId) => orchestrator.cancel(jobId),
@@ -468,6 +503,12 @@ export function cleanupStaleAttemptDirs(
   db: import("better-sqlite3").Database,
   interruptedJobIds?: number[],
   options?: {
+    /**
+     * Resolve an attempt's configured agent alias to its executor kind, so a
+     * pre-journal OpenCode attempt (no manifest, no ownership journal) is left
+     * for the dedicated recovery module instead of being swept as Cline.
+     */
+    resolveExecutorKind?: (agent: string) => string | undefined;
     onRemoveAttempt?: (input: {
       attemptId: number;
       agent: string | null;
@@ -487,21 +528,49 @@ export function cleanupStaleAttemptDirs(
     const attemptId = Number(entry);
     if (!Number.isInteger(attemptId) || attemptId < 1) continue;
     const dir = join(attemptsRoot, entry);
-    // A managed OpenCode attempt (one that journaled a manifest, or one whose
-    // recovery record already exists) belongs to the startup recovery module,
-    // never to this sweep: its data dir must survive until child quiescence is
-    // proven through the pinned session API.
+    // A managed/native/default OpenCode attempt (one that journaled a manifest,
+    // a generic ownership record, or a recovery record) belongs to the startup
+    // recovery module, never to this sweep: its data dir must survive until
+    // child quiescence is proven through the pinned session API.
     if (isManagedAttemptDataDir(dir)) continue;
     // If this attempt belongs to an interrupted job, remove it.
     // Otherwise keep it: a running attempt must not be disturbed.
     try {
       const attempt = db
-        .prepare("SELECT id, job_id, agent, outcome FROM attempts WHERE id = ?")
+        .prepare(
+          "SELECT id, job_id, agent, outcome, workspace_path, agent_session_id FROM attempts WHERE id = ?",
+        )
         .get(attemptId) as
-        { id: number; job_id: number; agent: string | null; outcome: string | null } | undefined;
+        | {
+            id: number;
+            job_id: number;
+            agent: string | null;
+            outcome: string | null;
+            workspace_path: string | null;
+            agent_session_id: string | null;
+          }
+        | undefined;
       if (!attempt) {
         // Orphan directory left by a killed process with no DB record (or old run).
         removeAttemptDataDir(dir);
+        continue;
+      }
+      // A pre-journal OpenCode attempt whose alias resolves to OpenCode carries
+      // service-owned evidence this sweep cannot prove quiescent: defer it.
+      if (
+        attempt.agent !== null &&
+        shouldDeferAttemptToRecovery({
+          attemptDataDir: dir,
+          attempt: {
+            agent: attempt.agent,
+            workspace_path: attempt.workspace_path,
+            agent_session_id: attempt.agent_session_id,
+          },
+          ...(options?.resolveExecutorKind === undefined
+            ? {}
+            : { resolveExecutorKind: options.resolveExecutorKind }),
+        })
+      ) {
         continue;
       }
       const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(attempt.job_id) as

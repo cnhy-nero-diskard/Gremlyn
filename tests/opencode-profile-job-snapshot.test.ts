@@ -20,6 +20,7 @@ import {
   parseOpenCodeAgentProfile,
 } from "../src/config/opencode-profile.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
+import { saveOpenCodeSelection } from "../src/store/opencode-selections.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
 import type { RepoConfig } from "../src/config/loader.js";
 
@@ -62,6 +63,28 @@ function saveProfile(db: Store["db"], repoId: number, candidate: Record<string, 
   return result.revision;
 }
 
+/**
+ * Deliberately activate the saved team as the repository's primary source.
+ * Source activation is an explicit, revisioned operation: a saved profile is
+ * dormant until this is called (design D1, tasks 2.3/2.4).
+ */
+function activateManaged(
+  db: Store["db"],
+  repoId: number,
+  expectedProfileRevision: number,
+  executorKind?: string,
+): void {
+  const result = saveOpenCodeSelection(db, {
+    repoId,
+    expectedRevision: 0,
+    candidate: { source: "managed" },
+    expectedProfileRevision,
+    ...(executorKind === undefined ? {} : { executorKind }),
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error(`managed activation failed: ${result.reason}`);
+}
+
 function createJob(jobs: JobStore, repoId: number, commentId: number): number {
   const created = jobs.createJob({
     repoId,
@@ -99,6 +122,7 @@ test("a new job captures the saved profile and revision at creation", () => {
   const repoId = insertRepository(store.db);
   const revision = saveProfile(store.db, repoId, profileInput());
   assert.equal(revision, 1);
+  activateManaged(store.db, repoId, revision);
 
   const jobs = new JobStore(store.db);
   const jobId = createJob(jobs, repoId, 1001);
@@ -106,6 +130,7 @@ test("a new job captures the saved profile and revision at creation", () => {
 
   assert.equal(job.opencode_profile_json, canonicalProfileJson(profileInput()));
   assert.equal(job.opencode_profile_revision, 1);
+  assert.equal(job.opencode_source, "managed");
 
   store.close();
 });
@@ -113,7 +138,7 @@ test("a new job captures the saved profile and revision at creation", () => {
 test("a queued job retains profile A after profile B is saved, while a new job uses B", () => {
   const store = openStore();
   const repoId = insertRepository(store.db);
-  saveProfile(store.db, repoId, profileInput("Profile A"));
+  activateManaged(store.db, repoId, saveProfile(store.db, repoId, profileInput("Profile A")));
   const jobs = new JobStore(store.db);
 
   // Job 1 is queued under profile A.
@@ -154,7 +179,7 @@ test("a queued job retains profile A after profile B is saved, while a new job u
 test("a retry retains the queued job's captured profile after a later save", () => {
   const store = openStore();
   const repoId = insertRepository(store.db);
-  saveProfile(store.db, repoId, profileInput("Profile A"));
+  activateManaged(store.db, repoId, saveProfile(store.db, repoId, profileInput("Profile A")));
   const jobs = new JobStore(store.db);
 
   const jobId = createJob(jobs, repoId, 1001);
@@ -237,7 +262,11 @@ test("file configuration synchronization cannot overwrite the operator profile o
   const [registered] = syncRepositories(store.db, [repoConfig()]);
   assert.ok(registered);
 
-  saveProfile(store.db, registered.id, profileInput("Profile A"));
+  activateManaged(
+    store.db,
+    registered.id,
+    saveProfile(store.db, registered.id, profileInput("Profile A")),
+  );
   const jobs = new JobStore(store.db);
   const jobId = createJob(jobs, registered.id, 1001);
   assert.equal(jobs.getJob(jobId).opencode_profile_revision, 1);
@@ -278,6 +307,8 @@ test("configured OpenCode executor aliases capture a profile without giving Clin
     candidate: profileInput(),
   });
   assert.equal(saved.ok, true);
+  if (!saved.ok) throw new Error(saved.reason);
+  activateManaged(store.db, repoId, saved.revision, "opencode");
   const jobs = new JobStore(store.db);
   const base = {
     repoId,

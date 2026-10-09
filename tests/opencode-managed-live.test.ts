@@ -79,6 +79,8 @@ import {
   type OpenCodeSessionOutcome,
 } from "../src/agent/managed-sessions.js";
 import { readCliAgentInventory } from "../src/agent/managed-preflight.js";
+import { discoverNativeAgents } from "../src/agent/native-discovery.js";
+import { readOpenCodeInitialIdentity } from "../src/agent/opencode-identity.js";
 import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "../src/agent/opencode.js";
 import { FixtureGitHubClient } from "../src/github/fixture.js";
 import { createDefaultCommandRegistry } from "../src/ingest/commands.js";
@@ -87,6 +89,10 @@ import { ResolutionOrchestrator } from "../src/orchestrator/resolution.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
+import {
+  currentSelectionRevision,
+  saveOpenCodeSelection,
+} from "../src/store/opencode-selections.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
 import type { NormalizedEvent } from "../src/types.js";
 import { git } from "../src/workspace/gitops.js";
@@ -242,9 +248,10 @@ interface LiveFixture {
   prNumber: number;
   model: string;
   bin: string;
+  nativeAgentId?: string;
 }
 
-async function setupLiveFixture(bin: string, model: string): Promise<LiveFixture> {
+async function setupLiveFixture(bin: string, model: string, native = false): Promise<LiveFixture> {
   const gitRepo = await createTempRepo();
   // Give the child a concrete, pre-existing target on the PR head.
   await pushCommit(
@@ -273,7 +280,9 @@ async function setupLiveFixture(bin: string, model: string): Promise<LiveFixture
         enabled: true,
         validationCommands: [markerAssertionCommand()],
         workspaceSeedFiles: [],
-        agentInstructions: DELEGATION_INSTRUCTIONS,
+        agentInstructions: native
+          ? `Edit only ${MARKER_FILE} to contain ${MARKER_EXPECTED}. Do not change any configuration, commit, push, or call GitHub.`
+          : DELEGATION_INSTRUCTIONS,
         allowedModels: [model],
       },
     ],
@@ -287,6 +296,51 @@ async function setupLiveFixture(bin: string, model: string): Promise<LiveFixture
     executorKind: "opencode",
   });
   assert.ok(saved.ok, "the live fixture profile must save");
+  const activated = saveOpenCodeSelection(store.db, {
+    repoId: repository.id,
+    expectedRevision: currentSelectionRevision(store.db, repository.id),
+    expectedProfileRevision: saved.revision,
+    candidate: { source: "managed" },
+    executorKind: "opencode",
+  });
+  assert.ok(activated.ok, "managed profile activation is explicit");
+  let nativeAgentId: string | undefined;
+  if (native) {
+    const executor = new OpenCodeExecutor(bin);
+    const env = buildAgentEnvironment(process.env, executor.additionalEnvironment(""));
+    const worker = executor.resolveWorker({
+      executorId: "opencode",
+      cwd: repository.sourcePath,
+      env,
+    });
+    const discovery = await discoverNativeAgents({
+      worker,
+      repositoryId: String(repository.id),
+      refresh: true,
+    });
+    assert.equal(
+      discovery.status,
+      "ready",
+      "native discovery must converge in the temporary repository",
+    );
+    if (discovery.status !== "ready") throw new Error("native discovery failed before model work");
+    const eligible = discovery.agents;
+    const requested = process.env.GREMLYN_LIVE_OPENCODE_AGENT;
+    const choice =
+      requested === undefined ? eligible[0] : eligible.find((entry) => entry.id === requested);
+    assert.ok(choice, "the opt-in native primary must actually be discovered and eligible");
+    nativeAgentId = choice.id;
+    const selected = saveOpenCodeSelection(store.db, {
+      repoId: repository.id,
+      expectedRevision: currentSelectionRevision(store.db, repository.id),
+      candidate: { source: "native", agentId: nativeAgentId },
+      executorKind: "opencode",
+    });
+    assert.ok(
+      selected.ok,
+      "native source explicitly replaces active managed source without deleting its profile",
+    );
+  }
 
   const prNumber = 27;
   const github = new FixtureGitHubClient({
@@ -385,6 +439,7 @@ async function setupLiveFixture(bin: string, model: string): Promise<LiveFixture
     prNumber,
     model,
     bin,
+    ...(nativeAgentId === undefined ? {} : { nativeAgentId }),
   };
 }
 
@@ -699,6 +754,121 @@ test("gated live acceptance: a real OpenCode 2.0.16 run delegates the edit to th
       `live OpenCode acceptance passed: ${bin} ${data.model}, attempt ${queued.attemptId}, ` +
         `parent ${attempt.agent_session_id}, commit ${outcome.value.commitSha ?? "(none)"}`,
     );
+  } finally {
+    data.store.close();
+  }
+});
+
+/**
+ * Separate explicit model opt-in: GREMLYN_LIVE_NATIVE_OPENCODE_MODEL.
+ * Optional GREMLYN_LIVE_OPENCODE_AGENT must name a discovered eligible primary.
+ * No native definitions are provisioned/copied; a dormant managed profile is
+ * retained deliberately to prove it does not take over native execution.
+ */
+test("gated live native acceptance: discovered primary has actual initial identity and publishes only to a local fixture remote", async (t) => {
+  const model = process.env.GREMLYN_LIVE_NATIVE_OPENCODE_MODEL;
+  if (model === undefined || model.trim() === "") {
+    t.skip(
+      "GREMLYN_LIVE_NATIVE_OPENCODE_MODEL is unset; native real-model acceptance is explicitly opt-in",
+    );
+    return;
+  }
+  const bin = process.env[LIVE_BIN_ENV] ?? "opencode";
+  if ((await probeOpenCodeVersion(bin)) !== EXPECTED_OPENCODE_VERSION) {
+    t.skip(`native acceptance requires pinned OpenCode ${EXPECTED_OPENCODE_VERSION}`);
+    return;
+  }
+  const data = await setupLiveFixture(bin, model, true);
+  try {
+    const queued = await resolveEvent(data);
+    const completed = await withDeadline(
+      queued.completed,
+      HARD_DEADLINE_MS,
+      "native live acceptance",
+    );
+    assert.equal(
+      completed.kind,
+      "completed",
+      `native attempt failed; preserved diagnostics at ${data.dataDir}`,
+    );
+    const job = data.store.db
+      .prepare(
+        "SELECT opencode_source, opencode_native_agent_id, opencode_profile_json FROM jobs WHERE id = ?",
+      )
+      .get(queued.jobId) as {
+      opencode_source: string;
+      opencode_native_agent_id: string;
+      opencode_profile_json: string | null;
+    };
+    assert.equal(job.opencode_source, "native");
+    assert.equal(job.opencode_native_agent_id, data.nativeAgentId);
+    assert.equal(
+      job.opencode_profile_json,
+      null,
+      "dormant managed instructions must not enter native capture",
+    );
+    const attempt = data.store.db
+      .prepare("SELECT outcome, agent_session_id, commit_sha, pushed FROM attempts WHERE id = ?")
+      .get(queued.attemptId) as {
+      outcome: string;
+      agent_session_id: string;
+      commit_sha: string;
+      pushed: number;
+    };
+    assert.equal(attempt.outcome, "succeeded");
+    assert.match(attempt.agent_session_id, /^ses/u);
+    const env = buildAgentEnvironment(process.env, data.executor.additionalEnvironment(""));
+    const worker = data.executor.resolveWorker({
+      executorId: "opencode",
+      cwd: data.workspace,
+      env,
+    });
+    const identity = await readOpenCodeInitialIdentity({
+      http: createCliManagedSessionHttp(worker),
+      parentSessionId: attempt.agent_session_id,
+      cwd: data.workspace,
+    });
+    assert.equal(
+      identity.agentId,
+      data.nativeAgentId,
+      "actual FIRST assistant identity must prove native selection, not the saved label or mutable current agent",
+    );
+    assert.ok(identity.model, "actual initial model is observed");
+    assert.equal(
+      existsSync(join(data.workspace, ".opencode", "agents", `attempt-${queued.attemptId}`)),
+      false,
+    );
+    const changed = (
+      await git([
+        "--git-dir",
+        data.gitRepo.remotePath,
+        "diff",
+        "--name-only",
+        data.initialSha,
+        data.gitRepo.headBranch,
+      ])
+    ).stdout
+      .trim()
+      .split(/\r?\n/u)
+      .filter(Boolean);
+    assert.deepEqual(changed, [MARKER_FILE]);
+    assert.equal(
+      (
+        await git([
+          "--git-dir",
+          data.gitRepo.remotePath,
+          "show",
+          `${data.gitRepo.headBranch}:${MARKER_FILE}`,
+        ])
+      ).stdout.trim(),
+      MARKER_EXPECTED,
+    );
+    assert.equal(attempt.pushed, 1);
+    assert.equal(
+      await remoteSha(data.gitRepo.remotePath, data.gitRepo.headBranch),
+      attempt.commit_sha,
+    );
+    assert.equal(data.github.replies.length, 1, "only fixture GitHub records the success reply");
   } finally {
     data.store.close();
   }

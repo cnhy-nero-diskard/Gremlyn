@@ -205,4 +205,80 @@ CREATE TABLE managed_child_sessions (
 CREATE INDEX idx_managed_child_sessions_attempt ON managed_child_sessions(attempt_id);
 `,
   },
+  {
+    id: "0008_opencode_primary_selection",
+    sql: `
+-- Task 2.1 (design D1/D2/D4): durable primary-source selection, job capture,
+-- and generic per-invocation ownership/identity. This migration is additive:
+-- it never edits an existing row, so every profile payload and revision from
+-- migration 0006 is preserved byte-for-byte.
+
+-- D1: one selection row per repository. The source alone decides whether a saved
+-- managed profile is active; native_agent_id is the retained native choice
+-- and is non-null exactly for native source. The revision is the optimistic
+-- compare-and-set counter (a missing row reads as default at revision 0). A
+-- row can be dormant for a non-OpenCode executor and is preserved for later
+-- reuse; activation is gated by the store, not by deleting the row.
+CREATE TABLE opencode_primary_selections (
+  repo_id INTEGER PRIMARY KEY REFERENCES repositories(id),
+  source TEXT NOT NULL CHECK (source IN ('default', 'native', 'managed')),
+  native_agent_id TEXT,
+  revision INTEGER NOT NULL DEFAULT 0,
+  CHECK (
+    (source = 'native' AND native_agent_id IS NOT NULL) OR
+    (source != 'native' AND native_agent_id IS NULL)
+  )
+);
+
+-- Seed every pre-existing repository with its effective source: a repository
+-- that already carries a non-null managed profile keeps that team active
+-- (managed); every other repository starts on OpenCode default. No profile is
+-- synthesized and no profile bytes/revision are touched. A mismatched executor
+-- cannot activate the seeded choice, but the row remains for later reuse.
+INSERT INTO opencode_primary_selections (repo_id, source, native_agent_id, revision)
+SELECT r.id,
+       CASE WHEN p.profile_json IS NOT NULL THEN 'managed' ELSE 'default' END,
+       NULL,
+       0
+FROM repositories r
+LEFT JOIN opencode_agent_profiles p ON p.repo_id = r.id;
+
+-- D2: jobs capture the primary source/native id/selection revision alongside
+-- the existing managed-profile snapshot columns. All three are nullable so
+-- legacy jobs (NULL) can derive managed source from their own captured profile
+-- and default otherwise. A later repository change never rewrites a job.
+ALTER TABLE jobs ADD COLUMN opencode_source TEXT;
+ALTER TABLE jobs ADD COLUMN opencode_native_agent_id TEXT;
+ALTER TABLE jobs ADD COLUMN opencode_selection_revision INTEGER;
+
+-- D4: one generic ownership/identity record per launched OpenCode parent
+-- invocation, journaled before launch. It stores only safe identifiers,
+-- states and paths -- never prompts, instructions or credentials. A second
+-- invocation in one attempt gets its own ordinal and never overwrites the
+-- first record. A NULL parent_session_id with a launched status is the
+-- explicit missing-ownership marker; ownership_state records whether the
+-- tree was proven quiescent before the workspace was reused.
+CREATE TABLE opencode_invocations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  invocation_ordinal INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  ownership_state TEXT NOT NULL DEFAULT 'pending',
+  requested_source TEXT NOT NULL,
+  requested_native_agent_id TEXT,
+  requested_profile_revision INTEGER,
+  binary TEXT,
+  workspace_path TEXT,
+  parent_session_id TEXT,
+  actual_primary_agent TEXT,
+  actual_model TEXT,
+  launched_at TEXT,
+  settled_at TEXT,
+  detail TEXT,
+  UNIQUE(attempt_id, invocation_ordinal)
+);
+
+CREATE INDEX idx_opencode_invocations_attempt ON opencode_invocations(attempt_id);
+`,
+  },
 ];

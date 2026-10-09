@@ -1,4 +1,9 @@
-import type { DashboardModel, JobSummary, RepositorySummary } from "../queries.js";
+import type {
+  DashboardModel,
+  JobSummary,
+  OpenCodeSelectionSummary,
+  RepositorySummary,
+} from "../queries.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../types.js";
 import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../../config/loader.js";
 import type { OpenCodePermission } from "../../config/opencode-profile.js";
@@ -124,6 +129,82 @@ function opencodeAgentsSection(repo: RepositorySummary, agents: AgentDefinitions
           .join("");
   const foot = `<p class="panel-foot"><span class="chip" data-revision-value>revision ${String(profile.revision)}</span><span class="muted"> Only enabled children are callable. External-directory access and nested delegation are always denied for managed agents.</span></p>`;
   return `<div class="repo-opencode-agents" id="${anchor}" data-opencode-agents data-repo-id="${String(repo.id)}" data-has-profile="1" data-revision="${String(profile.revision)}">${heading}<ul class="cmd-list">${primary}${children}</ul>${foot}</div>`;
+}
+
+/** Readable labels for the three mutually exclusive OpenCode primary sources. */
+const PRIMARY_SOURCE_LABELS: Record<OpenCodeSelectionSummary["source"], string> = {
+  default: "OpenCode default",
+  native: "Existing OpenCode agent",
+  managed: "Gremlyn-managed team",
+};
+
+/** The selection a repository with no durable row projects (backward compatible). */
+const DEFAULT_OPENCODE_SELECTION: OpenCodeSelectionSummary = {
+  source: "default",
+  revision: 0,
+  explicit: false,
+  nativeAgentId: null,
+  profileRevision: null,
+};
+
+/** One readable sentence naming the authoritative saved source. */
+function savedSourceSentence(selection: OpenCodeSelectionSummary): string {
+  if (selection.source === "native") {
+    return selection.nativeAgentId
+      ? `Saved: existing agent ${selection.nativeAgentId}.`
+      : "Saved: existing agent (the retained id is missing).";
+  }
+  if (selection.source === "managed") {
+    return selection.profileRevision === null
+      ? "Saved: Gremlyn-managed team."
+      : `Saved: Gremlyn-managed team at revision ${String(selection.profileRevision)}.`;
+  }
+  return "Saved: OpenCode default (the job omits an explicit agent).";
+}
+
+function sourceOptions(selection: OpenCodeSelectionSummary): string {
+  return (["default", "native", "managed"] as const)
+    .map(
+      (value) =>
+        `<option value="${value}"${value === selection.source ? " selected" : ""}>${escapeHtml(PRIMARY_SOURCE_LABELS[value])}</option>`,
+    )
+    .join("");
+}
+
+/** The primary-source chip shown beside the executor in a repository summary. */
+function primarySourceChip(selection: OpenCodeSelectionSummary): string {
+  const detail =
+    selection.source === "native" && selection.nativeAgentId
+      ? ` <code>${escapeHtml(selection.nativeAgentId)}</code>`
+      : selection.source === "managed" && selection.profileRevision !== null
+        ? ` revision ${String(selection.profileRevision)}`
+        : "";
+  return `<span class="chip" data-opencode-primary-chip>primary ${escapeHtml(PRIMARY_SOURCE_LABELS[selection.source])}${detail}</span>`;
+}
+
+/**
+ * The OpenCode-only "Run with agent" control: a deliberate, keyed draft for the
+ * repository's primary source, separate from executor, provider, model, effort
+ * and timeout. It is server-rendered with the authoritative saved source
+ * (including a retained native id that may no longer be discoverable) and an
+ * explicit managed-team edit path; the client fills the existing-agent choices
+ * from the authenticated discovery route and applies or cancels locally. A
+ * repository using another executor renders no control at all.
+ */
+function opencodeSelectionSection(repo: RepositorySummary, agents: AgentDefinitions): string {
+  if (executorKindOf(repo, agents) !== OPENCODE_EXECUTOR) return "";
+  const selection = repo.opencodeSelection ?? DEFAULT_OPENCODE_SELECTION;
+  const nativeHidden = selection.source === "native" ? "" : " hidden";
+  const nativeOptions = selection.nativeAgentId
+    ? `<option value="${escapeHtml(selection.nativeAgentId)}" selected data-native-saved>${escapeHtml(selection.nativeAgentId)} (saved)</option>`
+    : '<option value="" selected>Select an existing agent…</option>';
+  const managedChip =
+    selection.source === "managed"
+      ? `<span class="chip" data-opencode-managed-profile>managed team${selection.profileRevision === null ? "" : ` revision ${String(selection.profileRevision)}`}</span> `
+      : "";
+  const edit = `<a href="#repo-agents-${String(repo.id)}" data-repo-agents-configure data-repo-id="${String(repo.id)}" data-repo-agents-url="/repos/${String(repo.id)}/opencode-profile">Edit managed team</a>`;
+  const control = `<div class="repo-primary-source" id="repo-primary-source-${String(repo.id)}" data-opencode-selection data-repo-id="${String(repo.id)}" data-saved-source="${selection.source}" data-saved-native-id="${escapeHtml(selection.nativeAgentId ?? "")}" data-selection-revision="${String(selection.revision)}" data-profile-revision="${selection.profileRevision === null ? "" : String(selection.profileRevision)}" data-discovery-url="/repos/${String(repo.id)}/opencode-agents" data-update-url="/repos/${String(repo.id)}/opencode-selection"><h4>Run with agent</h4><p class="muted">OpenCode primary source for new jobs: default, an eligible existing agent, or the Gremlyn-managed team. Separate from executor, model, effort and timeout; saved choices apply to jobs created afterward.</p><div class="opencode-selection-controls"><label>Primary source <select data-opencode-source-select>${sourceOptions(selection)}</select></label><label data-opencode-native-field${nativeHidden}>Existing agent <select data-opencode-native-select>${nativeOptions}</select></label><small class="opencode-selection-description" data-opencode-native-description${nativeHidden}></small><span class="opencode-selection-managed" data-opencode-managed-note>${managedChip}${edit}</span></div><p class="muted opencode-selection-saved" data-opencode-selection-status role="status" aria-live="polite">${escapeHtml(savedSourceSentence(selection))}</p><div class="opencode-selection-actions"><button type="button" data-opencode-source-action="refresh">Refresh agents</button><button type="button" class="primary" data-opencode-source-action="apply" disabled>Apply</button><button type="button" data-opencode-source-action="cancel" disabled>Cancel</button></div><p class="action-feedback" data-opencode-selection-feedback role="status" aria-live="polite" aria-atomic="true"></p></div>`;
+  return control;
 }
 
 const CUSTOM_PROVIDER = "__custom__";
@@ -301,10 +382,15 @@ function repositoryCard(
 ): string {
   const on = repo.enabled === 1;
   const head = `<header class="repo-head"><h3>${escapeHtml(`${repo.owner}/${repo.name}`)}</h3><span class="state state-${on ? "on" : "off"}" data-enabled>${on ? "enabled" : "disabled"}</span><button data-action="toggle-repository" data-url="/repos/${repo.id}/toggle">${on ? "Disable" : "Enable"}</button></header>`;
-  const chips = `<p class="repo-chips"><span class="chip">agent <code>${escapeHtml(repo.agent ?? "unknown")}</code></span><span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
+  const primaryChip =
+    executorKindOf(repo, agents) === OPENCODE_EXECUTOR
+      ? primarySourceChip(repo.opencodeSelection ?? DEFAULT_OPENCODE_SELECTION)
+      : "";
+  const chips = `<p class="repo-chips"><span class="chip">executor <code>${escapeHtml(repo.agent ?? "unknown")}</code></span>${primaryChip}<span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
   const validation = `<div class="repo-validation"><h4>Validation commands</h4>${validationLabel(repo)}</div>`;
+  const selection = opencodeSelectionSection(repo, agents);
   const opencode = opencodeAgentsSection(repo, agents);
-  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${opencode}${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
+  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${selection}${opencode}${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
 }
 
 /**

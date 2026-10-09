@@ -26,6 +26,20 @@ import {
   type ManagedAttemptSettlement,
   type ManagedSessionHttp,
 } from "../agent/managed-sessions.js";
+import { defaultRunner, type ProcessRunner } from "../agent/launcher.js";
+import { resolveOpenCodeWorker, type OpenCodeWorker } from "../agent/opencode-worker.js";
+import { preflightNativeAgent } from "../agent/native-discovery.js";
+import {
+  openCodeStreamParentId,
+  readOpenCodeInitialIdentity,
+  type OpenCodeInitialIdentity,
+} from "../agent/opencode-identity.js";
+import {
+  beginOpenCodeInvocation,
+  recordOpenCodeInvocation as recordOpenCodeOwnershipInvocation,
+  settleOpenCodeInvocation as settleOpenCodeOwnershipInvocation,
+  type OpenCodeOwnershipDescriptor,
+} from "../agent/opencode-ownership.js";
 import {
   parseOpenCodeAgentProfile,
   type OpenCodeAgentProfile,
@@ -53,11 +67,12 @@ import { createRedactor } from "../log/redact.js";
 import type { OperatorActionStore } from "../store/actions.js";
 import { publishIfEligible } from "../publish/policy.js";
 import { reportAttemptOutcome } from "../publish/report.js";
-import { JobStore, type AttemptRow } from "../store/jobs.js";
+import { JobStore, type AttemptRow, type CapturedOpenCodeSelection } from "../store/jobs.js";
 import {
   attemptDataDirFor,
   isAttemptQuarantined,
   quarantineRecordsForWorkspace,
+  workspaceHasUnresolvedAttemptOwnership,
 } from "./attempt-recovery.js";
 import type {
   AgentExecutor,
@@ -65,6 +80,7 @@ import type {
   FailureStage,
   JobStatus,
   NormalizedEvent,
+  OpenCodeInvocationSelection,
   ParsedCommand,
 } from "../types.js";
 import { inspectWorkspace } from "../validate/inspection.js";
@@ -122,6 +138,19 @@ function managedRemainingBudgetMs(
 ): number {
   if (configuredTimeoutSec === undefined) return MANAGED_SETTLE_FALLBACK_BUDGET_MS;
   return Math.max(0, configuredTimeoutSec * 1000 - (Date.now() - runStartedAt));
+}
+
+/**
+ * Billing, authentication, and model-route failures are terminal for an
+ * invocation: another identical launch cannot repair them, so only transient
+ * agent failures consume the retry allowance.
+ */
+function isTerminalAgentResult(result: AgentResult): boolean {
+  return (
+    isAgentBillingFailure(result) ||
+    isAgentAuthenticationFailure(result) ||
+    isAgentModelUnavailable(result)
+  );
 }
 
 function samePath(left: string, right: string): boolean {
@@ -274,16 +303,33 @@ export interface ResolutionOrchestratorOptions {
    */
   managedOpenCode?: {
     /**
-     * Session transport for settlement; receives the same cwd and environment
-     * the attempt's parent run used. Defaults to {@link createCliManagedSessionHttp}.
+     * Session transport for settlement; receives the resolved
+     * {@link OpenCodeWorker} (alias, binary, pinned version, cwd, sanitized
+     * environment and launcher) the attempt's parent run used, so native,
+     * default and managed trees all talk to the same OpenCode service.
+     * Defaults to {@link createCliManagedSessionHttp}.
      */
-    sessionHttp?: (worker: { cwd: string; env: Record<string, string> }) => ManagedSessionHttp;
+    sessionHttp?: (worker: OpenCodeWorker) => ManagedSessionHttp;
     /** Agent-inventory source for the preflight; defaults to the CLI reader. */
     preflightInventory?: AgentInventoryReader;
     preflightPollIntervalMs?: number;
     preflightPollBudgetMs?: number;
     settlePollIntervalMs?: number;
     settleInterruptGraceMs?: number;
+    /** Overall bound for a native-agent workspace preflight (tests). */
+    nativePreflightBudgetMs?: number;
+    nativePreflightPollIntervalMs?: number;
+    /**
+     * Resolve the exact worker context (binary/pinned version/launcher) for a
+     * configured executor alias. Defaults to the binary/launcher the executor
+     * itself exposes, else the alias id and the common launcher. Production
+     * startup supplies the configured alias binary here.
+     */
+    resolveWorker?: (input: { executorId: string; cwd: string; env: Record<string, string> }) => {
+      binary?: string;
+      version?: string;
+      runner?: ProcessRunner;
+    };
   };
 }
 
@@ -311,6 +357,43 @@ interface ManagedAttemptContext {
  */
 type ManagedRemediation =
   { readonly status: "clean" } | { readonly status: "uncertain"; readonly failure: StageFailure };
+
+/**
+ * The per-attempt OpenCode lifecycle state for any executor whose actual id is
+ * `opencode` — managed, native, or default (tasks 3.2/3.3/4.2/4.3). Unlike the
+ * managed-only {@link ManagedAttemptContext}, this exists for EVERY OpenCode
+ * launch, because the child-quiescence boundary now applies to native and
+ * default runs too: a parent CLI exiting proves nothing about its service-owned
+ * descendants.
+ */
+interface OpenCodeAttemptContext {
+  readonly attemptId: number;
+  readonly selection: CapturedOpenCodeSelection;
+  /** The managed contract, only when the captured source is managed. */
+  readonly managed: ManagedAttemptContext | undefined;
+  /** The captured native id, only when the captured source is native. */
+  readonly nativeId: string | undefined;
+  readonly worker: OpenCodeWorker;
+  /** The registered executor kind (`opencode`), as recovery reconciles it. */
+  readonly executorKind: string;
+  readonly attemptDataDir: string;
+  /** True once a journaled parent invocation has been attempted. */
+  launched: boolean;
+  /** True once managed generated files have been cleaned for this attempt. */
+  managedFinalized: boolean;
+  /** Set when quiescence, settlement persistence, or managed cleanup is unproven. */
+  unproven: StageFailure | undefined;
+}
+
+/** One tracked parent invocation within an OpenCode attempt. */
+interface OpenCodeInvocationState {
+  readonly invocationId: number;
+  readonly ordinal: number;
+  parentSessionId: string | undefined;
+  /** A synchronous ownership-persistence failure observed in the run stream. */
+  persistenceFailure: Error | undefined;
+  identity: OpenCodeInitialIdentity;
+}
 
 export class ResolutionOrchestrator {
   private readonly jobs: JobStore;
@@ -567,6 +650,22 @@ export class ResolutionOrchestrator {
         `workspace ${workspacePathFor(repository.workspaceRoot, prNumber)} is quarantined by ` +
           `start-up recovery (attempt ${record.attemptId}, ${record.reason}); its owned ` +
           "generated files cannot be accounted for safely, so this attempt is refused",
+      );
+    }
+    // Generic OpenCode ownership (tasks 3.3/4.2): a workspace named by an
+    // attempt whose invocation tree has NOT been proven quiescent stays
+    // unavailable even before start-up recovery has journaled a quarantine
+    // record. The unresolved ownership journal is the durable gate, so a
+    // native/default tree that may still be running can never be reused,
+    // resumed or published over — including under a workspace alias that
+    // predates the recovery record.
+    const ownershipWorkspace = workspacePathFor(repository.workspaceRoot, prNumber);
+    if (workspaceHasUnresolvedAttemptOwnership(this.options.dataDir, ownershipWorkspace)) {
+      throw new StageFailure(
+        "preparing",
+        "workspace-quarantined",
+        `workspace ${ownershipWorkspace} is owned by an attempt whose OpenCode invocation tree ` +
+          "has not been proven quiescent; it cannot be reused, resumed or published over",
       );
     }
     try {
@@ -829,9 +928,9 @@ export class ResolutionOrchestrator {
     command: ParsedCommand,
     retainedWorkspace?: RetainedWorkspace,
   ): QueuedJob {
-    // Shared with the running attempt: when a managed attempt ends with
-    // unproven quiescence, both the failure path and the cancellation handler
-    // must leave the manifest and data dir in place for recovery.
+    // Shared with the running attempt: when OpenCode ownership or managed
+    // cleanup is unresolved, both failure and cancellation must leave the
+    // manifest and data dir in place for recovery.
     const preserveDataDir: { value: boolean; failure?: StageFailure } = { value: false };
     const completed = this.queue.enqueue({
       jobId,
@@ -871,8 +970,8 @@ export class ResolutionOrchestrator {
             reason: failure.reason,
             hasUncommittedChanges: true,
           });
-          // Task 4.4: a managed attempt cancelled with unproven quiescence
-          // persists the specific failure detail alongside the failure reason.
+          // Task 4.4: an OpenCode attempt cancelled with unresolved ownership or
+          // cleanup persists the specific failure detail alongside its reason.
           if (failure.message.length > 0 && failure.message !== failure.reason) {
             this.recordManagedFailureDetail(attemptId, failure.message);
           }
@@ -886,10 +985,9 @@ export class ResolutionOrchestrator {
           : false;
         this.jobs.cancelJob(jobId, attemptId, hasChanges);
         await this.reactToStatus(repository, commentId, "cancelled");
-        // 4.3: seeded credential must be removed even on cancellation. A
-        // managed attempt with unproven quiescence keeps its manifest and data
-        // dir instead (tasks 3.2-3.5) so recovery can still account for the
-        // generated content.
+        // 4.3: seeded credential must be removed even on cancellation. An
+        // OpenCode attempt with unresolved ownership or cleanup keeps its
+        // manifest and data dir instead so recovery can account for its state.
         const attemptDataDir = join(this.options.dataDir, "attempts", String(attemptId));
         if (!preserveDataDir.value) removeAttemptDataDir(attemptDataDir);
       },
@@ -979,6 +1077,7 @@ export class ResolutionOrchestrator {
     attemptId: number;
     workspacePath: string;
     agentEnv: Record<string, string>;
+    worker: OpenCodeWorker;
     signal: AbortSignal;
     stage: FailureStage;
   }): Promise<void> {
@@ -1002,6 +1101,8 @@ export class ResolutionOrchestrator {
         agents: managed.serialized,
         cwd: input.workspacePath,
         env: input.agentEnv,
+        binary: input.worker.binary,
+        runner: input.worker.runner,
         signal: input.signal,
         ...(this.options.managedOpenCode?.preflightInventory === undefined
           ? {}
@@ -1029,6 +1130,649 @@ export class ResolutionOrchestrator {
       verifiedChildren: preflight.verifiedChildren.length,
       preflightPolls: preflight.polls,
     });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Generic OpenCode attempt lifecycle (tasks 3.2/3.3/4.2/4.3)
+   * ------------------------------------------------------------------ */
+
+  /**
+   * Resolve the exact worker descriptor for an executor alias: the configured
+   * binary/pinned version/launcher plus the attempt workspace and sanitized
+   * environment. One descriptor is shared by preflight, execution, session
+   * transport, ownership journaling and recovery, so an alias can never drift
+   * to the default `opencode` binary mid-attempt (design D3).
+   */
+  private openCodeWorkerFor(
+    executor: AgentExecutor,
+    executorId: string,
+    cwd: string,
+    env: Record<string, string>,
+  ): OpenCodeWorker {
+    // The executor's own descriptor is authoritative: it carries the actual
+    // configured binary and process runner, so production never falls back to
+    // a default `opencode`.
+    const fromExecutor = executor.resolveWorker?.({ executorId, cwd, env });
+    if (fromExecutor !== undefined) return fromExecutor;
+    const resolved = this.options.managedOpenCode?.resolveWorker?.({ executorId, cwd, env });
+    const binary = resolved?.binary;
+    const runner = resolved?.runner ?? defaultRunner;
+    return resolveOpenCodeWorker({
+      executorId,
+      ...(binary === undefined ? {} : { binary }),
+      cwd,
+      env,
+      runner,
+    });
+  }
+
+  /**
+   * Resolve the job's captured primary source into the attempt's OpenCode
+   * context. Only a managed source materializes generated files or runs the
+   * managed permission/model preflight; a native source is validated against
+   * the actual prepared workspace by {@link preflightNativeAttempt}; default
+   * carries no explicit selection. A corrupt capture fails closed with a
+   * distinct configuration reason rather than silently substituting an agent.
+   */
+  private resolveOpenCodeContext(input: {
+    executor: AgentExecutor;
+    executorAlias: string;
+    jobId: number;
+    attemptId: number;
+    workspacePath: string;
+    agentEnv: Record<string, string>;
+    stage: FailureStage;
+  }): OpenCodeAttemptContext {
+    const worker = this.openCodeWorkerFor(
+      input.executor,
+      input.executorAlias,
+      input.workspacePath,
+      input.agentEnv,
+    );
+    const attemptDataDir = join(this.options.dataDir, "attempts", String(input.attemptId));
+    let selection: CapturedOpenCodeSelection;
+    try {
+      selection = this.jobs.resolveCapturedSelection(input.jobId);
+    } catch (error) {
+      throw new StageFailure(
+        input.stage,
+        "managed-profile-corrupt",
+        `the OpenCode primary selection captured for job ${input.jobId} is unusable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    let managed: ManagedAttemptContext | undefined;
+    let nativeId: string | undefined;
+    if (selection.source === "managed") {
+      managed = this.resolveManagedContract({
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        stage: input.stage,
+      });
+      if (managed === undefined) {
+        throw new StageFailure(
+          input.stage,
+          "managed-profile-corrupt",
+          `job ${input.jobId} captured the managed OpenCode source but its captured profile ` +
+            "is missing or unusable; no agent may run",
+        );
+      }
+    } else if (selection.source === "native") {
+      nativeId = selection.agentId;
+    }
+    return {
+      attemptId: input.attemptId,
+      selection,
+      managed,
+      nativeId,
+      worker,
+      executorKind: input.executor.id,
+      attemptDataDir,
+      launched: false,
+      managedFinalized: false,
+      unproven: undefined,
+    };
+  }
+
+  /**
+   * Materialize/verify a managed team in the actual prepared attempt workspace
+   * (task 3.2) before any agent work. Because it runs with the same worker
+   * execution will use, a generated agent that cannot be applied fails with a
+   * configuration reason instead of spawning or falling back. Native/default
+   * sources have no initial configure step; their per-invocation validation is
+   * {@link preflightNativeAttempt}.
+   */
+  private async configureOpenCodeAttempt(input: {
+    context: OpenCodeAttemptContext;
+    jobId: number;
+    attemptId: number;
+    agentEnv: Record<string, string>;
+    signal: AbortSignal;
+    stage: FailureStage;
+  }): Promise<void> {
+    const { context } = input;
+    if (context.managed === undefined) return;
+    await this.configureManagedAttempt({
+      managed: context.managed,
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      workspacePath: context.worker.cwd,
+      agentEnv: input.agentEnv,
+      worker: context.worker,
+      signal: input.signal,
+      stage: input.stage,
+    });
+  }
+
+  /** Validate a captured native id against the attempt workspace inventory. */
+  private async preflightNativeAttempt(input: {
+    context: OpenCodeAttemptContext;
+    agentId: string;
+    signal: AbortSignal;
+    stage: FailureStage;
+  }): Promise<void> {
+    const outcome = await preflightNativeAgent({
+      worker: input.context.worker,
+      agentId: input.agentId,
+      signal: input.signal,
+      ...(this.options.managedOpenCode?.preflightInventory === undefined
+        ? {}
+        : { inventory: this.options.managedOpenCode.preflightInventory }),
+      ...(this.options.managedOpenCode?.nativePreflightBudgetMs === undefined
+        ? {}
+        : { budgetMs: this.options.managedOpenCode.nativePreflightBudgetMs }),
+      ...(this.options.managedOpenCode?.nativePreflightPollIntervalMs === undefined
+        ? {}
+        : { pollIntervalMs: this.options.managedOpenCode.nativePreflightPollIntervalMs }),
+    });
+    if (outcome.status === "ok") {
+      this.options.logger.info("native OpenCode agent verified", {
+        attemptId: input.context.attemptId,
+        agentId: input.agentId,
+        directory: input.context.worker.cwd,
+        polls: outcome.polls,
+      });
+      return;
+    }
+    throw new StageFailure(
+      input.stage,
+      "managed-preflight-failed",
+      `native OpenCode agent ${JSON.stringify(input.agentId)} cannot be applied in the attempt ` +
+        `workspace ${input.context.worker.cwd}: ${outcome.reason}`,
+    );
+  }
+
+  /** The discriminated intent the executor receives for an OpenCode launch. */
+  private selectionForRun(context: OpenCodeAttemptContext): OpenCodeInvocationSelection {
+    switch (context.selection.source) {
+      case "managed":
+        return { source: "managed", agentId: context.managed!.primaryRuntimeId };
+      case "native":
+        return { source: "native", agentId: context.nativeId! };
+      default:
+        return { source: "default" };
+    }
+  }
+
+  /**
+   * Journal a new invocation's launch uncertainty BEFORE the process spawns:
+   * the durable filesystem ownership record first (the artifact recovery and
+   * workspace admission read), then the database invocation row. Either write
+   * failing aborts the launch — an unjournaled OpenCode invocation has no
+   * recoverable ownership evidence. The ordinal is strictly increasing, so a
+   * later invocation never overwrites an earlier one's evidence.
+   */
+  private beginOpenCodeInvocation(input: {
+    context: OpenCodeAttemptContext;
+    stage: FailureStage;
+  }): OpenCodeInvocationState {
+    const { context } = input;
+    const descriptor: OpenCodeOwnershipDescriptor = {
+      executor: context.executorKind,
+      binary: context.worker.binary,
+      version: context.worker.version,
+      workspacePath: context.worker.cwd,
+      source: context.selection.source,
+      nativeId: context.selection.source === "native" ? context.selection.agentId : null,
+    };
+    beginOpenCodeInvocation({
+      attemptDataDir: context.attemptDataDir,
+      attemptId: context.attemptId,
+      descriptor,
+    });
+    const journaled = this.jobs.journalOpenCodeInvocation({
+      attemptId: context.attemptId,
+      requestedSource: context.selection.source,
+      requestedNativeAgentId:
+        context.selection.source === "native" ? context.selection.agentId : null,
+      requestedProfileRevision:
+        context.selection.source === "managed" ? context.selection.profileRevision : null,
+      binary: context.worker.binary,
+      workspacePath: context.worker.cwd,
+    });
+    return {
+      invocationId: journaled.invocationId,
+      ordinal: journaled.ordinal,
+      parentSessionId: undefined,
+      persistenceFailure: undefined,
+      identity: {},
+    };
+  }
+
+  /**
+   * Capture an attributable parent session id from one run-stream line as soon
+   * as it appears (task 3.3). The runner swallows exceptions thrown by
+   * `onLine`, so a durable-persistence failure is recorded on the invocation
+   * and the caller aborts the run; the evidence already written is retained.
+   */
+  private captureOpenCodeParentFromLine(input: {
+    context: OpenCodeAttemptContext;
+    invocation: OpenCodeInvocationState;
+    line: string;
+  }): void {
+    const parentSessionId = openCodeStreamParentId(input.line);
+    if (parentSessionId === undefined) return;
+    if (input.invocation.parentSessionId !== undefined) return;
+    try {
+      this.jobs.recordOpenCodeInvocationLaunch({
+        invocationId: input.invocation.invocationId,
+        parentSessionId,
+        status: "launched",
+      });
+      recordOpenCodeOwnershipInvocation({
+        attemptDataDir: input.context.attemptDataDir,
+        attemptId: input.context.attemptId,
+        ordinal: input.invocation.ordinal,
+        parentSessionId,
+        launchState: "launched",
+      });
+      input.invocation.parentSessionId = parentSessionId;
+    } catch (error) {
+      input.invocation.persistenceFailure =
+        error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  /** Persist the result-derived parent session id if the stream did not. */
+  private recordOpenCodeInvocationSession(input: {
+    context: OpenCodeAttemptContext;
+    invocation: OpenCodeInvocationState;
+    sessionId: string | undefined;
+  }): void {
+    if (input.sessionId === undefined) return;
+    if (input.invocation.parentSessionId === undefined) {
+      input.invocation.parentSessionId = input.sessionId;
+    }
+    try {
+      this.jobs.recordOpenCodeInvocationIdentity({
+        invocationId: input.invocation.invocationId,
+        parentSessionId: input.sessionId,
+      });
+      recordOpenCodeOwnershipInvocation({
+        attemptDataDir: input.context.attemptDataDir,
+        attemptId: input.context.attemptId,
+        ordinal: input.invocation.ordinal,
+        parentSessionId: input.sessionId,
+      });
+    } catch (error) {
+      input.invocation.persistenceFailure ??=
+        error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  /**
+   * Read the attempt's observed initial primary identity through the pinned
+   * session surface. Unavailable evidence stays unknown — the requested
+   * selection is never overwritten by the observation, and a missing read is
+   * not a failure. Best-effort persistence mirrors the launch evidence.
+   */
+  private async readOpenCodeInvocationIdentity(input: {
+    context: OpenCodeAttemptContext;
+    invocation: OpenCodeInvocationState;
+  }): Promise<OpenCodeInitialIdentity> {
+    const parentSessionId = input.invocation.parentSessionId;
+    if (parentSessionId === undefined) return {};
+    let identity: OpenCodeInitialIdentity = {};
+    try {
+      identity = await readOpenCodeInitialIdentity({
+        http: this.openCodeSessionHttp(input.context.worker),
+        parentSessionId,
+        cwd: input.context.worker.cwd,
+      });
+    } catch {
+      identity = {};
+    }
+    if (identity.agentId !== undefined || identity.model !== undefined) {
+      try {
+        this.jobs.recordOpenCodeInvocationIdentity({
+          invocationId: input.invocation.invocationId,
+          parentSessionId,
+          actualPrimaryAgent: identity.agentId ?? null,
+          actualModel: identity.model ?? null,
+        });
+        recordOpenCodeOwnershipInvocation({
+          attemptDataDir: input.context.attemptDataDir,
+          attemptId: input.context.attemptId,
+          ordinal: input.invocation.ordinal,
+          observedPrimaryId: identity.agentId ?? null,
+        });
+      } catch (error) {
+        input.invocation.persistenceFailure ??=
+          error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    return identity;
+  }
+
+  /**
+   * A known observed primary that contradicts the requested selection is an
+   * execution-configuration failure. It is only reported AFTER the launched
+   * tree is settled, so a contradiction never leaves a live descendant behind.
+   */
+  private openCodeIdentityContradiction(
+    context: OpenCodeAttemptContext,
+    identity: OpenCodeInitialIdentity,
+    stage: FailureStage,
+  ): StageFailure | undefined {
+    if (identity.agentId === undefined) return undefined;
+    const expected =
+      context.selection.source === "managed"
+        ? context.managed?.primaryRuntimeId
+        : context.selection.source === "native"
+          ? context.nativeId
+          : undefined;
+    if (expected === undefined || identity.agentId === expected) return undefined;
+    return new StageFailure(
+      stage,
+      "managed-preflight-failed",
+      `OpenCode reported initial primary ${JSON.stringify(identity.agentId)} for a job that ` +
+        `requested ${JSON.stringify(expected)}; the explicit selection did not take effect`,
+    );
+  }
+
+  /** The session transport for an attempt, sharing the exact worker context. */
+  private openCodeSessionHttp(worker: OpenCodeWorker): ManagedSessionHttp {
+    const injected = this.options.managedOpenCode?.sessionHttp;
+    if (injected !== undefined) return injected(worker);
+    return createCliManagedSessionHttp({
+      binary: worker.binary,
+      cwd: worker.cwd,
+      env: worker.env,
+      runner: worker.runner,
+    });
+  }
+
+  /**
+   * Prove one parent invocation's complete descendant tree quiescent before any
+   * retry, validation, commit, push or success report (task 4.2), carrying the
+   * remaining attempt budget and cancellation through settlement (task 4.3).
+   * A missing parent id, unreadable surface, non-terminal descendant or
+   * contradiction fails closed: the invocation is left unresolved on disk (the
+   * durable quarantine), no generated managed file is cleaned, and the attempt
+   * records a distinct quiescence reason.
+   */
+  private async settleOpenCodeInvocation(input: {
+    context: OpenCodeAttemptContext;
+    invocation: OpenCodeInvocationState;
+    remainingBudgetMs: number;
+    signal: AbortSignal;
+    jobId: number;
+    stage: FailureStage;
+  }): Promise<void> {
+    const { context, invocation } = input;
+    const parentSessionId = invocation.parentSessionId;
+    if (parentSessionId === undefined) {
+      this.markOpenCodeInvocationUnproven(invocation, "no attributable parent session id");
+      context.unproven = new StageFailure(
+        input.stage,
+        "managed-session-discovery-failed",
+        `invocation ${String(invocation.ordinal)} of the OpenCode run captured no parent ` +
+          "session id, so its child sessions cannot be enumerated; quiescence cannot be proven " +
+          "and no validation or publication may begin",
+      );
+      throw context.unproven;
+    }
+    let settlement: ManagedAttemptSettlement;
+    try {
+      settlement = await settleAttemptChildren({
+        parentSessionId,
+        attemptDirectory: context.worker.cwd,
+        http: this.openCodeSessionHttp(context.worker),
+        timeoutMs: input.remainingBudgetMs,
+        signal: input.signal,
+        ...(this.options.managedOpenCode?.settlePollIntervalMs === undefined
+          ? {}
+          : { pollIntervalMs: this.options.managedOpenCode.settlePollIntervalMs }),
+        ...(this.options.managedOpenCode?.settleInterruptGraceMs === undefined
+          ? {}
+          : { interruptGraceMs: this.options.managedOpenCode.settleInterruptGraceMs }),
+      });
+    } catch (error) {
+      if (error instanceof OpenCodeSessionDiscoveryError) {
+        this.markOpenCodeInvocationUnproven(invocation, "session discovery failed");
+        context.unproven = new StageFailure(
+          input.stage,
+          "managed-session-discovery-failed",
+          error.message,
+        );
+        throw context.unproven;
+      }
+      if (error instanceof OpenCodeSessionSettleError) {
+        this.recordManagedChildrenUnproven({
+          attemptId: context.attemptId,
+          unsettled: error.unsettledSessionIds,
+          unknown: error.unknownSessionIds,
+        });
+        this.markOpenCodeInvocationUnproven(invocation, "child sessions unproven");
+        context.unproven = new StageFailure(input.stage, "managed-child-unsettled", error.message);
+        throw context.unproven;
+      }
+      this.markOpenCodeInvocationUnproven(invocation, "settlement error");
+      context.unproven =
+        error instanceof StageFailure
+          ? error
+          : new StageFailure(
+              input.stage,
+              "agent-process-crash",
+              error instanceof Error ? error.message : String(error),
+            );
+      throw context.unproven;
+    }
+    this.recordManagedChildrenSettled({ attemptId: context.attemptId, settlement });
+    if (context.managed !== undefined) {
+      try {
+        await this.cleanupManagedAttempt({
+          managed: context.managed,
+          workspacePath: context.worker.cwd,
+          jobId: input.jobId,
+          attemptId: context.attemptId,
+          stage: input.stage,
+        });
+      } catch (error) {
+        this.markOpenCodeInvocationUnproven(invocation, "managed cleanup failed");
+        context.unproven =
+          error instanceof StageFailure ? error : classifyFailure(error, input.stage);
+        throw context.unproven;
+      }
+      context.managedFinalized = true;
+    }
+    try {
+      this.markOpenCodeInvocationSettled(context, invocation);
+    } catch (error) {
+      this.markOpenCodeInvocationUnproven(invocation, "settlement persistence failed");
+      context.unproven = new StageFailure(
+        input.stage,
+        "managed-session-discovery-failed",
+        `the OpenCode invocation ${String(invocation.ordinal)} was quiescent, but its settlement ` +
+          `could not be durably recorded: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw context.unproven;
+    }
+    this.options.logger.info("opencode invocation tree settled", {
+      jobId: input.jobId,
+      attemptId: context.attemptId,
+      invocation: invocation.ordinal,
+      parentSessionId,
+      children: settlement.children.length,
+      interrupted: settlement.interruptedSessionIds.length,
+      rounds: settlement.rounds,
+    });
+  }
+
+  /**
+   * Durably mark one invocation's tree quiescent: the database projection first,
+   * then the filesystem ownership journal that gates workspace reuse. If either
+   * write fails, the filesystem journal stays unresolved and recovery must
+   * re-prove the tree before admitting the workspace.
+   */
+  private markOpenCodeInvocationSettled(
+    context: OpenCodeAttemptContext,
+    invocation: OpenCodeInvocationState,
+  ): void {
+    this.jobs.settleOpenCodeInvocation({
+      invocationId: invocation.invocationId,
+      status: "settled",
+      ownershipState: "proven",
+    });
+    settleOpenCodeOwnershipInvocation({
+      attemptDataDir: context.attemptDataDir,
+      attemptId: context.attemptId,
+      ordinal: invocation.ordinal,
+    });
+  }
+
+  /**
+   * Mark one invocation's tree unresolved. The filesystem journal is left
+   * unsettled — that is the durable quarantine that bars workspace reuse even
+   * before start-up recovery journals its record. The database marker is
+   * best-effort diagnostic detail.
+   */
+  private markOpenCodeInvocationUnproven(
+    invocation: OpenCodeInvocationState,
+    detail: string,
+  ): void {
+    try {
+      this.jobs.settleOpenCodeInvocation({
+        invocationId: invocation.invocationId,
+        status: "failed",
+        ownershipState: "quarantined",
+        detail,
+      });
+    } catch (error) {
+      this.options.logger.warn("unproven OpenCode invocation evidence was not persisted", {
+        invocationId: invocation.invocationId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Run every permitted parent invocation of an OpenCode attempt, settling the
+   * complete descendant tree after EACH exit and before any retry or result
+   * classification (tasks 3.3/4.2/4.3). Managed stays single-invocation; a
+   * native/default retry gets a distinct ownership ordinal only after the
+   * previous tree is proven quiescent, so no parent is relaunched over a
+   * possibly-live descendant and no invocation's evidence is overwritten. The
+   * remaining configured timeout, cancellation and the 60-second fallback all
+   * flow through settlement.
+   */
+  private async runTrackedOpenCodeInvocations(input: {
+    context: OpenCodeAttemptContext;
+    stage: FailureStage;
+    jobId: number;
+    attemptId: number;
+    configuredTimeoutSec: number | undefined;
+    runStartedAt: number;
+    signal: AbortSignal;
+    runOnce: (invocation: OpenCodeInvocationState) => Promise<AgentResult>;
+    /**
+     * Revalidate the captured primary against the actual attempt workspace
+     * before EVERY parent invocation (task 3.2). A source-checkout choice that
+     * is unavailable in the worktree — or a cold inventory that never
+     * converges — fails configuration before the retry can spawn.
+     */
+    beforeInvocation?: () => Promise<void>;
+  }): Promise<AgentResult> {
+    const { context } = input;
+    const maxInvocations = context.managed !== undefined ? 1 : Math.max(1, this.options.retries);
+    let invocationNumber = 1;
+    let result: AgentResult | undefined;
+    for (;;) {
+      await input.beforeInvocation?.();
+      const invocation = this.beginOpenCodeInvocation({ context, stage: input.stage });
+      context.launched = true;
+      try {
+        result = await input.runOnce(invocation);
+      } catch {
+        // A rejected executor promise has no trustworthy terminal process
+        // result. Even if a parent id was observed, the executor may have
+        // stopped reporting while its service-owned tree remains live. Preserve
+        // the pre-launch journal as unresolved and refuse every publication or
+        // retry path rather than treating a thrown run as a settled failure.
+        this.markOpenCodeInvocationUnproven(invocation, "executor returned no terminal result");
+        context.unproven = new StageFailure(
+          input.stage,
+          "managed-session-discovery-failed",
+          `OpenCode invocation ${String(invocation.ordinal)} did not return a terminal process ` +
+            "result; its session tree cannot be proven quiescent and no validation or publication may begin",
+        );
+        throw context.unproven;
+      }
+      this.recordOpenCodeInvocationSession({
+        context,
+        invocation,
+        sessionId: result.sessionId,
+      });
+      if (invocation.persistenceFailure !== undefined) {
+        this.markOpenCodeInvocationUnproven(invocation, "ownership persistence failed");
+        context.unproven = new StageFailure(
+          input.stage,
+          "managed-session-discovery-failed",
+          `the OpenCode ownership record for invocation ${String(invocation.ordinal)} could not ` +
+            `be persisted: ${invocation.persistenceFailure.message}`,
+        );
+        throw context.unproven;
+      }
+      invocation.identity = await this.readOpenCodeInvocationIdentity({ context, invocation });
+      await this.settleOpenCodeInvocation({
+        context,
+        invocation,
+        remainingBudgetMs: managedRemainingBudgetMs(input.configuredTimeoutSec, input.runStartedAt),
+        signal: input.signal,
+        jobId: input.jobId,
+        stage: input.stage,
+      });
+      const identityPersistenceFailure = invocation.persistenceFailure as Error | undefined;
+      if (identityPersistenceFailure !== undefined) {
+        throw new StageFailure(
+          input.stage,
+          "managed-session-discovery-failed",
+          `the initial identity for OpenCode invocation ${String(invocation.ordinal)} could not ` +
+            `be persisted: ${identityPersistenceFailure.message}`,
+        );
+      }
+      const contradiction = this.openCodeIdentityContradiction(
+        context,
+        invocation.identity,
+        input.stage,
+      );
+      if (contradiction !== undefined) throw contradiction;
+      if (input.signal.aborted) break;
+      if (invocationNumber >= maxInvocations) break;
+      if (result.timedOut) break;
+      if (result.exitCode === 0) break;
+      if (isTerminalAgentResult(result)) break;
+      invocationNumber += 1;
+      this.options.logger.warn("agent invocation failed, retrying after a fresh quiescence proof", {
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        invocation: invocationNumber,
+        maxInvocations,
+        exitCode: result.exitCode,
+      });
+    }
+    return result;
   }
 
   /**
@@ -1171,7 +1915,7 @@ export class ResolutionOrchestrator {
   private async settleAndCleanupManagedAttempt(input: {
     managed: ManagedAttemptContext;
     parentSessionId: string;
-    worker: { cwd: string; env: Record<string, string> };
+    worker: OpenCodeWorker;
     remainingBudgetMs: number;
     signal: AbortSignal;
     jobId: number;
@@ -1243,7 +1987,7 @@ export class ResolutionOrchestrator {
     managed: ManagedAttemptContext;
     launched: boolean;
     parentSessionId: string | undefined;
-    worker: { cwd: string; env: Record<string, string> };
+    worker: OpenCodeWorker;
     remainingBudgetMs: number;
     signal: AbortSignal;
     jobId: number;
@@ -1311,7 +2055,7 @@ export class ResolutionOrchestrator {
     managedFinalized: boolean;
     launched: boolean;
     parentSessionId: string | undefined;
-    worker: { cwd: string; env: Record<string, string> } | undefined;
+    worker: OpenCodeWorker | undefined;
     remainingBudgetMs: number;
     signal: AbortSignal;
     jobId: number;
@@ -1350,8 +2094,8 @@ export class ResolutionOrchestrator {
     signal: AbortSignal;
     /**
      * Per-attempt flag shared with the queue's cancellation handler: when a
-     * managed attempt ends with unproven quiescence, its manifest and data dir
-     * must survive for recovery, and neither path may erase them.
+     * OpenCode ownership or managed cleanup is unresolved, its manifest and
+     * data dir must survive for recovery, and neither path may erase them.
      */
     preserveDataDir: { value: boolean; failure?: StageFailure };
   }): Promise<{ commitSha?: string }> {
@@ -1360,12 +2104,8 @@ export class ResolutionOrchestrator {
     let workspacePath: string | undefined;
     let attemptDataDir: string | undefined;
     let adoptionClaim: AdoptionClaimHandle | undefined;
-    let managed: ManagedAttemptContext | undefined;
+    let openCode: OpenCodeAttemptContext | undefined;
     let agentEnv: Record<string, string> | undefined;
-    let worker: { cwd: string; env: Record<string, string> } | undefined;
-    let launched = false;
-    let parentSessionId: string | undefined;
-    let managedFinalized = false;
     const configuredTimeoutSec = repository.timeoutSec ?? this.options.timeoutSec;
     let runStartedAt = 0;
     try {
@@ -1505,37 +2245,41 @@ export class ResolutionOrchestrator {
           source: credentialSource,
         });
       }
-      // Tasks 3.2-3.5: the shared environment the run, the preflight probe, and
-      // the child-session transport all receive — identical cwd and env, so a
-      // managed run, its inventory check, and its settlement talk to the same
-      // OpenCode project and data store. Generated files are journaled and
-      // materialized, then the effective agents are proven present, before any
-      // agent work runs; the parent session then runs with the verified
-      // primary agent id.
+      // Tasks 3.2/3.3/4.2/4.3: the shared environment the run, the native or
+      // managed preflight probe, and the child-session transport all receive —
+      // identical cwd and env, so an OpenCode run, its inventory check and its
+      // settlement talk to the same project and data store. For OpenCode the
+      // captured source decides whether generated managed files are
+      // materialized and verified, a native id is revalidated against the
+      // actual prepared workspace, or no explicit primary is selected.
       agentEnv = buildAgentEnvironment(
         process.env,
         executor.additionalEnvironment(attemptDataDir, credentialSource),
       );
-      worker = { cwd: workspace.path, env: agentEnv };
       if (executor.id === "opencode") {
-        managed = this.resolveManagedContract({ jobId, attemptId, stage });
-        if (managed !== undefined) {
-          await this.configureManagedAttempt({
-            managed,
-            jobId,
-            attemptId,
-            workspacePath: workspace.path,
-            agentEnv,
-            signal,
-            stage,
-          });
-        }
+        openCode = this.resolveOpenCodeContext({
+          executor,
+          executorAlias: repository.agent,
+          jobId,
+          attemptId,
+          workspacePath: workspace.path,
+          agentEnv,
+          stage,
+        });
+        await this.configureOpenCodeAttempt({
+          context: openCode,
+          jobId,
+          attemptId,
+          agentEnv,
+          signal,
+          stage,
+        });
       }
       this.options.logger.info("agent launched", {
         jobId,
         attemptId,
         agent: executor.id,
-        ...(managed === undefined ? {} : { primaryAgentId: managed.primaryRuntimeId }),
+        ...(openCode === undefined ? {} : { source: openCode.selection.source }),
       });
       // Follow the agent while it works. Nothing here may fail the attempt:
       // the recorder swallows unparsable lines, and a failed snapshot write is
@@ -1554,7 +2298,14 @@ export class ResolutionOrchestrator {
           });
         }
       };
-      const runOnce = (): Promise<AgentResult> =>
+      // The attempt-wide abort mirrors the queue's cancellation, and is also
+      // tripped if an early ownership-persistence write fails mid-stream: the
+      // parent process stops while the evidence already written survives.
+      const runAbort = new AbortController();
+      if (signal.aborted) runAbort.abort();
+      else signal.addEventListener("abort", () => runAbort.abort(), { once: true });
+      const selectionForRun = openCode === undefined ? undefined : this.selectionForRun(openCode);
+      const runOnce = (invocation?: OpenCodeInvocationState): Promise<AgentResult> =>
         executor.run({
           cwd: workspace.path,
           model: input.model,
@@ -1565,10 +2316,19 @@ export class ResolutionOrchestrator {
           ...(configuredTimeoutSec === undefined ? {} : { timeoutSec: configuredTimeoutSec }),
           retries: this.options.retries,
           dataDir: attemptDataDir!,
-          signal,
-          ...(managed === undefined ? {} : { primaryAgentId: managed.primaryRuntimeId }),
+          signal: runAbort.signal,
+          // A native/default/managed source travels as one discriminated intent;
+          // the legacy `primaryAgentId` option is never combined with it. The
+          // shared worker descriptor is passed so the run uses the exact same
+          // binary/cwd/env/runner as preflight and settlement.
+          ...(openCode === undefined ? {} : { openCodeSelection: selectionForRun! }),
+          ...(openCode === undefined ? {} : { openCodeWorker: openCode.worker }),
           onLine: (line) => {
             recorder.push(line);
+            if (openCode !== undefined && invocation !== undefined) {
+              this.captureOpenCodeParentFromLine({ context: openCode, invocation, line });
+              if (invocation.persistenceFailure !== undefined) runAbort.abort();
+            }
             // The stream arrives token by token; rewriting the snapshot on every
             // line would mean hundreds of writes a second for no visible gain.
             const now = Date.now();
@@ -1577,44 +2337,54 @@ export class ResolutionOrchestrator {
             flush();
           },
         });
-      // Cline bounds retries itself (--retries counts consecutive mistakes
-      // within one session); an executor that cannot do that is bounded here
-      // instead, by re-running the whole invocation up to the same allowance.
-      // The units differ deliberately — this counts whole invocations. A
-      // managed attempt is never relaunched: its first session may have left
-      // background children, and launching a second parent before settling
-      // would compound the very quiescence the attempt must prove.
-      const maxInvocations =
-        managed !== undefined ? 1 : executor.honorsRetries ? 1 : Math.max(1, this.options.retries);
-      // Billing, authentication, and model-route failures are terminal for an
-      // invocation: another identical launch cannot repair them, so only
-      // transient agent failures consume the retry allowance.
-      const isTerminalFailure = (result: AgentResult): boolean =>
-        isAgentBillingFailure(result) ||
-        isAgentAuthenticationFailure(result) ||
-        isAgentModelUnavailable(result);
       runStartedAt = Date.now();
-      launched = true;
-      let agentResult = await runOnce();
-      let invocation = 1;
-      while (
-        invocation < maxInvocations &&
-        !signal.aborted &&
-        !agentResult.timedOut &&
-        agentResult.exitCode !== 0 &&
-        !isTerminalFailure(agentResult)
-      ) {
-        invocation += 1;
-        this.options.logger.warn("agent invocation failed, retrying", {
+      let agentResult: AgentResult;
+      if (openCode !== undefined) {
+        agentResult = await this.runTrackedOpenCodeInvocations({
+          context: openCode,
+          stage,
           jobId,
           attemptId,
-          invocation,
-          maxInvocations,
-          exitCode: agentResult.exitCode,
+          configuredTimeoutSec,
+          runStartedAt,
+          signal: runAbort.signal,
+          runOnce,
+          beforeInvocation: async () => {
+            if (openCode!.nativeId !== undefined) {
+              await this.preflightNativeAttempt({
+                context: openCode!,
+                agentId: openCode!.nativeId,
+                signal,
+                stage,
+              });
+            }
+          },
         });
+      } else {
+        // Cline bounds retries itself (--retries counts consecutive mistakes
+        // within one session); an executor that cannot do that is bounded here
+        // instead, by re-running the whole invocation up to the same allowance.
         agentResult = await runOnce();
+        let invocation = 1;
+        const maxInvocations = executor.honorsRetries ? 1 : Math.max(1, this.options.retries);
+        while (
+          invocation < maxInvocations &&
+          !signal.aborted &&
+          !agentResult.timedOut &&
+          agentResult.exitCode !== 0 &&
+          !isTerminalAgentResult(agentResult)
+        ) {
+          invocation += 1;
+          this.options.logger.warn("agent invocation failed, retrying", {
+            jobId,
+            attemptId,
+            invocation,
+            maxInvocations,
+            exitCode: agentResult.exitCode,
+          });
+          agentResult = await runOnce();
+        }
       }
-      parentSessionId = agentResult.sessionId;
       recorder.finish();
       flush();
       // Reasoning effort is validated per agent at startup, but the CLI enforces
@@ -1640,25 +2410,11 @@ export class ResolutionOrchestrator {
         exitCode: agentResult.exitCode,
         timedOut: agentResult.timedOut,
       });
-      // Tasks 3.2-3.5: settle the child sessions and remove the generated files
-      // BEFORE the agent result is judged. A timed-out, cancelled, or nonzero
-      // parent can still own background children, so nothing is classified —
-      // and certainly nothing is validated or published — until the tree is
-      // provably quiescent and clean.
-      if (managed !== undefined) {
-        await this.finalizeManagedAttempt({
-          managed,
-          launched,
-          parentSessionId,
-          worker,
-          remainingBudgetMs: managedRemainingBudgetMs(configuredTimeoutSec, runStartedAt),
-          signal,
-          jobId,
-          attemptId,
-          stage,
-        });
-        managedFinalized = true;
-      }
+      // Every OpenCode parent exit — managed, native, default, timed-out,
+      // cancelled, nonzero — already settled its complete descendant tree
+      // BEFORE this result is judged (see runTrackedOpenCodeInvocations), and
+      // managed generated files were only removed once quiescence was proven.
+      // Nothing here may validate or publish on an unproven tree.
       if (signal.aborted) throw new Error("job-cancelled");
       if (agentResult.timedOut) throw new StageFailure(stage, "agent-timeout");
       // Ordering matters: a billing refusal's payload also matches the
@@ -1769,36 +2525,43 @@ export class ResolutionOrchestrator {
       this.releaseAttemptDataDir(repository.agent, attemptDataDir, jobId, attemptId);
       return { commitSha: publication.commitSha };
     } catch (error) {
-      // Tasks 3.2-3.5: every failure path of a managed attempt still attempts
-      // its settlement and cleanup — timeout, cancel, nonzero exit, and throws
-      // included — interrupting child sessions first and removing the generated
-      // files only when quiescence is proven. An attempt that ends unproven
-      // records the managed quiescence/cleanup reason (never a retriable agent
-      // failure) and preserves its manifest and data dir for recovery.
-      let remedy: ManagedRemediation | undefined;
-      if (managed !== undefined) {
-        remedy = await this.remediateManagedOnFailure({
-          managed,
-          managedFinalized,
-          launched,
-          parentSessionId,
-          worker,
-          remainingBudgetMs: managedRemainingBudgetMs(configuredTimeoutSec, runStartedAt),
-          signal,
-          jobId,
-          attemptId,
-          stage,
-        });
-        preserveDataDir.value = remedy.status === "uncertain";
-        if (remedy.status === "uncertain") {
-          preserveDataDir.failure = remedy.failure;
+      // Every post-launch OpenCode settlement/cleanup failure is recorded as
+      // unresolved on disk by runTrackedOpenCodeInvocations, the durable
+      // quarantine that bars reuse. Here we only finish a managed attempt whose
+      // generated files were materialized but never launched, and preserve any
+      // unresolved evidence instead of releasing it.
+      if (openCode !== undefined) {
+        if (openCode.managed !== undefined && !openCode.launched && !openCode.managedFinalized) {
+          try {
+            await this.finalizeManagedAttempt({
+              managed: openCode.managed,
+              launched: false,
+              parentSessionId: undefined,
+              worker: openCode.worker,
+              remainingBudgetMs: managedRemainingBudgetMs(configuredTimeoutSec, runStartedAt),
+              signal,
+              jobId,
+              attemptId,
+              stage,
+            });
+            openCode.managedFinalized = true;
+          } catch (cleanupError) {
+            openCode.unproven =
+              cleanupError instanceof StageFailure
+                ? cleanupError
+                : classifyFailure(cleanupError, stage);
+          }
+        }
+        if (openCode.unproven !== undefined) {
+          preserveDataDir.value = true;
+          preserveDataDir.failure = openCode.unproven;
           this.options.logger.error(
-            "managed attempt ended with unproven quiescence; manifest and data dir preserved",
+            "OpenCode attempt ended with unresolved ownership or cleanup; evidence and data dir preserved",
             {
               jobId,
               attemptId,
-              reason: remedy.failure.reason,
-              error: remedy.failure.message,
+              reason: openCode.unproven.reason,
+              error: openCode.unproven.message,
             },
           );
         }
@@ -1813,10 +2576,7 @@ export class ResolutionOrchestrator {
         );
         throw error;
       }
-      const failure = classifyFailure(
-        remedy?.status === "uncertain" ? remedy.failure : error,
-        stage,
-      );
+      const failure = classifyFailure(openCode?.unproven ?? error, stage);
       const hasChanges = workspacePath
         ? await statusEntries(workspacePath)
             .then((entries) => entries.length > 0)
@@ -1827,11 +2587,11 @@ export class ResolutionOrchestrator {
         reason: failure.reason,
         hasUncommittedChanges: hasChanges,
       });
-      // Task 4.4: keep the specific managed failure detail (which agent id,
-      // which child session stayed unproven) durable for job detail, without
-      // persisting redundant reason codes as detail.
+      // Keep the specific OpenCode failure detail (which agent id, which child
+      // session stayed unproven) durable for job detail, without persisting
+      // redundant reason codes as detail.
       if (
-        managed !== undefined &&
+        openCode !== undefined &&
         failure.message.length > 0 &&
         failure.message !== failure.reason
       ) {

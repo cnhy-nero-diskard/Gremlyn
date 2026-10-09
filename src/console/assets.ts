@@ -666,6 +666,22 @@ label { gap: var(--space-2); }
 .agent-chip-row { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
 .agent-saved-note { margin: 0; }
 
+/* Run with agent: the repository-scoped primary-source draft. A deliberate
+   native select plus Apply/Cancel, kept visually distinct from the model and
+   executor pickers so an operator can tell what an apply will change. */
+.repo-primary-source { display: grid; gap: var(--space-3); background: var(--surface-quiet);
+  border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); padding: var(--space-4); }
+.repo-primary-source h4 { margin: 0; }
+.opencode-selection-controls { display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: end; }
+.opencode-selection-controls label { display: grid; gap: var(--space-1); font-size: var(--type-meta);
+  font-weight: var(--weight-semibold); color: var(--text-secondary); }
+.opencode-selection-controls select { min-width: 14rem; }
+.opencode-selection-managed { display: inline-flex; gap: var(--space-2); align-items: center;
+  color: var(--text-muted); font-size: var(--type-meta); }
+.opencode-selection-description { color: var(--text-muted); font-size: var(--type-meta); }
+.opencode-selection-saved { margin: 0; }
+.opencode-selection-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+
 .timeline li { gap: var(--space-2); border-left: var(--border-strong) solid var(--divider); padding: var(--space-2) 0 var(--space-3) var(--space-5); margin-left: var(--space-2); }
 .timeline li::before { background: var(--divider-strong); box-shadow: 0 0 0 3px var(--surface-panel); }
 .timeline time, .activity-time { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--type-meta); }
@@ -2159,8 +2175,15 @@ export const clientScript = `
     event.preventDefault();
     const repoId = Number(configure.dataset && configure.dataset.repoId);
     const container = typeof configure.closest === 'function' ? configure.closest('[data-opencode-agents]') : null;
-    if (!Number.isInteger(repoId) || !container) return;
-    void openCodeMountEditor(container, repoId);
+    // The Run with agent control renders its "Edit managed team" link outside
+    // the agents summary; resolve that repo's agents container by id so both
+    // entry points open the same editor.
+    const fallback = !container && Number.isInteger(repoId) && typeof document.querySelector === 'function'
+      ? document.querySelector('[data-opencode-agents][data-repo-id="' + String(repoId) + '"]')
+      : null;
+    const target = container || fallback;
+    if (!Number.isInteger(repoId) || !target) return;
+    void openCodeMountEditor(target, repoId);
   });
   document.addEventListener('click', (event) => {
     const button = event && event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-agent-action]') : null;
@@ -2228,6 +2251,475 @@ export const clientScript = `
     };
   }
   // END_OPENCODE_AGENT_EDITOR
+  // BEGIN_OPENCODE_SELECTION
+  /* Run with agent: repository-scoped primary-source draft (tasks 5.3-5.4).
+     The server renders the authoritative saved source; the client fills the
+     existing-agent choices from the authenticated discovery route and keeps a
+     keyed draft (per repository) across live region swaps. Apply posts one
+     compare-and-set update, Cancel discards only the draft, and a stale apply
+     is refused with scoped feedback instead of overwriting either side. */
+  const selectionEscape = (value) => String(value == null ? '' : value)
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;')
+    .replace(/'/gu, '&#39;');
+  const selectionEditors = new Map();
+  const selectionSourceLabels = { default: 'OpenCode default', native: 'Existing OpenCode agent', managed: 'Gremlyn-managed team' };
+  const selectionStateFrom = (container) => {
+    const dataset = container && container.dataset ? container.dataset : {};
+    const rawProfileRevision = dataset.profileRevision;
+    const profileRevision = rawProfileRevision === undefined || rawProfileRevision === '' ? null : Number(rawProfileRevision);
+    const revision = Number(dataset.selectionRevision || 0);
+    return {
+      repoId: Number(dataset.repoId),
+      savedSource: dataset.savedSource || 'default',
+      savedNativeId: dataset.savedNativeId || '',
+      savedRevision: revision,
+      savedProfileRevision: profileRevision,
+      baseRevision: revision,
+      // The profile revision a managed activation draft was started against.
+      // Frozen while the draft is dirty so a live update cannot silently bind
+      // a newer team than the operator saw when they chose managed.
+      baseProfileRevision: profileRevision,
+      source: dataset.savedSource || 'default',
+      nativeId: dataset.savedNativeId || '',
+      agents: null,
+      discovering: false,
+      unavailable: false,
+      feedback: '',
+      feedbackError: false,
+      busy: false,
+      keepApplyFocusable: false,
+      container,
+    };
+  };
+  const selectionDirty = (state) => {
+    if (state.source !== state.savedSource) return true;
+    return state.source === 'native' && state.nativeId !== state.savedNativeId;
+  };
+  const selectionIngestAgents = (state, agents) => {
+    state.agents = Array.isArray(agents) ? agents : [];
+    state.unavailable = Boolean(state.savedNativeId) && !state.agents.some((agent) => agent.id === state.savedNativeId);
+    return state;
+  };
+  const selectionNativeOptionsHtml = (state) => {
+    const options = [];
+    const agents = state.agents;
+    if (!Array.isArray(agents)) {
+      options.push(state.savedNativeId
+        ? '<option value="' + selectionEscape(state.savedNativeId) + '" selected>' + selectionEscape(state.savedNativeId) + ' (saved — refresh to verify)</option>'
+        : '<option value="" selected>Select an existing agent…</option>');
+      return options.join('');
+    }
+    // A deliberate, selected placeholder keeps the browser from auto-selecting
+    // the first discovered agent. An unchanged select fires no change event, so
+    // without this the control could show one agent while the draft stayed
+    // empty and Apply stayed disabled.
+    const hasChoice = Boolean(state.nativeId);
+    options.push('<option value=""' + (hasChoice ? '' : ' selected') + '>Select an existing agent…</option>');
+    if (state.savedNativeId && !agents.some((agent) => agent.id === state.savedNativeId)) {
+      const savedSelected = state.nativeId === state.savedNativeId ? ' selected' : '';
+      options.push('<option value="' + selectionEscape(state.savedNativeId) + '"' + savedSelected + ' data-native-unavailable>' + selectionEscape(state.savedNativeId) + ' (unavailable)</option>');
+    }
+    agents.forEach((agent) => {
+      const label = (agent.name ? agent.name + ' (' + agent.id + ')' : agent.id) + (agent.origin && agent.origin !== 'unknown' ? ' — ' + agent.origin : '');
+      options.push('<option value="' + selectionEscape(agent.id) + '"' + (agent.id === state.nativeId ? ' selected' : '') + '>' + selectionEscape(label) + '</option>');
+    });
+    if (agents.length === 0 && !state.savedNativeId) {
+      options.push('<option value="" disabled>No eligible agents found</option>');
+    }
+    return options.join('');
+  };
+  const selectionNativeDescription = (state) => {
+    if (!Array.isArray(state.agents)) {
+      return state.savedNativeId ? 'Saved existing agent; refresh to load its description.' : '';
+    }
+    const agent = state.agents.find((entry) => entry.id === state.nativeId);
+    if (agent) {
+      const parts = [];
+      if (agent.description) parts.push(agent.description);
+      if (agent.name && agent.name !== agent.id) parts.push('Name: ' + agent.name);
+      parts.push('Origin: ' + (agent.origin || 'unknown'));
+      return parts.join(' · ');
+    }
+    if (state.savedNativeId && state.unavailable) {
+      return 'This saved agent is not offered by the current discovery.';
+    }
+    return '';
+  };
+  const selectionSavedSentence = (state) => {
+    const label = selectionSourceLabels[state.savedSource] || state.savedSource;
+    let text = state.savedSource === 'native' && state.savedNativeId
+      ? 'Saved: ' + label.toLowerCase() + ' ' + state.savedNativeId + '.'
+      : state.savedSource === 'managed' && state.savedProfileRevision !== null
+        ? 'Saved: ' + label.toLowerCase() + ' revision ' + String(state.savedProfileRevision) + '.'
+        : 'Saved: ' + label + '.';
+    if (selectionDirty(state)) text += ' Unsaved draft.';
+    if (state.unavailable) text += ' The saved existing agent is not in the latest discovery.';
+    return text;
+  };
+  const selectionCandidate = (state) => {
+    const selection = state.source === 'native'
+      ? { source: 'native', agentId: state.nativeId }
+      : { source: state.source };
+    const body = { expectedRevision: state.baseRevision, selection };
+    if (state.source === 'managed' && state.baseProfileRevision !== null) {
+      body.expectedProfileRevision = state.baseProfileRevision;
+    }
+    return body;
+  };
+  const selectionApplyDisabled = (state) => {
+    if (state.busy) return true;
+    if (state.source === 'native' && !state.nativeId) return true;
+    return !selectionDirty(state);
+  };
+  const selectionRender = (container, state) => {
+    if (!container || !state || typeof container.querySelector !== 'function') return;
+    const sourceSelect = container.querySelector('[data-opencode-source-select]');
+    const nativeSelect = container.querySelector('[data-opencode-native-select]');
+    const nativeField = container.querySelector('[data-opencode-native-field]');
+    const status = container.querySelector('[data-opencode-selection-status]');
+    const feedback = container.querySelector('[data-opencode-selection-feedback]');
+    const applyButton = container.querySelector('[data-opencode-source-action="apply"]');
+    const cancelButton = container.querySelector('[data-opencode-source-action="cancel"]');
+    const refreshButton = container.querySelector('[data-opencode-source-action="refresh"]');
+    if (sourceSelect) {
+      sourceSelect.value = state.source;
+      sourceSelect.disabled = state.busy;
+    }
+    if (nativeField) nativeField.hidden = state.source !== 'native';
+    if (nativeSelect) {
+      nativeSelect.innerHTML = selectionNativeOptionsHtml(state);
+      // Always pin the value, including the empty placeholder, so a rebuilt
+      // option list never leaves the browser's automatic first choice showing
+      // while the draft holds no selection.
+      nativeSelect.value = state.nativeId || '';
+      nativeSelect.disabled = state.busy;
+    }
+    const nativeDescription = container.querySelector('[data-opencode-native-description]');
+    if (nativeDescription) {
+      nativeDescription.hidden = state.source !== 'native';
+      nativeDescription.textContent = selectionNativeDescription(state);
+    }
+    if (status) status.textContent = selectionSavedSentence(state);
+    if (feedback) {
+      feedback.textContent = state.feedback || '';
+      feedback.classList.toggle('is-error', Boolean(state.feedbackError));
+      feedback.setAttribute('role', state.feedbackError ? 'alert' : 'status');
+      feedback.setAttribute('aria-live', state.feedbackError ? 'assertive' : 'polite');
+    }
+    if (applyButton) {
+      const disabled = selectionApplyDisabled(state);
+      // Keep the action focusable if a just-completed keyboard activation still
+      // owns focus. aria-disabled communicates that there is no new draft while
+      // preserving the operator's keyboard position after the async save.
+      const retainFocus =
+        state.busy ||
+        document.activeElement === applyButton ||
+        state.keepApplyFocusable === true;
+      applyButton.disabled = disabled && !retainFocus;
+      if (disabled) applyButton.setAttribute('aria-disabled', 'true');
+      else applyButton.removeAttribute('aria-disabled');
+    }
+    if (cancelButton) cancelButton.disabled = !selectionDirty(state) || state.busy;
+    if (refreshButton) refreshButton.disabled = state.discovering || state.busy;
+  };
+  const selectionSessionExpiry = (response, payload) => {
+    if (response.status !== 401 || (payload && payload.error) !== 'session-expired') return false;
+    if (typeof window !== 'undefined' && window.location) window.location.assign('/auth?reason=expired');
+    return true;
+  };
+  const selectionErrorMessage = (payload) => {
+    const messages = {
+      'discovery-unavailable': 'Existing-agent discovery is unavailable for this repository.',
+      'discovery-failed': 'Existing-agent discovery failed for this repository.',
+      'no-profile': 'No managed team is saved for this repository yet.',
+      'profile-revision-required': 'Reload the managed team before activating it.',
+      'profile-conflict': 'The managed team changed in another session.',
+      'not-opencode': 'This repository does not run the OpenCode executor.',
+      'repository-not-found': 'This repository is no longer available.',
+    };
+    return messages[payload && payload.error] || 'The primary source was not accepted. Try again.';
+  };
+  const selectionFor = (node) => {
+    const container = node && typeof node.closest === 'function' ? node.closest('[data-opencode-selection]') : null;
+    if (!container || !container.dataset) return null;
+    const repoId = Number(container.dataset.repoId);
+    let state = selectionEditors.get(repoId);
+    if (!state) { state = selectionStateFrom(container); selectionEditors.set(repoId, state); }
+    state.container = container;
+    return { container, state };
+  };
+  const selectionDiscover = async (container, state) => {
+    if (state.discovering) return;
+    const url = container.dataset ? container.dataset.discoveryUrl : '';
+    if (!url) return;
+    state.discovering = true;
+    state.feedback = 'Loading existing agents…';
+    state.feedbackError = false;
+    selectionRender(container, state);
+    try {
+      const response = await fetch(url + '?refresh=1', { credentials: 'same-origin' });
+      const payload = await response.json().catch(() => ({}));
+      if (selectionSessionExpiry(response, payload)) {
+        state.discovering = false;
+        return;
+      }
+      state.discovering = false;
+      if (!response.ok || payload.ok === false) {
+        if (payload.status === 'pending') {
+          state.feedback = 'Agent discovery is still settling; refresh again in a moment.';
+          state.feedbackError = false;
+        } else {
+          state.feedback = selectionErrorMessage(payload);
+          state.feedbackError = true;
+        }
+        selectionRender(container, state);
+        return;
+      }
+      selectionIngestAgents(state, payload.agents);
+      if (state.unavailable) {
+        state.feedback = 'The saved existing agent is no longer offered; it is kept as the current choice until you apply another source.';
+        state.feedbackError = false;
+      } else if (state.agents.length > 0) {
+        state.feedback = 'Loaded ' + String(state.agents.length) + ' eligible agent' + (state.agents.length === 1 ? '' : 's') + '.';
+        state.feedbackError = false;
+      } else {
+        state.feedback = 'No eligible existing agents were found for this repository.';
+        state.feedbackError = false;
+      }
+      selectionRender(container, state);
+    } catch {
+      state.discovering = false;
+      state.feedback = 'Agent discovery could not be reached.';
+      state.feedbackError = true;
+      selectionRender(container, state);
+    }
+  };
+  const selectionApply = async (container, state) => {
+    if (state.busy || selectionApplyDisabled(state)) return;
+    const applyButton = container.querySelector('[data-opencode-source-action="apply"]');
+    // Applying is a deliberate action activated from this control (including
+    // keyboard Enter/Space). Keep it focusable throughout the async transition
+    // and restore it afterwards even if the browser reports focus late in the
+    // synthesized click sequence.
+    const restoreApplyFocus = true;
+    state.keepApplyFocusable = true;
+    const restoreFocus = () => {
+      if (!restoreApplyFocus) return;
+      const currentContainer =
+        document.querySelector(
+          '[data-opencode-selection][data-repo-id="' + String(state.repoId) + '"]',
+        ) ||
+        state.container ||
+        container;
+      state.container = currentContainer;
+      selectionEditors.set(state.repoId, state);
+      const currentButton = currentContainer.querySelector('[data-opencode-source-action="apply"]');
+      if (currentButton && typeof currentButton.focus === 'function') {
+        const disabled = selectionApplyDisabled(state);
+        currentButton.disabled = false;
+        if (disabled) currentButton.setAttribute('aria-disabled', 'true');
+        else currentButton.removeAttribute('aria-disabled');
+        currentButton.focus({ preventScroll: true });
+      }
+    };
+    const url = container.dataset ? container.dataset.updateUrl : '';
+    if (!url) return;
+    state.busy = true;
+    state.feedback = 'Saving primary source…';
+    state.feedbackError = false;
+    selectionRender(container, state);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(selectionCandidate(state)),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (selectionSessionExpiry(response, payload)) {
+        state.busy = false;
+        selectionRender(state.container || container, state);
+        restoreFocus();
+        return;
+      }
+      state.busy = false;
+      if (!response.ok || payload.ok === false) {
+        if (response.status === 409 && payload.error === 'conflict') {
+          state.feedback = 'The saved primary source changed in another session (now revision ' + String(payload.currentRevision) + '). Your draft was kept; cancel or reconcile before applying again.';
+        } else if (response.status === 409 && (payload.error === 'profile-conflict' || payload.error === 'no-profile')) {
+          state.feedback = 'The managed team changed or is no longer saved. Reload the editor before activating it.';
+        } else if (response.status === 400 && Array.isArray(payload.issues) && payload.issues.length > 0) {
+          state.feedback = payload.issues[0].message || 'The selection was refused.';
+        } else {
+          state.feedback = selectionErrorMessage(payload);
+        }
+        state.feedbackError = true;
+        selectionRender(state.container || container, state);
+        restoreFocus();
+        return;
+      }
+      state.savedSource = payload.selection && payload.selection.source ? payload.selection.source : state.source;
+      state.savedNativeId = payload.selection && payload.selection.agentId ? payload.selection.agentId : (state.source === 'native' ? state.nativeId : '');
+      state.savedRevision = typeof payload.revision === 'number' ? payload.revision : state.savedRevision + 1;
+      state.baseRevision = state.savedRevision;
+      state.savedProfileRevision = typeof payload.profileRevision === 'number' ? payload.profileRevision : null;
+      // A landed save is a clean baseline: the frozen profile revision advances
+      // with the committed value.
+      state.baseProfileRevision = state.savedProfileRevision;
+      state.source = state.savedSource;
+      state.nativeId = state.savedNativeId;
+      state.feedback = 'Primary source saved. New jobs will use it.';
+      state.feedbackError = false;
+      selectionRender(state.container || container, state);
+      restoreFocus();
+    } catch {
+      state.busy = false;
+      state.feedback = 'The primary source could not be saved. Try again.';
+      state.feedbackError = true;
+      selectionRender(state.container || container, state);
+      restoreFocus();
+    }
+  };
+  const selectionCancelDraft = (container, state) => {
+    state.keepApplyFocusable = false;
+    state.source = state.savedSource;
+    state.nativeId = state.savedNativeId;
+    state.baseRevision = state.savedRevision;
+    state.baseProfileRevision = state.savedProfileRevision;
+    state.feedback = 'Draft discarded.';
+    state.feedbackError = false;
+    selectionRender(container, state);
+  };
+  const captureSelectionEditors = () => [...selectionEditors.entries()].map(([repoId, state]) => ({
+    repoId,
+    savedSource: state.savedSource,
+    savedNativeId: state.savedNativeId,
+    savedRevision: state.savedRevision,
+    savedProfileRevision: state.savedProfileRevision,
+    baseRevision: state.baseRevision,
+    baseProfileRevision: state.baseProfileRevision,
+    source: state.source,
+    nativeId: state.nativeId,
+    agents: state.agents,
+    discovering: state.discovering,
+    unavailable: state.unavailable,
+    feedback: state.feedback,
+    feedbackError: state.feedbackError,
+    busy: state.busy,
+    keepApplyFocusable: state.keepApplyFocusable,
+  }));
+  const restoreSelectionEditors = (root, saved) => {
+    if (!root || !Array.isArray(saved) || typeof root.querySelector !== 'function') return;
+    saved.forEach((entry) => {
+      if (!entry || !Number.isInteger(entry.repoId)) return;
+      const container = root.querySelector('[data-opencode-selection][data-repo-id="' + String(entry.repoId) + '"]');
+      // The console reconciles independently keyed SSE fragments. A fragment
+      // that does not contain this repository (for example, the health panel)
+      // is not evidence that the repository disappeared; retain its draft and
+      // focus state until a matching selection container is present again.
+      if (!container) return;
+      const fresh = selectionStateFrom(container);
+      const state = Object.assign({}, entry, {
+        container,
+        savedSource: fresh.savedSource,
+        savedNativeId: fresh.savedNativeId,
+        savedRevision: fresh.savedRevision,
+        savedProfileRevision: fresh.savedProfileRevision,
+      });
+      if (state.baseProfileRevision === undefined) {
+        state.baseProfileRevision = state.savedProfileRevision;
+      }
+      // Only a clean state advances the frozen compare-and-set bases. A dirty
+      // draft keeps the revisions it began from, so a live update cannot
+      // silently rebind the draft to a newer selection or managed team.
+      if (!selectionDirty(state)) {
+        state.baseRevision = fresh.savedRevision;
+        state.baseProfileRevision = fresh.savedProfileRevision;
+      }
+      selectionEditors.set(entry.repoId, state);
+      selectionRender(container, state);
+    });
+  };
+  registerSurface('opencode-selection', {
+    capture: () => captureSelectionEditors(),
+    restore: (root, saved) => restoreSelectionEditors(root, saved),
+  });
+  document.addEventListener('click', (event) => {
+    const target = event && event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    const button = target.closest('[data-opencode-source-action]');
+    if (!button || !button.dataset) return;
+    const found = selectionFor(button);
+    if (!found) return;
+    const action = button.dataset.opencodeSourceAction;
+    if (action === 'refresh') { void selectionDiscover(found.container, found.state); return; }
+    if (action === 'apply') { void selectionApply(found.container, found.state); return; }
+    if (action === 'cancel') { selectionCancelDraft(found.container, found.state); return; }
+  });
+  document.addEventListener('focusout', (event) => {
+    const target = event && event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    const applyButton = target.closest('[data-opencode-source-action="apply"]');
+    if (!applyButton) return;
+    const found = selectionFor(applyButton);
+    if (!found || !selectionApplyDisabled(found.state)) return;
+    if (found.state.busy) return;
+    // Once the operator moves on, restore the true disabled state so an idle
+    // Apply button does not remain in the tab order.
+    found.state.keepApplyFocusable = false;
+    applyButton.disabled = true;
+  });
+  document.addEventListener('change', (event) => {
+    const target = event && event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    const sourceSelect = target.closest('[data-opencode-source-select]');
+    const nativeSelect = target.closest('[data-opencode-native-select]');
+    if (!sourceSelect && !nativeSelect) return;
+    const found = selectionFor(sourceSelect || nativeSelect);
+    if (!found) return;
+    if (sourceSelect) {
+      found.state.source = sourceSelect.value || 'default';
+      if (found.state.source === 'native' && !Array.isArray(found.state.agents)) {
+        void selectionDiscover(found.container, found.state);
+      }
+    } else {
+      found.state.nativeId = nativeSelect.value || '';
+    }
+    found.state.feedback = '';
+    found.state.feedbackError = false;
+    selectionRender(found.container, found.state);
+  });
+  if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+    document.querySelectorAll('[data-opencode-selection]').forEach((container) => {
+      const repoId = container && container.dataset ? Number(container.dataset.repoId) : NaN;
+      if (!Number.isInteger(repoId) || selectionEditors.has(repoId)) return;
+      const state = selectionStateFrom(container);
+      selectionEditors.set(repoId, state);
+      selectionRender(container, state);
+    });
+  }
+  if (typeof window !== 'undefined' && window && window.gremlynConsole) {
+    window.gremlynConsole.opencodeSelection = {
+      editors: selectionEditors,
+      stateFrom: selectionStateFrom,
+      isDirty: selectionDirty,
+      candidate: selectionCandidate,
+      applyDisabled: selectionApplyDisabled,
+      ingestAgents: selectionIngestAgents,
+      nativeOptionsHtml: selectionNativeOptionsHtml,
+      nativeDescription: selectionNativeDescription,
+      savedSentence: selectionSavedSentence,
+      render: selectionRender,
+      apply: selectionApply,
+      discover: selectionDiscover,
+      cancel: selectionCancelDraft,
+      capture: captureSelectionEditors,
+      restore: restoreSelectionEditors,
+    };
+  }
+  // END_OPENCODE_SELECTION
   // The log arrives server-rendered and is refreshed by the stream swap above;
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
   const initialStream = document.querySelector('[data-log-items]');

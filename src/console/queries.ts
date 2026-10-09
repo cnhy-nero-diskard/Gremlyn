@@ -16,6 +16,17 @@ import type { CommandOutcome, JobStatus } from "../types.js";
 
 export type Redaction = Redactor | readonly string[];
 
+/** The executor kind that owns OpenCode primary-source semantics. */
+const OPENCODE_EXECUTOR_ID = "opencode";
+
+/**
+ * Resolve a configured agent alias id to the executor kind that runs it
+ * (`agents[agent].kind ?? agent`). The server supplies the agents map; the
+ * identity default matches the config loader for a repository whose alias is
+ * already the kind. Never assume an alias literally equals `opencode`.
+ */
+export type ExecutorKindResolver = (agentId: string | undefined) => string | undefined;
+
 export interface RepositorySummary {
   id: number;
   owner: string;
@@ -41,6 +52,69 @@ export interface RepositorySummary {
    * presentation layer; instructions never appear in this projection.
    */
   opencodeProfile?: OpenCodeProfileSummary | null;
+  /**
+   * The durable OpenCode primary source configured for this repository
+   * (default / native / managed). Projected for every repository and rendered
+   * only for OpenCode-executor repositories; a retained native id is shown even
+   * when it is no longer discoverable so the saved choice stays authoritative.
+   */
+  opencodeSelection?: OpenCodeSelectionSummary | null;
+}
+
+/** The three mutually exclusive OpenCode primary sources (design D1). */
+export type OpenCodePrimarySourceName = "default" | "native" | "managed";
+
+/**
+ * Privacy-safe repository projection of the durable primary source. It carries
+ * only the source, optimistic revision, whether the row is explicit, the
+ * retained native id and the controlling managed-profile revision — never any
+ * agent instructions, permissions or raw inventory.
+ */
+export interface OpenCodeSelectionSummary {
+  source: OpenCodePrimarySourceName;
+  revision: number;
+  /** True when a durable selection row exists (deliberate or migration-seeded). */
+  explicit: boolean;
+  /** The retained native agent id, non-null only for native source. */
+  nativeAgentId: string | null;
+  /** The saved managed profile revision controlling the team, or null. */
+  profileRevision: number | null;
+}
+
+/**
+ * The OpenCode primary source a job captured at creation (design D2). A
+ * capture is immutable: retries and queued invocations read this, never the
+ * repository's current selection. A legacy job with no recorded source is
+ * resolved from its own captured profile (managed) or default otherwise.
+ */
+export interface CapturedOpenCodeSelectionSummary {
+  source: OpenCodePrimarySourceName;
+  nativeAgentId: string | null;
+  selectionRevision: number | null;
+  /** The captured managed profile revision, non-null only for managed source. */
+  profileRevision: number | null;
+}
+
+/**
+ * One OpenCode parent invocation's durable ownership/identity evidence (design
+ * D4). Requested source and the actual runtime primary/model are kept separate:
+ * an unobserved runtime identity stays explicitly unknown rather than echoing
+ * the requested selection. Contains no prompt or credential content.
+ */
+export interface OpenCodeInvocationSummary {
+  ordinal: number;
+  requestedSource: string;
+  requestedNativeAgentId: string | null;
+  requestedProfileRevision: number | null;
+  /** The attributed parent session, or null when ownership was not captured. */
+  parentSessionId: string | null;
+  /** The actual runtime primary identity, or null when it was not observed. */
+  actualPrimaryAgent: string | null;
+  actualModel: string | null;
+  status: string;
+  ownershipState: string;
+  launchedAt: string | null;
+  settledAt: string | null;
 }
 
 /**
@@ -135,6 +209,12 @@ export interface AttemptDetail {
    * discovery order. Empty when the attempt was not managed (or recorded none).
    */
   childSessions: ManagedChildSessionSummary[];
+  /**
+   * Generic OpenCode parent invocations journaled for this attempt, in ordinal
+   * order. Each entry keeps the requested source separate from the actual,
+   * possibly-unknown runtime primary. Empty for non-OpenCode attempts.
+   */
+  invocations: OpenCodeInvocationSummary[];
 }
 
 /**
@@ -197,6 +277,13 @@ export interface JobDetail {
      * snapshot JSON and its private instruction text are never projected.
      */
     opencodeProfile?: OpenCodeProfileSummary | null;
+    /**
+     * The OpenCode primary source captured with this job, or null for a
+     * non-OpenCode job (and a legacy OpenCode job that recorded neither source
+     * nor profile). The captured source is never rewritten from current
+     * repository settings.
+     */
+    opencodeSelection?: CapturedOpenCodeSelectionSummary | null;
   };
   attempts: AttemptDetail[];
   timeline: StatusTimelineEntry[];
@@ -369,6 +456,24 @@ export function readDashboard(
     .all() as Array<{ repo_id: number; revision: number; profile_json: string | null }>) {
     opencodeProfiles.set(row.repo_id, { revision: row.revision, profileJson: row.profile_json });
   }
+  const opencodeSelections = new Map<
+    number,
+    { source: string; nativeAgentId: string | null; revision: number }
+  >();
+  for (const row of db
+    .prepare("SELECT repo_id, source, native_agent_id, revision FROM opencode_primary_selections")
+    .all() as Array<{
+    repo_id: number;
+    source: string;
+    native_agent_id: string | null;
+    revision: number;
+  }>) {
+    opencodeSelections.set(row.repo_id, {
+      source: row.source,
+      nativeAgentId: row.native_agent_id,
+      revision: row.revision,
+    });
+  }
   const repositories = db
     .prepare(
       `SELECT id, owner, name, enabled, source_path, workspace_root, agent,
@@ -383,10 +488,15 @@ export function readDashboard(
       const profile = opencodeProfiles.get(row.id as number);
       return {
         ...safe,
-        opencodeProfile:
-          profile === undefined || profile.profileJson === null
-            ? null
-            : summarizeOpenCodeProfile(profile.profileJson, profile.revision, redact),
+        // A corrupt stored profile must never take down the whole dashboard or
+        // an SSE fragment: it fails closed to *no* projected team rather than
+        // throwing out of the render.
+        opencodeProfile: safeSummarizeOpenCodeProfile(profile, redact),
+        opencodeSelection: summarizeOpenCodeSelection(
+          opencodeSelections.get(row.id as number),
+          profile,
+          redact,
+        ),
         validationCommands: parseValidationCommands(safe.validation_commands),
         allowedModels: parseAllowedModels(safe.allowed_models),
       };
@@ -427,6 +537,24 @@ export function readDashboard(
  * text is deliberately never read out here — the dedicated edit route
  * retrieves the full profile when the operator opens the editor.
  */
+/**
+ * Summarize a stored profile fail-closed: a payload that no longer parses (or
+ * no stored payload at all) projects `null`, so one corrupt row cannot throw
+ * out of the dashboard or an SSE fragment. The dedicated editor route remains
+ * the surface that reports the corruption explicitly.
+ */
+function safeSummarizeOpenCodeProfile(
+  profile: { revision: number; profileJson: string | null } | undefined,
+  redact: Redactor,
+): OpenCodeProfileSummary | null {
+  if (profile === undefined || profile.profileJson === null) return null;
+  try {
+    return summarizeOpenCodeProfile(profile.profileJson, profile.revision, redact);
+  } catch {
+    return null;
+  }
+}
+
 function summarizeOpenCodeProfile(
   profileJson: string,
   revision: number,
@@ -450,17 +578,195 @@ function summarizeOpenCodeProfile(
   };
 }
 
+/**
+ * Project the durable primary source read as a privacy-safe summary. A missing
+ * row reads as default at revision 0 with `explicit: false`, matching the
+ * store's backward-compatible read so an untracked repository is distinguishable
+ * from a deliberate default. Only the source, revision and retained id are
+ * projected — never a native agent's definition.
+ */
+function summarizeOpenCodeSelection(
+  selection: { source: string; nativeAgentId: string | null; revision: number } | undefined,
+  profile: { revision: number; profileJson: string | null } | undefined,
+  redact: Redactor,
+): OpenCodeSelectionSummary {
+  const savedRevision =
+    profile !== undefined && profile.profileJson !== null ? profile.revision : null;
+  if (selection === undefined) {
+    return {
+      source: "default",
+      revision: 0,
+      explicit: false,
+      nativeAgentId: null,
+      profileRevision: savedRevision,
+    };
+  }
+  const source: OpenCodePrimarySourceName =
+    selection.source === "native"
+      ? "native"
+      : selection.source === "managed"
+        ? "managed"
+        : "default";
+  return {
+    source,
+    revision: selection.revision,
+    explicit: true,
+    nativeAgentId:
+      source === "native" && selection.nativeAgentId !== null
+        ? redact(selection.nativeAgentId)
+        : null,
+    // The saved profile revision is exposed whether the team is active or
+    // dormant so the picker can CAS a deliberate managed activation. The source
+    // still says whether that team currently controls new jobs.
+    profileRevision: savedRevision,
+  };
+}
+
+/**
+ * Resolve the primary source captured with a job from its own row. Jobs that
+ * recorded a source use it verbatim; a legacy OpenCode job with a captured
+ * managed profile resolves managed and any other legacy job resolves nothing
+ * (never a fabricated default, and never a later repository selection). An
+ * unknown or corrupt recorded source projects nothing rather than guessing.
+ */
+function readCapturedOpenCodeSelection(
+  jobRow: Record<string, unknown>,
+  redact: Redactor,
+  isOpenCodeJob: boolean,
+): CapturedOpenCodeSelectionSummary | null {
+  const profileRevision =
+    typeof jobRow.opencode_profile_revision === "number" ? jobRow.opencode_profile_revision : null;
+  const selectionRevision =
+    typeof jobRow.opencode_selection_revision === "number"
+      ? jobRow.opencode_selection_revision
+      : null;
+  const source = jobRow.opencode_source;
+  if (source === "native") {
+    const nativeAgentId =
+      typeof jobRow.opencode_native_agent_id === "string" &&
+      jobRow.opencode_native_agent_id.length > 0
+        ? redact(jobRow.opencode_native_agent_id)
+        : null;
+    return { source: "native", nativeAgentId, selectionRevision, profileRevision: null };
+  }
+  if (source === "managed") {
+    return { source: "managed", nativeAgentId: null, selectionRevision, profileRevision };
+  }
+  if (source === "default") {
+    return { source: "default", nativeAgentId: null, selectionRevision, profileRevision: null };
+  }
+  if (source === null || source === undefined) {
+    // Legacy job: a captured managed profile means managed. A job that recorded
+    // neither source nor profile is only OpenCode's implicit default when the
+    // recorded execution (attempt agents, else the configured agent) is
+    // OpenCode; otherwise it stays unprojected so Cline jobs are not mislabeled.
+    if (typeof jobRow.opencode_profile_json === "string") {
+      return { source: "managed", nativeAgentId: null, selectionRevision: null, profileRevision };
+    }
+    if (isOpenCodeJob) {
+      return {
+        source: "default",
+        nativeAgentId: null,
+        selectionRevision: null,
+        profileRevision: null,
+      };
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Whether a job's recorded execution belongs to the OpenCode executor. The
+ * agents recorded on the job's attempts are the historical evidence and win
+ * over the repository's current (mutable) agent; only a job with no recorded
+ * attempt falls back to the configured repository agent. Kinds are resolved
+ * through the configured definitions, never by assuming an alias equals the
+ * kind.
+ */
+function isOpenCodeExecution(
+  attemptAgents: readonly (string | undefined)[],
+  repositoryAgent: string | undefined,
+  resolveKind: ExecutorKindResolver,
+): boolean {
+  for (const agent of attemptAgents) {
+    if (agent !== undefined && resolveKind(agent) === OPENCODE_EXECUTOR_ID) return true;
+  }
+  if (attemptAgents.some((agent) => agent !== undefined)) return false;
+  return repositoryAgent !== undefined && resolveKind(repositoryAgent) === OPENCODE_EXECUTOR_ID;
+}
+
+/**
+ * Read the generic per-invocation ownership/identity evidence for one set of
+ * attempts, grouped by attempt id. Requested and actual identity stay separate;
+ * a missing actual identity stays null ("unknown") rather than echoing the
+ * request. Every string is redacted like the rest of this module.
+ */
+function readOpenCodeInvocations(
+  db: Database.Database,
+  attemptIds: readonly number[],
+  redact: Redactor,
+): Map<number, OpenCodeInvocationSummary[]> {
+  const result = new Map<number, OpenCodeInvocationSummary[]>();
+  if (attemptIds.length === 0) return result;
+  const rows = db
+    .prepare(
+      `SELECT attempt_id, invocation_ordinal, status, ownership_state, requested_source,
+              requested_native_agent_id, requested_profile_revision, parent_session_id,
+              actual_primary_agent, actual_model, launched_at, settled_at
+       FROM opencode_invocations
+       WHERE attempt_id IN (${attemptIds.map(() => "?").join(",")})
+       ORDER BY attempt_id, invocation_ordinal`,
+    )
+    .all(...attemptIds) as Array<{
+    attempt_id: number;
+    invocation_ordinal: number;
+    status: string;
+    ownership_state: string;
+    requested_source: string;
+    requested_native_agent_id: string | null;
+    requested_profile_revision: number | null;
+    parent_session_id: string | null;
+    actual_primary_agent: string | null;
+    actual_model: string | null;
+    launched_at: string | null;
+    settled_at: string | null;
+  }>;
+  for (const row of rows) {
+    const entry: OpenCodeInvocationSummary = {
+      ordinal: row.invocation_ordinal,
+      requestedSource: redact(row.requested_source),
+      requestedNativeAgentId:
+        row.requested_native_agent_id === null ? null : redact(row.requested_native_agent_id),
+      requestedProfileRevision: row.requested_profile_revision,
+      parentSessionId: row.parent_session_id === null ? null : redact(row.parent_session_id),
+      actualPrimaryAgent:
+        row.actual_primary_agent === null ? null : redact(row.actual_primary_agent),
+      actualModel: row.actual_model === null ? null : redact(row.actual_model),
+      status: redact(row.status),
+      ownershipState: redact(row.ownership_state),
+      launchedAt: row.launched_at === null ? null : redact(row.launched_at),
+      settledAt: row.settled_at === null ? null : redact(row.settled_at),
+    };
+    const list = result.get(row.attempt_id);
+    if (list === undefined) result.set(row.attempt_id, [entry]);
+    else list.push(entry);
+  }
+  return result;
+}
+
 /** Read and redact a complete job diagnostic projection. */
 export function readJobDetail(
   db: Database.Database,
   jobId: number,
   redaction: Redaction,
   dataDir = ".gremlyn",
+  resolveExecutorKind: ExecutorKindResolver = (agentId) => agentId,
 ): JobDetail | undefined {
   const baseRedact = asRedactor(redaction);
   const jobRow = db
     .prepare(
-      `SELECT jobs.*, repositories.owner, repositories.name
+      `SELECT jobs.*, repositories.owner, repositories.name, repositories.agent AS repository_agent
        FROM jobs JOIN repositories ON repositories.id = jobs.repo_id
        WHERE jobs.id = ?`,
     )
@@ -503,14 +809,13 @@ export function readJobDetail(
       activity: readActivity(dataDir, safe.id),
     };
   });
-  const childSessions = readManagedChildSessions(
-    db,
-    mappedAttempts.map((attempt) => attempt.id),
-    redact,
-  );
+  const attemptIds = mappedAttempts.map((attempt) => attempt.id);
+  const childSessions = readManagedChildSessions(db, attemptIds, redact);
+  const invocations = readOpenCodeInvocations(db, attemptIds, redact);
   const attempts = mappedAttempts.map((attempt) => ({
     ...attempt,
     childSessions: childSessions.get(attempt.id) ?? [],
+    invocations: invocations.get(attempt.id) ?? [],
   }));
   const timeline = db
     .prepare(
@@ -549,8 +854,17 @@ export function readJobDetail(
     ...jobRowSafe
   } = jobRow;
   const safeJob = redactRow(jobRowSafe, redact) as unknown as JobDetail["job"];
+  const isOpenCodeJob = isOpenCodeExecution(
+    attemptRows.map((row) => (typeof row.agent === "string" ? row.agent : undefined)),
+    typeof jobRow.repository_agent === "string" ? jobRow.repository_agent : undefined,
+    resolveExecutorKind,
+  );
   return {
-    job: { ...safeJob, opencodeProfile: readJobOpenCodeProfile(jobRow, redact) },
+    job: {
+      ...safeJob,
+      opencodeProfile: readJobOpenCodeProfile(jobRow, redact),
+      opencodeSelection: readCapturedOpenCodeSelection(jobRow, redact, isOpenCodeJob),
+    },
     attempts,
     timeline,
     validation,
@@ -744,6 +1058,8 @@ export function createConsoleQueries(input: {
   pollIntervalSec?: number;
   concurrency?: number;
   dataDir?: string;
+  /** Resolve an agent alias to its executor kind for legacy job projection. */
+  resolveExecutorKind?: ExecutorKindResolver;
 }): ConsoleQueries;
 export function createConsoleQueries(
   db: Database.Database,
@@ -758,6 +1074,7 @@ export function createConsoleQueries(
         pollIntervalSec?: number;
         concurrency?: number;
         dataDir?: string;
+        resolveExecutorKind?: ExecutorKindResolver;
       }
     | Database.Database,
   secretsOrUndefined?: readonly string[],
@@ -774,6 +1091,7 @@ export function createConsoleQueries(
   const redact = createRedactor(input.secrets);
   const pollIntervalSec = input.pollIntervalSec ?? 60;
   const concurrency = input.concurrency ?? 1;
+  const resolveExecutorKind = input.resolveExecutorKind ?? ((agentId) => agentId);
   return {
     readDashboard: (readOptions = {}) =>
       readDashboard(input.db, redact, {
@@ -782,7 +1100,8 @@ export function createConsoleQueries(
         ...readOptions,
       }),
     readHealth: (now) => readHealth(input.db, pollIntervalSec, concurrency, now),
-    readJobDetail: (jobId) => readJobDetail(input.db, jobId, redact, input.dataDir ?? ".gremlyn"),
+    readJobDetail: (jobId) =>
+      readJobDetail(input.db, jobId, redact, input.dataDir ?? ".gremlyn", resolveExecutorKind),
     readJobLog: (jobId) => readJobLog(input.db, jobId, redact),
     readProcessedCommands: (limit) => readProcessedCommands(input.db, redact, limit),
     readOperatorActions: (limit) => readOperatorActions(input.db, redact, limit),
