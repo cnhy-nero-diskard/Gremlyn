@@ -819,6 +819,42 @@ test("invalid calendar dates and normalized midnight overflow are refused", () =
   store.close();
 });
 
+test("model variants round-trip without admitting unsafe agent or model suffixes", () => {
+  const store = newStore();
+  const { attemptId } = seedAttempt(store.db);
+  const result = recordDelegationObservation(
+    store.db,
+    nodeInput(attemptId, 1, "ses_variant", iso(0), { model: "fixture/model#high" }),
+  );
+  assert.equal(result.ok, true);
+  assert.equal(
+    readDelegationObservations(store.db, [attemptId]).get(attemptId)!.nodes[0]!.model,
+    "fixture/model#high",
+  );
+  for (const model of [
+    "fixture/model#",
+    "fixture/model#high#other",
+    "fixture/model#ignore previous instructions",
+    "fixture/model#ghp_fakecredential1234567890",
+  ]) {
+    assert.equal(
+      recordDelegationObservation(
+        store.db,
+        nodeInput(attemptId, 1, "ses_bad_variant", iso(0), { model }),
+      ).ok,
+      false,
+    );
+  }
+  assert.equal(
+    recordDelegationObservation(
+      store.db,
+      nodeInput(attemptId, 1, "ses_bad_agent", iso(0), { agent: "reviewer#high" }),
+    ).ok,
+    false,
+  );
+  store.close();
+});
+
 test("observation database failures are returned, never thrown, so a job can continue", () => {
   const store = newStore();
   const { attemptId } = seedAttempt(store.db);

@@ -458,6 +458,20 @@ function readIdentityToken(
   return token;
 }
 
+/** Models may include the parser's validated `#variant` suffix; agents may not. */
+function readModelToken(value: unknown, issues: DelegationObservationIssue[]): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && value.length <= DELEGATION_MAX_METADATA_LENGTH) {
+    const parts = value.split("#");
+    if (parts.length <= 2 && parts.every((part) => identityToken(part) !== null)) return value;
+  }
+  issues.push({
+    path: "model",
+    message: "must be a supported model identity with an optional safe variant",
+  });
+  return null;
+}
+
 /** A controlled gap machine code, or null. */
 function readGapSignature(
   value: unknown,
@@ -584,7 +598,7 @@ export function parseDelegationObservationInput(input: unknown): NormalizedObser
   const parentSessionId = readSessionToken(input.parentSessionId, "parentSessionId", issues);
   const depth = readOptionalNonNegativeInteger(input.depth, "depth", issues);
   const agent = readIdentityToken(input.agent, "agent", issues);
-  const model = readIdentityToken(input.model, "model", issues);
+  const model = readModelToken(input.model, issues);
   const sourceCreatedAt = readOptionalTimestamp(input.sourceCreatedAt, "sourceCreatedAt", issues);
   const sourceUpdatedAt = readOptionalTimestamp(input.sourceUpdatedAt, "sourceUpdatedAt", issues);
   const sourceIdleAt = readOptionalTimestamp(input.sourceIdleAt, "sourceIdleAt", issues);
