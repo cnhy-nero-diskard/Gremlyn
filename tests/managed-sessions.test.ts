@@ -816,7 +816,10 @@ test("settle cannot declare quiescence until the active map has been read succes
   // not proven, so the settlement must NOT return on that round.
   let activeCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
     active: () => {
       activeCalls += 1;
@@ -841,7 +844,10 @@ test("settle cannot declare quiescence until the active map has been read succes
 
 test("a never-readable active map fails the settlement at the bound instead of trusting an empty map", async () => {
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
     active: () => ({ status: 500, body: {} }),
   });
@@ -904,7 +910,10 @@ test("an empty parent-only tree hands an appeared child to the full settlement",
   // the parent-only proof hands off to the full child settlement.
   let listCalls = 0;
   const server = makeServer({
-    session: (id) => (id === PARENT ? parentEnvelope() : sessionEnvelope("ses_a")),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => {
       listCalls += 1;
       return listCalls === 1
@@ -1070,7 +1079,10 @@ test("the parent record must not carry a parentID: a root attempt is never a chi
 
 test("settle proves quiescence in one round when every child is already settled", async () => {
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
   });
   const settlement = await settleAttemptChildren({
@@ -1091,7 +1103,13 @@ test("settle proves quiescence in one round when every child is already settled"
 test("settle waits for a running child to complete instead of interrupting it", async () => {
   let listCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(listCalls >= 3 ? { outcome: "succeeded" } : {}),
+          }),
     list: () => {
       listCalls += 1;
       return listEnvelope([
@@ -1121,7 +1139,13 @@ test("settle waits for a running child to complete instead of interrupting it", 
 test("settle tracks a late-spawned background child as long as it attributes to the parent", async () => {
   let listCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(id === "ses_a" || listCalls >= 3 ? { outcome: "succeeded" } : {}),
+          }),
     list: () => {
       listCalls += 1;
       if (listCalls === 1) return listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]);
@@ -1151,7 +1175,13 @@ test("expiring the remaining timeout interrupts backend children and confirms th
   let interrupted = false;
   const { now, sleep } = fakeClock();
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([
         sessionRecord("ses_bg", {
@@ -1183,7 +1213,13 @@ test("expiring the remaining timeout interrupts backend children and confirms th
 test("cancellation interrupts active children on the next observation", async () => {
   let interrupted = false;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([sessionRecord("ses_bg", { outcome: interrupted ? "interrupted" : undefined })]),
     interrupt: () => {
@@ -1251,7 +1287,7 @@ test("a cancelled settlement keeps polling in the interrupt phase instead of spi
 test("a child that ignores interrupt until the grace expires fails the attempt", async () => {
   const { now, sleep } = fakeClock();
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) => (id === PARENT ? parentEnvelope() : sessionEnvelope(id, { parentID: PARENT })),
     list: () => listEnvelope([sessionRecord("ses_stubborn")]),
     interrupt: () => result200({ interrupted: true }),
   });
@@ -1364,7 +1400,10 @@ test("a child whose outcome contradicts the active map is unknown and fails", as
 
 test("an unusable active map fails the settlement: quiescence cannot be cross-checked", async () => {
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
     active: () => result200({ data: { ses_a: { type: "idle" } } }),
   });
@@ -1471,7 +1510,13 @@ test("the active map never enumerates children: unrelated running sessions are i
   // so it must neither appear in the settlement nor be interrupted.
   let interrupted = false;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([sessionRecord("ses_bg", { outcome: interrupted ? "interrupted" : undefined })]),
     // Per the pinned probe, interrupt removes the child from the active map;
@@ -1504,7 +1549,13 @@ test("the active map never enumerates children: unrelated running sessions are i
 test("the whole flow uses exactly the pinned routes", async () => {
   let interrupted = false;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, {
+            parentID: PARENT,
+            ...(interrupted ? { outcome: "interrupted" } : {}),
+          }),
     list: () =>
       listEnvelope([sessionRecord("ses_bg", { outcome: interrupted ? "interrupted" : undefined })]),
     interrupt: () => {

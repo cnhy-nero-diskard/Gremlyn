@@ -750,6 +750,18 @@ interface DescendantTree {
   readonly depths: ReadonlyMap<string, number>;
   /** Descendant id -> the session id it was listed under. */
   readonly parents: ReadonlyMap<string, string | undefined>;
+  /**
+   * Settlement-only proof that each node was terminal before its own child
+   * listing. Undefined for discovery walks, which only enumerate descendants.
+   */
+  readonly terminalAncestorsBeforeListing?: boolean;
+}
+
+interface DescendantTreeReadOptions {
+  /** Require each possible spawner to be terminal before listing its children. */
+  readonly requireTerminalAncestorsBeforeListing?: boolean;
+  /** The root record already read immediately before starting this walk. */
+  readonly rootRecord?: OpenCodeSessionInfo;
 }
 
 type DescendantTreeResult =
@@ -771,11 +783,15 @@ async function readDescendantTree(
   http: ManagedSessionHttp,
   rootSessionId: string,
   attemptDirectory: string,
+  options?: DescendantTreeReadOptions,
 ): Promise<DescendantTreeResult> {
   const records = new Map<string, OpenCodeSessionInfo>();
   const depths = new Map<string, number>();
   const order: string[] = [];
   const parents = new Map<string, string | undefined>();
+  let terminalAncestorsBeforeListing =
+    options?.requireTerminalAncestorsBeforeListing === true &&
+    options.rootRecord?.outcome !== undefined;
   // The root is seeded so a child listing that tries to return the root itself
   // is caught as a cycle rather than silently attributed.
   parents.set(rootSessionId, undefined);
@@ -785,6 +801,53 @@ async function readDescendantTree(
   ];
   while (queue.length > 0) {
     const node = queue.shift()!;
+    if (options?.requireTerminalAncestorsBeforeListing === true) {
+      if (node.depth === 0) {
+        // The caller read the root before entering this walk. A missing or
+        // non-terminal root record cannot prove this listing excludes future
+        // children.
+        if (options.rootRecord?.outcome === undefined) {
+          terminalAncestorsBeforeListing = false;
+        }
+      } else {
+        // A descendant can spawn its own children, so its own record must be
+        // read BEFORE its child listing. A listing at a higher level may carry
+        // an older snapshot and cannot prove this node was already terminal.
+        const parentId = parents.get(node.id);
+        const read = await readAttemptChildRecord(
+          http,
+          node.id,
+          parentId ?? rootSessionId,
+          attemptDirectory,
+        );
+        if (read.status === "missing") {
+          throw new OpenCodeSessionSettleError(
+            `child session ${node.id} returned 404 before its descendants could be enumerated; ` +
+              "a child that cannot be confirmed stopped must fail the attempt",
+            { unknownSessionIds: [node.id] },
+          );
+        }
+        if (read.status === "unusable") {
+          throw new OpenCodeSessionSettleError(
+            `child session ${node.id} returned a session record that cannot be attributed to this attempt; ` +
+              "unknown child state fails the attempt",
+            { unknownSessionIds: [node.id] },
+          );
+        }
+        if (read.status === "glitch") {
+          // We can still enumerate known nodes, but this round cannot prove
+          // that this ancestor was unable to spawn during its listing.
+          terminalAncestorsBeforeListing = false;
+        } else {
+          // Prefer the direct, pre-listing record for this node's settlement
+          // state as well: the parent listing can carry an older snapshot.
+          records.set(node.id, read.record);
+          if (read.record.outcome === undefined) {
+            terminalAncestorsBeforeListing = false;
+          }
+        }
+      }
+    }
     const listing = await listChildrenForNode(http, node.id, attemptDirectory);
     if (listing.status === "glitch") return { status: "glitch" };
     if (listing.status === "unusable") return { status: "unusable" };
@@ -818,7 +881,18 @@ async function readDescendantTree(
       queue.push({ id: child.id, depth });
     }
   }
-  return { status: "ok", tree: { records, order, depths, parents } };
+  return {
+    status: "ok",
+    tree: {
+      records,
+      order,
+      depths,
+      parents,
+      ...(options?.requireTerminalAncestorsBeforeListing === true
+        ? { terminalAncestorsBeforeListing }
+        : {}),
+    },
+  };
 }
 
 /**
@@ -1256,6 +1330,7 @@ async function settleTree(
     const roundRecords = new Map<string, OpenCodeSessionInfo>();
     const roundDepths = new Map<string, number>();
     let listingOk = false;
+    let terminalAncestorsBeforeListing = false;
 
     // A complete fresh walk of the WHOLE descendant tree is authoritative. A
     // glitched listing falls back to per-node reads of the pinned
@@ -1263,7 +1338,10 @@ async function settleTree(
     // quiescence: the fallback cannot prove no NEW child appeared at any level
     // since the last complete walk, so a transient listing failure can never by
     // itself invent quiescence.
-    const treeRead = await readDescendantTree(http, parentSessionId, attemptDirectory);
+    const treeRead = await readDescendantTree(http, parentSessionId, attemptDirectory, {
+      requireTerminalAncestorsBeforeListing: true,
+      ...(parentRead.status === "ok" ? { rootRecord: parentRead.record } : {}),
+    });
     if (treeRead.status === "unusable") {
       // Readable HTTP with an unusable list is a state, not a race: this round
       // cannot verify any descendant, so quiescence is unproven.
@@ -1309,6 +1387,7 @@ async function settleTree(
     } else {
       listingOk = true;
       const tree = treeRead.tree;
+      terminalAncestorsBeforeListing = tree.terminalAncestorsBeforeListing === true;
       // Disappearance and parent stability: a known descendant must still be
       // present under the SAME parent; a vanished or moved session cannot be
       // confirmed stopped and fails the attempt.
@@ -1400,11 +1479,20 @@ async function settleTree(
     }
 
     // Quiescent only with the full, fresh picture of THIS round: a successful
-    // listing (the child set is complete), a successful active map (every
-    // absence is real), every child terminal and inactive, AND the parent
-    // itself terminal and inactive (so it cannot spawn more children after the
-    // listing we just trusted).
-    if (running.length === 0 && unreadable.length === 0 && listingOk && activeOk && parentProven) {
+    // listing (the child set is complete), every possible spawner terminal
+    // BEFORE its own child listing, a successful active map (every absence is
+    // real), every child terminal and inactive, AND the parent itself terminal
+    // and inactive. The per-ancestor proof closes the nested spawn/list race:
+    // an ancestor that was still running during its listing must be observed
+    // again on a later round, when any child it created will be included.
+    if (
+      running.length === 0 &&
+      unreadable.length === 0 &&
+      listingOk &&
+      terminalAncestorsBeforeListing &&
+      activeOk &&
+      parentProven
+    ) {
       const children: ChildSettlement[] = [];
       for (const id of seenOrder) {
         const record = roundRecords.get(id);
@@ -1500,6 +1588,9 @@ async function settleTree(
         }
         if (!parentProven) {
           reasons.push(`parent session ${parentSessionId} still not terminal and inactive`);
+        }
+        if (!terminalAncestorsBeforeListing) {
+          reasons.push("not every potential spawner was proven terminal before its child listing");
         }
         if (!listingOk) reasons.push("the child listing could not be successfully read");
         if (!activeOk) reasons.push("the active sessions map could not be successfully read");

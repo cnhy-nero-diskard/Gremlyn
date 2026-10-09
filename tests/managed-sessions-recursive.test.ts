@@ -307,7 +307,8 @@ test("a still-running nested descendant blocks quiescence and is interrupted", a
         ? parentEnvelope()
         : sessionEnvelope(id, {
             parentID: id === "ses_child" ? PARENT : "ses_child",
-            outcome: id === "ses_grand" && !grandInterrupted ? undefined : "succeeded",
+            outcome:
+              id === "ses_grand" ? (grandInterrupted ? "interrupted" : undefined) : "succeeded",
           }),
     list: () => listEnvelope([sessionRecord("ses_child", { outcome: "succeeded" })]),
     children: (parentId) =>
@@ -453,6 +454,86 @@ test("a descendant spawned around the listing is adopted, never returned as a cl
   );
 });
 
+test("a descendant spawned after its own listing blocks settlement until it terminates", async () => {
+  let aChildListings = 0;
+  let bSpawned = false;
+  let aDone = false;
+  let bDone = false;
+  let sleeps = 0;
+  let activeSawB = false;
+  const server = makeServer({
+    session: (id) => {
+      if (id === PARENT) return parentEnvelope();
+      if (id === "ses_a") {
+        // The higher-level listing below can be stale: the direct record read
+        // immediately before A's child listing still says A is running.
+        return sessionEnvelope("ses_a", {
+          parentID: PARENT,
+          ...(aDone ? { outcome: "succeeded" as const } : {}),
+        });
+      }
+      if (id === "ses_b" && bSpawned) {
+        return sessionEnvelope("ses_b", {
+          parentID: "ses_a",
+          ...(bDone ? { outcome: "succeeded" as const } : {}),
+        });
+      }
+      return { status: 404, body: {} };
+    },
+    // The root's listed row may already look terminal, while A's own direct
+    // record still reports it running. Its child listing is not safe to trust.
+    list: () => listEnvelope([sessionRecord("ses_a", { outcome: "succeeded" })]),
+    children: (parentId) => {
+      if (parentId !== "ses_a") return listEnvelope([]);
+      aChildListings += 1;
+      if (aChildListings === 1) return listEnvelope([]); // Initial discovery.
+      if (aChildListings === 2) {
+        // A creates B and finishes immediately after its child listing. The
+        // active-map read that follows sees B, but not A.
+        bSpawned = true;
+        aDone = true;
+        return listEnvelope([]);
+      }
+      return listEnvelope([
+        sessionRecord("ses_b", {
+          parentID: "ses_a",
+          ...(bDone ? { outcome: "succeeded" as const } : {}),
+        }),
+      ]);
+    },
+    active: () => {
+      if (bSpawned && !bDone) activeSawB = true;
+      return activeEnvelope(bSpawned && !bDone ? ["ses_b"] : []);
+    },
+  });
+  const { now, sleep } = fakeClock();
+  const settlement = await settleAttemptChildren({
+    parentSessionId: PARENT,
+    attemptDirectory: CWD,
+    http: server.http,
+    timeoutMs: 1_000_000,
+    pollIntervalMs: 10,
+    now,
+    sleep: async (ms) => {
+      await sleep(ms);
+      sleeps += 1;
+      if (sleeps >= 2) bDone = true;
+    },
+  });
+
+  assert.equal(
+    activeSawB,
+    true,
+    "B must be active after A's listing and before settlement can return",
+  );
+  assert.equal(bDone, true, "settlement must wait for B's terminal outcome");
+  assert.deepEqual(
+    settlement.children.map((child) => child.id),
+    ["ses_a", "ses_b"],
+  );
+  assert.equal(settlement.children.find((child) => child.id === "ses_b")?.outcome, "succeeded");
+});
+
 /* ------------------------------------------------------------------ *
  * Fail-closed edges
  * ------------------------------------------------------------------ */
@@ -568,7 +649,10 @@ test("a previously seen child echoed by its own listing fails closed without int
   // hide a native descendant.
   let childListCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => listEnvelope([sessionRecord("ses_child", { outcome: "succeeded" })]),
     children: (parentId) => {
       if (parentId !== "ses_child") return listEnvelope([]);
@@ -780,7 +864,10 @@ test("a nested descendant that changes parent fails closed", async () => {
   let listCalls = 0;
   let childCalls = 0;
   const server = makeServer({
-    session: () => parentEnvelope(),
+    session: (id) =>
+      id === PARENT
+        ? parentEnvelope()
+        : sessionEnvelope(id, { parentID: PARENT, outcome: "succeeded" }),
     list: () => {
       listCalls += 1;
       // Discovery sees ses_child only; the observation round also returns
