@@ -366,6 +366,68 @@ is known inactive and whose child tree is provably quiescent; anything uncertain
 is quarantined — its manifest, files, and evidence are preserved and the
 workspace is barred from reuse and publication until resolved.
 
+#### Observing live delegation
+
+The dashboard's delegation summary and job detail's expandable execution tree
+report **observed** sessions, separately from configured/callable agents. Each
+attempt and parent invocation has its own tree; two sessions running the same
+agent remain distinct. Managed, native, and default OpenCode invocations use the
+same strict parentage and workspace checks. Cline and unavailable telemetry show
+limited observability, not an assertion that no delegation happened.
+
+- **Running** requires fresh active-session evidence. A readable inactive session
+  without a terminal outcome is **idle**, not finished. Conflicting, missing, or
+  stale evidence becomes **unknown**, retaining its last-known evidence.
+- **Invoked** means the session record was verified but no usable activity
+  evidence has been observed; it does not assert that the agent is running.
+- A cancellation request does not prove that a child was interrupted. Job failure,
+  cancellation, or daemon restart never supplies a child's missing outcome.
+- **Last observed** is a telemetry read time, not an agent heartbeat. Source times
+  are shown only where supported; otherwise duration is labeled observed. No
+  percentage-complete estimate is inferred.
+- **No delegations observed yet** means no attributable child has been retained
+  with available coverage. It does not prove that no child ever ran. Polling can
+  miss short activity, and partial trees/history and telemetry gaps are disclosed.
+
+Collection retains whitelisted identity, parentage, supported timestamps,
+state/outcome, and coverage metadata in additive observation tables. It excludes
+private prompts, instructions, arbitrary runtime metadata, session titles, and
+tool input/output. New delegation activity blocks hide prompt-bearing arguments;
+old activity snapshots remain readable. Observation history is separate from
+the independent session-settlement evidence that gates validation and publication.
+
+The verified pinned-runtime transport is polling-only; there is no supported
+bounded event subscription through the installed CLI. Polls are coalesced, with
+a one-second delay between rounds, five-second read timeouts and at most four
+observation reads in flight process-wide. Nonterminal evidence becomes unknown
+after two seconds without a usable observation. Polling may miss rapid changes;
+source loss and reconciliation do not reconstruct unseen intermediate states.
+Background-tool activity coverage is unverified, so absence from the active map
+must not be read as proof that a background session stopped.
+
+Observation is bounded to 256 nodes and eight child levels per invocation, with
+at most 50 listing pages per parent edge. Retained state transitions are capped
+at 128 per node and 2,048 per invocation; oldest transitions are trimmed with a
+partial-history marker. Gap history is capped at 128 records per invocation,
+retaining open gaps before older reconciled gaps. These display/history limits
+do not replace the stricter fail-closed safety tree checks. Additive evidence remains in SQLite when output
+artifacts are removed; it is not a complete transcript or continuous event history.
+
+The normal tests use fixtures and skip the real-model acceptance harness. An
+operator can explicitly opt in with `GREMLYN_LIVE_OPENCODE_MODEL` and run
+`node --import tsx --test tests/opencode-managed-live.test.ts`. That harness uses
+a long-lived delegated child, fixture GitHub, and a local bare Git remote; a
+provider call may still cost money. See
+[the pinned telemetry contract](docs/delegation-telemetry-contract.md) for verified
+transport coverage and unsupported-field limitations.
+
+For observation-only rollback, set `GREMLYN_DELEGATION_OBSERVATION=off` before
+starting the daemon. This disables collection helpers without deleting additive
+history or changing delegation permissions, cancellation, ownership recovery,
+child-settlement, workspace reuse, validation, or publication gates. Retained
+nonterminal evidence ages to unknown; missing telemetry does not mean stopped
+sessions. Re-enable collection by removing the override and restarting.
+
 ## Start and verify connectivity
 
 ```powershell
