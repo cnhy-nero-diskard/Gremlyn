@@ -24,6 +24,10 @@ import {
 import { ResolutionOrchestrator } from "./orchestrator/resolution.js";
 import { OperatorActionStore } from "./store/actions.js";
 import { Store } from "./store/db.js";
+import {
+  importLegacyManagedChildObservations,
+  markDelegationObservationsUnknownOnRestart,
+} from "./store/delegation-observations.js";
 import { JobStore } from "./store/jobs.js";
 import { type AgentExecutor, type ReasoningEffort } from "./types.js";
 import { reportRepositoryProviderMismatches, syncRepositories } from "./runtime/repositories.js";
@@ -106,6 +110,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       secrets: [config.githubToken, config.consoleToken],
       db: store.db,
     });
+    // Observational history never supplies a recovery/quiescence verdict.
+    // Import only attributable legacy evidence and retract unresolved live
+    // assertions before exposing the console after a daemon restart.
+    const legacyObservationImport = importLegacyManagedChildObservations(store.db);
+    const observationRestart = markDelegationObservationsUnknownOnRestart(store.db);
+    if (!legacyObservationImport.ok || !observationRestart.ok) {
+      logger.warn("delegation observation startup unavailable", { reason: "storage" });
+    }
     const github = new OctokitGitHubClient(config.githubToken);
     const authenticatedLogin = await github.getAuthenticatedLogin();
     if (authenticatedLogin.toLowerCase() !== config.orchestratorLogin.toLowerCase()) {

@@ -6,10 +6,10 @@
 
 ## 2. Durable observation state
 
-- [ ] 2.1 Add additive node, invocation-coverage and bounded transition storage keyed by attempt/invocation/session; verify migration, uniqueness, cap/trimming and reopen tests preserve useful metadata without fabricating history.
-- [ ] 2.2 Import attributable legacy managed child records as explicitly limited evidence; verify missing roots/timestamps and unsettled/unknown outcomes stay uncertain rather than becoming new live invocations.
-- [ ] 2.3 Implement idempotent observation upserts and the independent freshness/state matrix; verify repeated events, inactive nonterminal idle state, active-terminal contradictions, cancellation-request separation and last-known evidence retention.
-- [ ] 2.4 Handle restart and storage failure with unresolved nodes projected unknown and coverage gaps retained where possible; verify simulated database failures cannot fail an agent job and stale fallback remains honest.
+- [x] 2.1 Add additive node, invocation-coverage and bounded transition storage keyed by attempt/invocation/session; verify migration, uniqueness, cap/trimming and reopen tests preserve useful metadata without fabricating history.
+- [x] 2.2 Import attributable legacy managed child records as explicitly limited evidence; verify missing roots/timestamps and unsettled/unknown outcomes stay uncertain rather than becoming new live invocations.
+- [x] 2.3 Implement idempotent observation upserts and the independent freshness/state matrix; verify repeated events, inactive nonterminal idle state, active-terminal contradictions, cancellation-request separation and last-known evidence retention.
+- [x] 2.4 Handle restart and storage failure with unresolved nodes projected unknown and coverage gaps retained where possible; verify simulated database failures cannot fail an agent job and stale fallback remains honest.
 
 ## 3. Live attributed collection
 
