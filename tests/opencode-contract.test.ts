@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ClineExecutor, extractSessionId } from "../src/agent/cline.js";
 import type { ProcessRunner } from "../src/agent/launcher.js";
 import { EXPECTED_OPENCODE_VERSION, OpenCodeExecutor } from "../src/agent/opencode.js";
@@ -75,7 +75,7 @@ test("OpenCode executor builds the v2 argv with #variant carrying the effort tie
     return okResult(REAL_STREAM_TEXT);
   };
   const root = mkdtempSync(join(tmpdir(), "gremlyn-opencode-"));
-  const opts = options(root);
+  const opts = options(root, { dataDir: relative(process.cwd(), join(root, "attempt-data")) });
   const result = await new OpenCodeExecutor("opencode-test", runner).run(opts);
 
   assert.equal(calls.length, 1);

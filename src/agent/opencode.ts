@@ -225,8 +225,9 @@ export class OpenCodeExecutor implements AgentExecutor {
       // Review context can include the full diff hunk for a newly added file.
       // Windows limits a CreateProcess command line to 32,767 characters, so
       // keep the prompt out of argv and attach it as a UTF-8 file instead.
-      await mkdir(opts.dataDir, { recursive: true });
-      promptDirectory = await mkdtemp(join(opts.dataDir, "opencode-prompt-"));
+      const attemptDataDir = resolve(opts.dataDir);
+      await mkdir(attemptDataDir, { recursive: true });
+      promptDirectory = await mkdtemp(join(attemptDataDir, "opencode-prompt-"));
       const promptPath = join(promptDirectory, "resolution-prompt.md");
       await writeFile(promptPath, opts.prompt, { encoding: "utf8", mode: 0o600 });
       const args = [
