@@ -13,6 +13,8 @@ export interface ProcessResult {
   exitCode: number | undefined;
   timedOut: boolean;
   isCanceled: boolean;
+  /** Present only when the OS refused to create the child process. */
+  spawnErrorCode?: string;
 }
 
 export type ProcessRunner = (
@@ -149,10 +151,17 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
   }
   const result = await subprocess;
   return {
-    stdout: result.stdout,
-    stderr: result.stderr,
+    // execa leaves these undefined when CreateProcess fails before a child
+    // exists (for example, ENAMETOOLONG on Windows). Keep the common result
+    // contract stable so executors can classify that failure without parsing
+    // an undefined stream as if a process had run.
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
     exitCode: result.exitCode,
     timedOut: result.timedOut,
     isCanceled: result.isCanceled,
+    ...(typeof result.code === "string" && result.signal === undefined
+      ? { spawnErrorCode: result.code }
+      : {}),
   };
 };

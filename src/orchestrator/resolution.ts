@@ -27,6 +27,7 @@ import {
   type ManagedSessionHttp,
 } from "../agent/managed-sessions.js";
 import { defaultRunner, type ProcessRunner } from "../agent/launcher.js";
+import { OpenCodeProcessStartError } from "../agent/opencode.js";
 import { resolveOpenCodeWorker, type OpenCodeWorker } from "../agent/opencode-worker.js";
 import { preflightNativeAgent } from "../agent/native-discovery.js";
 import {
@@ -36,6 +37,7 @@ import {
 } from "../agent/opencode-identity.js";
 import {
   beginOpenCodeInvocation,
+  markOpenCodeInvocationNotStarted,
   recordOpenCodeInvocation as recordOpenCodeOwnershipInvocation,
   settleOpenCodeInvocation as settleOpenCodeOwnershipInvocation,
   type OpenCodeOwnershipDescriptor,
@@ -1941,6 +1943,25 @@ export class ResolutionOrchestrator {
     }
   }
 
+  /** Persist a runner-confirmed failure that happened before process creation. */
+  private markOpenCodeInvocationNotStarted(
+    context: OpenCodeAttemptContext,
+    invocation: OpenCodeInvocationState,
+    code: string,
+  ): void {
+    markOpenCodeInvocationNotStarted({
+      attemptDataDir: context.attemptDataDir,
+      attemptId: context.attemptId,
+      ordinal: invocation.ordinal,
+    });
+    this.jobs.settleOpenCodeInvocation({
+      invocationId: invocation.invocationId,
+      status: "failed",
+      ownershipState: "not-started",
+      detail: `OpenCode process did not start (${code})`,
+    });
+  }
+
   /**
    * Run every permitted parent invocation of an OpenCode attempt, settling the
    * complete descendant tree after EACH exit and before any retry or result
@@ -1987,7 +2008,27 @@ export class ResolutionOrchestrator {
       try {
         try {
           result = await input.runOnce(invocation);
-        } catch {
+        } catch (error) {
+          if (error instanceof OpenCodeProcessStartError) {
+            try {
+              this.markOpenCodeInvocationNotStarted(context, invocation, error.code);
+              context.launched = false;
+            } catch (persistenceError) {
+              this.markOpenCodeInvocationUnproven(
+                invocation,
+                "confirmed pre-launch failure could not be durably recorded",
+              );
+              context.unproven = new StageFailure(
+                input.stage,
+                "managed-session-discovery-failed",
+                `OpenCode did not start, but its no-launch evidence could not be persisted: ${
+                  persistenceError instanceof Error ? persistenceError.message : "storage failure"
+                }`,
+              );
+              throw context.unproven;
+            }
+            throw new StageFailure(input.stage, "agent-process-crash", error.message);
+          }
           // A rejected executor promise has no trustworthy terminal process
           // result. Even if a parent id was observed, the executor may have
           // stopped reporting while its service-owned tree remains live. Preserve

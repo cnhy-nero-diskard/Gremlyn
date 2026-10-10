@@ -73,7 +73,7 @@ export type OpenCodePrimarySource = "default" | "native" | "managed";
  * yet known. `pending` is journaled BEFORE the spawn; any later observation
  * upgrades the same invocation to `launched`.
  */
-export type OpenCodeLaunchState = "pending" | "launched";
+export type OpenCodeLaunchState = "pending" | "launched" | "not-started";
 
 /**
  * The exact worker context a launch used. This is intentionally tiny and
@@ -267,7 +267,7 @@ function validateInvocation(value: unknown, label: string): OpenCodeOwnershipInv
     invalid(`${label}.ordinal is invalid`);
   }
   const launchState = record.launchState;
-  if (launchState !== "pending" && launchState !== "launched") {
+  if (launchState !== "pending" && launchState !== "launched" && launchState !== "not-started") {
     invalid(`${label}.launchState is invalid`);
   }
   const descriptor = validateDescriptor(record.descriptor, label);
@@ -289,6 +289,12 @@ function validateInvocation(value: unknown, label: string): OpenCodeOwnershipInv
     if (!isSafeText(settledAt)) invalid(`${label}.settledAt is required once settled`);
   } else if (settledAt !== null) {
     invalid(`${label}.settledAt must be null while unsettled`);
+  }
+  if (
+    launchState === "not-started" &&
+    (!record.settled || parentSessionId !== null || observedPrimaryId !== null)
+  ) {
+    invalid(`${label} is not-started but has launch evidence or is unsettled`);
   }
   return {
     ordinal: record.ordinal as number,
@@ -606,6 +612,55 @@ export function settleOpenCodeInvocation(
   };
   const invocations = [...existing.invocations];
   invocations[index] = updated;
+  return writeOpenCodeOwnership(input.attemptDataDir, {
+    ...existing,
+    invocations,
+    updatedAt: now,
+  });
+}
+
+export interface MarkOpenCodeInvocationNotStartedInput {
+  attemptDataDir: string;
+  attemptId: number;
+  ordinal: number;
+  now?: string;
+}
+
+/**
+ * Record a runner-confirmed pre-spawn failure. This is distinct from a pending
+ * launch: recovery may safely release the workspace because no CLI process or
+ * service-owned session was created.
+ */
+export function markOpenCodeInvocationNotStarted(
+  input: MarkOpenCodeInvocationNotStartedInput,
+): OpenCodeOwnershipJournal {
+  const existing = requireJournal(input.attemptDataDir, input.attemptId);
+  const now = input.now ?? new Date().toISOString();
+  const index = existing.invocations.findIndex((entry) => entry.ordinal === input.ordinal);
+  if (index < 0) {
+    throw new OpenCodeOwnershipError(
+      `no invocation ordinal ${String(input.ordinal)} exists in the ownership journal for ` +
+        `attempt ${String(input.attemptId)}`,
+    );
+  }
+  const prior = existing.invocations[index]!;
+  if (
+    prior.launchState !== "pending" ||
+    prior.parentSessionId !== null ||
+    prior.observedPrimaryId !== null ||
+    prior.settled
+  ) {
+    throw new OpenCodeOwnershipError(
+      `invocation ${String(input.ordinal)} has launch evidence and cannot be marked not-started`,
+    );
+  }
+  const invocations = [...existing.invocations];
+  invocations[index] = {
+    ...prior,
+    launchState: "not-started",
+    settled: true,
+    settledAt: now,
+  };
   return writeOpenCodeOwnership(input.attemptDataDir, {
     ...existing,
     invocations,

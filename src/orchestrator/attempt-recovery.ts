@@ -940,6 +940,7 @@ async function decideGenericOwnershipAttempt(
   let settledChildren = 0;
   let settledRounds = 0;
   for (const invocation of ownership.invocations) {
+    if (invocation.launchState === "not-started") continue;
     if (invocation.parentSessionId !== null) sessionIds.push(invocation.parentSessionId);
     if (invocation.launchState === "pending") {
       return quarantine(
