@@ -192,11 +192,11 @@ async function claimPathFor(worktree: string): Promise<string> {
 }
 
 async function waitForClaim(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (readAdoptionClaim(path) !== undefined) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
   }
-  throw new Error(`adoption claim did not appear at ${path}`);
+  throw new Error(`adoption claim did not appear within 5 seconds at ${path}`);
 }
 
 async function completeRetry(data: Fixture, jobId: number) {

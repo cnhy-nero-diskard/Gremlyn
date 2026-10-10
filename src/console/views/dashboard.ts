@@ -1,5 +1,6 @@
 import type {
   DashboardModel,
+  DelegationSummary,
   JobSummary,
   OpenCodeSelectionSummary,
   RepositorySummary,
@@ -393,12 +394,49 @@ function repositoryCard(
   return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${selection}${opencode}${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
 }
 
+/** Job statuses whose delegation summary is worth its one subdued line. */
+const LIVE_JOB_STATUSES = new Set([
+  "preparing",
+  "running",
+  "validating",
+  "publishing",
+  "reporting",
+]);
+
+/**
+ * The single subdued delegation phrase for a running job. Observed counts are
+ * labeled observed; a supported-but-empty observation is distinct from an
+ * executor that cannot expose attributed sessions at all, and no percentage is
+ * ever shown.
+ */
+function delegationPhrase(delegation: DelegationSummary): string {
+  if (delegation.availability === "unsupported") return "not observable for this executor";
+  if (delegation.availability === "unavailable") return "telemetry unavailable";
+  if (delegation.observed === 0) {
+    return delegation.availability === "partial"
+      ? "no delegations observed yet (partial coverage)"
+      : "no delegations observed yet";
+  }
+  const parts: string[] = [];
+  if (delegation.invoked > 0) parts.push(`${String(delegation.invoked)} observed invoked`);
+  if (delegation.running > 0) parts.push(`${String(delegation.running)} observed active`);
+  if (delegation.idle > 0) parts.push(`${String(delegation.idle)} observed idle`);
+  if (delegation.succeeded > 0) parts.push(`${String(delegation.succeeded)} observed completed`);
+  if (delegation.failed > 0) parts.push(`${String(delegation.failed)} observed failed`);
+  if (delegation.interrupted > 0)
+    parts.push(`${String(delegation.interrupted)} observed interrupted`);
+  if (delegation.unknown > 0) parts.push(`${String(delegation.unknown)} unknown`);
+  const base = parts.length > 0 ? parts.join(" · ") : "observed delegation evidence";
+  return delegation.limited ? `${base} (partial coverage)` : base;
+}
+
 /**
  * A job as a two-line row rather than a run-on sentence of links and dashes.
  *
  * The repository and PR are the identity and lead; the status pill sits at the
  * far right where the eye can scan a whole lane's states in one vertical pass;
- * the command and timings drop to a quieter second line.
+ * the command and timings drop to a quieter second line. A running job carries
+ * one muted delegation line, never a percentage or a configured-agent claim.
  */
 function jobItem(job: JobSummary): string {
   const meta = [
@@ -406,7 +444,11 @@ function jobItem(job: JobSummary): string {
     relativeTimeElement(job.created_at),
     `<span class="job-row-elapsed">${elapsedTimeElement(job.created_at, job.finished_at)}</span>`,
   ].join("");
-  return `<li class="job-row" data-live-key="job-${String(job.id)}"><a class="job-row-main" href="/jobs/${job.id}"><span class="job-row-repo">${escapeHtml(`${job.owner}/${job.name}`)} <span class="job-row-pr">#${String(job.pr_number)}</span></span>${statusPill(job.status)}</a><span class="job-row-meta">${meta}</span></li>`;
+  const delegation =
+    job.delegation !== undefined && LIVE_JOB_STATUSES.has(job.status)
+      ? `<span class="job-row-delegation muted" data-delegation-summary data-delegation-availability="${escapeHtml(job.delegation.availability)}" data-delegation-scope="${escapeHtml(job.delegation.scope)}" title="Observed child sessions of the latest attempt">delegation: ${escapeHtml(delegationPhrase(job.delegation))}</span>`
+      : "";
+  return `<li class="job-row" data-live-key="job-${String(job.id)}"><a class="job-row-main" href="/jobs/${job.id}"><span class="job-row-repo">${escapeHtml(`${job.owner}/${job.name}`)} <span class="job-row-pr">#${String(job.pr_number)}</span></span>${statusPill(job.status)}</a><span class="job-row-meta">${meta}${delegation}</span></li>`;
 }
 
 export function jobLane(title: string, jobs: JobSummary[], regionId?: string): string {

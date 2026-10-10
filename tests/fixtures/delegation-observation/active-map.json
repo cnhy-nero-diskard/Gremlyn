@@ -1,0 +1,6 @@
+{
+  "data": {
+    "ses_fixture_running": { "type": "running" },
+    "ses_fixture_background": { "type": "running" }
+  }
+}

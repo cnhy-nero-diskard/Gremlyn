@@ -27,6 +27,7 @@ import {
   type ManagedSessionHttp,
 } from "../agent/managed-sessions.js";
 import { defaultRunner, type ProcessRunner } from "../agent/launcher.js";
+import { OpenCodeProcessStartError } from "../agent/opencode.js";
 import { resolveOpenCodeWorker, type OpenCodeWorker } from "../agent/opencode-worker.js";
 import { preflightNativeAgent } from "../agent/native-discovery.js";
 import {
@@ -36,10 +37,29 @@ import {
 } from "../agent/opencode-identity.js";
 import {
   beginOpenCodeInvocation,
+  markOpenCodeInvocationNotStarted,
   recordOpenCodeInvocation as recordOpenCodeOwnershipInvocation,
   settleOpenCodeInvocation as settleOpenCodeOwnershipInvocation,
   type OpenCodeOwnershipDescriptor,
 } from "../agent/opencode-ownership.js";
+import {
+  DELEGATION_OBSERVER_CALL_TIMEOUT_MS,
+  DELEGATION_OBSERVER_GLOBAL_CONCURRENCY,
+  DelegationConcurrencyLimiter,
+  DelegationObserver,
+  type DelegationCoverageRecord,
+  type DelegationGapReason,
+  type DelegationInvocationEnd,
+  type DelegationInvocationRecord,
+  type DelegationObservedNode,
+  type DelegationObservationSink,
+} from "../agent/delegation-observer.js";
+import {
+  reconcileDelegationGaps,
+  recordDelegationCoverage,
+  recordDelegationObservation,
+  reportDelegationGap,
+} from "../store/delegation-observations.js";
 import {
   parseOpenCodeAgentProfile,
   type OpenCodeAgentProfile,
@@ -49,7 +69,12 @@ import {
   removeAttemptDataDir,
   seedAgentCredentials,
 } from "../agent/credentials.js";
-import { ACTIVITY_LINE_MAPPERS, ActivityRecorder, writeActivity } from "../agent/activity.js";
+import {
+  ACTIVITY_LINE_MAPPERS,
+  ActivityRecorder,
+  writeActivity,
+  type ActivityAttribution,
+} from "../agent/activity.js";
 import { buildAgentEnvironment } from "../agent/environment.js";
 import {
   bundledProviderCatalog,
@@ -331,6 +356,28 @@ export interface ResolutionOrchestratorOptions {
       runner?: ProcessRunner;
     };
   };
+  /**
+   * Live delegation-observation seam (tasks 3.1-3.4; design D1/D2/D4). Absent
+   * disables live observation entirely — no timers, no transport reads, no store
+   * writes — so existing behavior is unchanged. The parent supplies the sink
+   * factory once the durable store is wired; {@link createStoreDelegationSink}
+   * adapts the observation store for that purpose.
+   *
+   * Observation is strictly failure-isolated: a sink or transport fault is
+   * caught inside the observer and can never change an attempt's outcome,
+   * safety proofs, cancellation, or publication gates.
+   */
+  delegationObservation?: {
+    createSink: (input: {
+      attemptId: number;
+      ordinal: number;
+      workspacePath: string;
+    }) => DelegationObservationSink;
+    pollIntervalMs?: number;
+    perCallTimeoutMs?: number;
+    /** Process-wide cap on concurrent observation reads; defaults to 4. */
+    globalConcurrencyLimit?: number;
+  };
 }
 
 /**
@@ -393,6 +440,20 @@ interface OpenCodeInvocationState {
   /** A synchronous ownership-persistence failure observed in the run stream. */
   persistenceFailure: Error | undefined;
   identity: OpenCodeInitialIdentity;
+  /**
+   * The invocation-scoped live observer (tasks 3.1-3.4), or `undefined` when
+   * observation is not configured. It is read-only and failure-isolated: it can
+   * never contribute to `persistenceFailure`, cancel the run, or alter any
+   * safety proof. A retry receives a NEW invocation with its own observer, so
+   * an earlier root's tree is never reused or overwritten.
+   */
+  observer: DelegationObserver | undefined;
+  /**
+   * Removes the cancellation listener wired to this observer. A cancel request
+   * sets an observation flag only — it never stops observation or interrupts a
+   * session — so the confirmed runtime interruption can still be observed.
+   */
+  observerCleanup: (() => void) | undefined;
 }
 
 export class ResolutionOrchestrator {
@@ -400,6 +461,10 @@ export class ResolutionOrchestrator {
   private readonly queue: JobQueue<{ commitSha?: string }>;
   private readonly repositories = new Map<number, RuntimeRepository>();
   private readonly redact: (value: string) => string;
+  /** Lazily created, shared by every observer so reads stay globally bounded. */
+  private delegationLimiterInstance: DelegationConcurrencyLimiter | undefined;
+  /** Every live observer, so daemon teardown can dispose them all. */
+  private readonly delegationObservers = new Set<DelegationObserver>();
 
   constructor(private readonly options: ResolutionOrchestratorOptions) {
     this.jobs = new JobStore(options.db);
@@ -1357,7 +1422,211 @@ export class ResolutionOrchestrator {
       parentSessionId: undefined,
       persistenceFailure: undefined,
       identity: {},
+      observer: undefined,
+      observerCleanup: undefined,
     };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Live delegation observation (tasks 3.1-3.4)
+   * ------------------------------------------------------------------ *
+   *
+   * Observation is a strictly read-only, failure-isolated companion to the
+   * safety settlement. It starts with the invocation (before the parent is
+   * spawned), attaches the root as soon as the run stream exposes it, keeps
+   * reconciling through settlement, then finalizes. Nothing here may throw into
+   * the attempt: a failure to start, poll, persist or finalize is logged and
+   * otherwise ignored.
+   */
+
+  /** Lazily create the process-wide observation read limiter. */
+  private delegationLimiter(limit: number | undefined): DelegationConcurrencyLimiter {
+    if (this.delegationLimiterInstance === undefined) {
+      this.delegationLimiterInstance = new DelegationConcurrencyLimiter(
+        limit ?? DELEGATION_OBSERVER_GLOBAL_CONCURRENCY,
+      );
+    }
+    return this.delegationLimiterInstance;
+  }
+
+  /**
+   * Start the invocation-scoped observer with the EXACT worker descriptor the
+   * run uses (same binary/cwd/env/runner → same OpenCode service). A sink
+   * factory or observer construction failure disables observation for this
+   * invocation only, records a best-effort unavailable coverage/gap where a
+   * sink is available, and never affects the run.
+   */
+  private beginDelegationObservation(input: {
+    context: OpenCodeAttemptContext;
+    invocation: OpenCodeInvocationState;
+    attemptId: number;
+    signal: AbortSignal;
+  }): DelegationObserver | undefined {
+    const seam = this.options.delegationObservation;
+    if (seam === undefined) return undefined;
+    const factoryInput = {
+      attemptId: input.attemptId,
+      ordinal: input.invocation.ordinal,
+      workspacePath: input.context.worker.cwd,
+    };
+    let sink: DelegationObservationSink;
+    try {
+      sink = seam.createSink(factoryInput);
+    } catch {
+      // No sink to write coverage through; a safe diagnostic only.
+      this.options.logger.warn("delegation observation sink factory failed; observation disabled", {
+        attemptId: input.attemptId,
+        invocation: input.invocation.ordinal,
+      });
+      return undefined;
+    }
+    let observer: DelegationObserver;
+    try {
+      observer = new DelegationObserver({
+        attemptId: input.attemptId,
+        ordinal: input.invocation.ordinal,
+        workspacePath: input.context.worker.cwd,
+        http: this.openCodeSessionHttp(input.context.worker),
+        sink,
+        limiter: this.delegationLimiter(seam.globalConcurrencyLimit),
+        ...(seam.pollIntervalMs === undefined ? {} : { pollIntervalMs: seam.pollIntervalMs }),
+        ...(seam.perCallTimeoutMs === undefined ? {} : { perCallTimeoutMs: seam.perCallTimeoutMs }),
+        warn: (event, fields) => this.options.logger.warn(event, fields),
+      });
+    } catch {
+      this.options.logger.warn("delegation observer failed to start; observation disabled", {
+        attemptId: input.attemptId,
+        invocation: input.invocation.ordinal,
+      });
+      void this.reportObservationUnavailable(sink, factoryInput);
+      return undefined;
+    }
+    this.delegationObservers.add(observer);
+    // A cancellation REQUEST is only a flag: observation must keep running so a
+    // later confirmed interruption can be observed. The listener is removed in
+    // `endDelegationObservation`, never at request time.
+    const onAbort = (): void => observer.requestCancellation();
+    if (input.signal.aborted) observer.requestCancellation();
+    else input.signal.addEventListener("abort", onAbort, { once: true });
+    input.invocation.observerCleanup = () => input.signal.removeEventListener("abort", onAbort);
+    try {
+      observer.start();
+    } catch {
+      input.invocation.observerCleanup();
+      this.delegationObservers.delete(observer);
+      observer.dispose();
+      void this.reportObservationUnavailable(sink, factoryInput);
+      return undefined;
+    }
+    return observer;
+  }
+
+  /**
+   * Final-reconcile and tear down one invocation's observer. Runs on EVERY
+   * completion path (success, failure, cancellation, throw) and never throws:
+   * a broken sink or transport cannot mask or change the attempt's outcome.
+   */
+  private async endDelegationObservation(
+    attemptId: number,
+    invocation: OpenCodeInvocationState,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const observer = invocation.observer;
+    const cleanup = invocation.observerCleanup;
+    invocation.observerCleanup = undefined;
+    if (observer === undefined) return;
+    try {
+      // A queue cancellation is a REQUEST; it is carried separately from any
+      // observed outcome and never fabricated into an interruption.
+      if (signal.aborted) observer.requestCancellation();
+      await observer.finalize();
+    } catch {
+      this.options.logger.warn("delegation observer finalization failed", {
+        attemptId,
+        invocation: invocation.ordinal,
+      });
+    } finally {
+      // Guarantees no timer, waiter or signal listener outlives the attempt,
+      // even if finalize misbehaved.
+      cleanup?.();
+      this.delegationObservers.delete(observer);
+      observer.dispose();
+    }
+  }
+
+  /**
+   * Dispose every live observer (daemon/attempt teardown). Public so the
+   * process owner can stop observation without touching the safety lifecycle;
+   * it clears timers and queued waiters only and never interrupts a session.
+   */
+  disposeDelegationObservation(): void {
+    for (const observer of this.delegationObservers) {
+      try {
+        observer.dispose();
+      } catch {
+        // Teardown is best-effort; a broken observer must not block shutdown.
+      }
+    }
+    this.delegationObservers.clear();
+  }
+
+  /**
+   * Best-effort "observation unavailable" coverage when the observer could not
+   * be constructed. Each sink call is bounded and swallowed, so a hung or
+   * broken store cannot stall attempt startup.
+   */
+  private async reportObservationUnavailable(
+    sink: DelegationObservationSink,
+    input: { attemptId: number; ordinal: number; workspacePath: string },
+  ): Promise<void> {
+    const at = Date.now();
+    const bounded = (action: () => void | Promise<void>): Promise<void> =>
+      new Promise<void>((resolvePromise) => {
+        const timer = setTimeout(resolvePromise, DELEGATION_OBSERVER_CALL_TIMEOUT_MS);
+        Promise.resolve()
+          .then(action)
+          .then(
+            () => {
+              clearTimeout(timer);
+              resolvePromise();
+            },
+            () => {
+              clearTimeout(timer);
+              resolvePromise();
+            },
+          );
+      });
+    await bounded(() =>
+      sink.begin({
+        attemptId: input.attemptId,
+        ordinal: input.ordinal,
+        workspacePath: input.workspacePath,
+        startedAt: at,
+      }),
+    );
+    await bounded(() =>
+      sink.coverage({
+        attemptId: input.attemptId,
+        ordinal: input.ordinal,
+        observedAt: at,
+        status: "unavailable",
+        partial: true,
+        gaps: ["transport-error"],
+        currentGaps: ["transport-error"],
+        nodeCount: 0,
+        truncated: false,
+        transport: "polling",
+      }),
+    );
+    await bounded(() =>
+      sink.end({
+        attemptId: input.attemptId,
+        ordinal: input.ordinal,
+        endedAt: at,
+        status: "unavailable",
+        gaps: ["transport-error"],
+      }),
+    );
   }
 
   /**
@@ -1373,6 +1642,10 @@ export class ResolutionOrchestrator {
   }): void {
     const parentSessionId = openCodeStreamParentId(input.line);
     if (parentSessionId === undefined) return;
+    // Hand the root to the observer before ANY ownership persistence: a
+    // repeated id is idempotent, and a contradictory second id is recorded as a
+    // gap while the first root is retained. Observation never blocks the run.
+    input.invocation.observer?.attachRoot(parentSessionId);
     if (input.invocation.parentSessionId !== undefined) return;
     try {
       this.jobs.recordOpenCodeInvocationLaunch({
@@ -1401,6 +1674,9 @@ export class ResolutionOrchestrator {
     sessionId: string | undefined;
   }): void {
     if (input.sessionId === undefined) return;
+    // The result-derived id is an equally valid early root when the run stream
+    // did not expose one; idempotent when both agree.
+    input.invocation.observer?.attachRoot(input.sessionId);
     if (input.invocation.parentSessionId === undefined) {
       input.invocation.parentSessionId = input.sessionId;
     }
@@ -1667,6 +1943,25 @@ export class ResolutionOrchestrator {
     }
   }
 
+  /** Persist a runner-confirmed failure that happened before process creation. */
+  private markOpenCodeInvocationNotStarted(
+    context: OpenCodeAttemptContext,
+    invocation: OpenCodeInvocationState,
+    code: string,
+  ): void {
+    markOpenCodeInvocationNotStarted({
+      attemptDataDir: context.attemptDataDir,
+      attemptId: context.attemptId,
+      ordinal: invocation.ordinal,
+    });
+    this.jobs.settleOpenCodeInvocation({
+      invocationId: invocation.invocationId,
+      status: "failed",
+      ownershipState: "not-started",
+      detail: `OpenCode process did not start (${code})`,
+    });
+  }
+
   /**
    * Run every permitted parent invocation of an OpenCode attempt, settling the
    * complete descendant tree after EACH exit and before any retry or result
@@ -1701,76 +1996,118 @@ export class ResolutionOrchestrator {
     for (;;) {
       await input.beforeInvocation?.();
       const invocation = this.beginOpenCodeInvocation({ context, stage: input.stage });
+      // Start live observation before the parent spawns; it attaches the root
+      // from the run stream and keeps reconciling through settlement below.
+      invocation.observer = this.beginDelegationObservation({
+        context,
+        invocation,
+        attemptId: input.attemptId,
+        signal: input.signal,
+      });
       context.launched = true;
       try {
-        result = await input.runOnce(invocation);
-      } catch {
-        // A rejected executor promise has no trustworthy terminal process
-        // result. Even if a parent id was observed, the executor may have
-        // stopped reporting while its service-owned tree remains live. Preserve
-        // the pre-launch journal as unresolved and refuse every publication or
-        // retry path rather than treating a thrown run as a settled failure.
-        this.markOpenCodeInvocationUnproven(invocation, "executor returned no terminal result");
-        context.unproven = new StageFailure(
+        try {
+          result = await input.runOnce(invocation);
+        } catch (error) {
+          if (error instanceof OpenCodeProcessStartError) {
+            try {
+              this.markOpenCodeInvocationNotStarted(context, invocation, error.code);
+              context.launched = false;
+            } catch (persistenceError) {
+              this.markOpenCodeInvocationUnproven(
+                invocation,
+                "confirmed pre-launch failure could not be durably recorded",
+              );
+              context.unproven = new StageFailure(
+                input.stage,
+                "managed-session-discovery-failed",
+                `OpenCode did not start, but its no-launch evidence could not be persisted: ${
+                  persistenceError instanceof Error ? persistenceError.message : "storage failure"
+                }`,
+              );
+              throw context.unproven;
+            }
+            throw new StageFailure(input.stage, "agent-process-crash", error.message);
+          }
+          // A rejected executor promise has no trustworthy terminal process
+          // result. Even if a parent id was observed, the executor may have
+          // stopped reporting while its service-owned tree remains live. Preserve
+          // the pre-launch journal as unresolved and refuse every publication or
+          // retry path rather than treating a thrown run as a settled failure.
+          this.markOpenCodeInvocationUnproven(invocation, "executor returned no terminal result");
+          context.unproven = new StageFailure(
+            input.stage,
+            "managed-session-discovery-failed",
+            `OpenCode invocation ${String(invocation.ordinal)} did not return a terminal process ` +
+              "result; its session tree cannot be proven quiescent and no validation or publication may begin",
+          );
+          throw context.unproven;
+        }
+        this.recordOpenCodeInvocationSession({
+          context,
+          invocation,
+          sessionId: result.sessionId,
+        });
+        if (invocation.persistenceFailure !== undefined) {
+          this.markOpenCodeInvocationUnproven(invocation, "ownership persistence failed");
+          context.unproven = new StageFailure(
+            input.stage,
+            "managed-session-discovery-failed",
+            `the OpenCode ownership record for invocation ${String(invocation.ordinal)} could not ` +
+              `be persisted: ${invocation.persistenceFailure.message}`,
+          );
+          throw context.unproven;
+        }
+        invocation.identity = await this.readOpenCodeInvocationIdentity({ context, invocation });
+        await this.settleOpenCodeInvocation({
+          context,
+          invocation,
+          remainingBudgetMs: managedRemainingBudgetMs(
+            input.configuredTimeoutSec,
+            input.runStartedAt,
+          ),
+          signal: input.signal,
+          jobId: input.jobId,
+          stage: input.stage,
+        });
+        const identityPersistenceFailure = invocation.persistenceFailure as Error | undefined;
+        if (identityPersistenceFailure !== undefined) {
+          throw new StageFailure(
+            input.stage,
+            "managed-session-discovery-failed",
+            `the initial identity for OpenCode invocation ${String(invocation.ordinal)} could not ` +
+              `be persisted: ${identityPersistenceFailure.message}`,
+          );
+        }
+        const contradiction = this.openCodeIdentityContradiction(
+          context,
+          invocation.identity,
           input.stage,
-          "managed-session-discovery-failed",
-          `OpenCode invocation ${String(invocation.ordinal)} did not return a terminal process ` +
-            "result; its session tree cannot be proven quiescent and no validation or publication may begin",
         );
-        throw context.unproven;
-      }
-      this.recordOpenCodeInvocationSession({
-        context,
-        invocation,
-        sessionId: result.sessionId,
-      });
-      if (invocation.persistenceFailure !== undefined) {
-        this.markOpenCodeInvocationUnproven(invocation, "ownership persistence failed");
-        context.unproven = new StageFailure(
-          input.stage,
-          "managed-session-discovery-failed",
-          `the OpenCode ownership record for invocation ${String(invocation.ordinal)} could not ` +
-            `be persisted: ${invocation.persistenceFailure.message}`,
+        if (contradiction !== undefined) throw contradiction;
+        if (input.signal.aborted) break;
+        if (invocationNumber >= maxInvocations) break;
+        if (result.timedOut) break;
+        if (result.exitCode === 0) break;
+        if (isTerminalAgentResult(result)) break;
+        invocationNumber += 1;
+        this.options.logger.warn(
+          "agent invocation failed, retrying after a fresh quiescence proof",
+          {
+            jobId: input.jobId,
+            attemptId: input.attemptId,
+            invocation: invocationNumber,
+            maxInvocations,
+            exitCode: result.exitCode,
+          },
         );
-        throw context.unproven;
+      } finally {
+        // Final reconcile after settlement, then dispose this invocation's
+        // observer. Runs on success, failure, cancellation and throw; it never
+        // throws, so it cannot alter the attempt outcome. Each invocation has
+        // its own observer, so a retry's tree is never merged with the prior one.
+        await this.endDelegationObservation(input.attemptId, invocation, input.signal);
       }
-      invocation.identity = await this.readOpenCodeInvocationIdentity({ context, invocation });
-      await this.settleOpenCodeInvocation({
-        context,
-        invocation,
-        remainingBudgetMs: managedRemainingBudgetMs(input.configuredTimeoutSec, input.runStartedAt),
-        signal: input.signal,
-        jobId: input.jobId,
-        stage: input.stage,
-      });
-      const identityPersistenceFailure = invocation.persistenceFailure as Error | undefined;
-      if (identityPersistenceFailure !== undefined) {
-        throw new StageFailure(
-          input.stage,
-          "managed-session-discovery-failed",
-          `the initial identity for OpenCode invocation ${String(invocation.ordinal)} could not ` +
-            `be persisted: ${identityPersistenceFailure.message}`,
-        );
-      }
-      const contradiction = this.openCodeIdentityContradiction(
-        context,
-        invocation.identity,
-        input.stage,
-      );
-      if (contradiction !== undefined) throw contradiction;
-      if (input.signal.aborted) break;
-      if (invocationNumber >= maxInvocations) break;
-      if (result.timedOut) break;
-      if (result.exitCode === 0) break;
-      if (isTerminalAgentResult(result)) break;
-      invocationNumber += 1;
-      this.options.logger.warn("agent invocation failed, retrying after a fresh quiescence proof", {
-        jobId: input.jobId,
-        attemptId: input.attemptId,
-        invocation: invocationNumber,
-        maxInvocations,
-        exitCode: result.exitCode,
-      });
     }
     return result;
   }
@@ -2324,11 +2661,28 @@ export class ResolutionOrchestrator {
           ...(openCode === undefined ? {} : { openCodeSelection: selectionForRun! }),
           ...(openCode === undefined ? {} : { openCodeWorker: openCode.worker }),
           onLine: (line) => {
-            recorder.push(line);
             if (openCode !== undefined && invocation !== undefined) {
+              // Capture the root BEFORE recording the line, so an already
+              // verified root can attribute the block. Verification itself is
+              // asynchronous; the getter is the ONLY attribution source — never
+              // the raw journal id.
               this.captureOpenCodeParentFromLine({ context: openCode, invocation, line });
               if (invocation.persistenceFailure !== undefined) runAbort.abort();
             }
+            const verifiedRoot = invocation?.observer?.verifiedRootSessionId;
+            const attribution: ActivityAttribution | undefined =
+              invocation === undefined
+                ? undefined
+                : verifiedRoot === undefined
+                  ? {} // clear any prior invocation's attribution
+                  : {
+                      sessionId: verifiedRoot,
+                      rootSessionId: verifiedRoot,
+                      invocation: invocation.ordinal,
+                      role: "parent",
+                    };
+            if (attribution === undefined) recorder.push(line);
+            else recorder.push(line, attribution);
             // The stream arrives token by token; rewriting the snapshot on every
             // line would mean hundreds of writes a second for no visible gain.
             const now = Date.now();
@@ -2708,4 +3062,148 @@ export class ResolutionOrchestrator {
     if (preserveDir) return;
     removeAttemptDataDir(attemptDataDir);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Durable-store sink adapter (tasks 2.x ↔ 3.x, best effort)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Adapt the durable delegation-observation store to the observer's
+ * `begin`/`upsert`/`coverage`/`end` sink contract.
+ *
+ * The store owns persistence, caps, transitions and state projection; the
+ * observer owns transport, attribution and bounds. This adapter is the seam:
+ *
+ * - `begin` opens coverage with `transport: "polling"`, state `unknown`.
+ * - `upsert` forwards only whitelisted fields (`sourceKind: "session-poll"`)
+ *   with epoch bounds converted to ISO strings, and preserves the node's
+ *   explicit `presence`: a failed refresh or vanished session is written as
+ *   `missing` with a null active value, so it can never resurrect a stale
+ *   running/succeeded display.
+ * - `coverage` writes transport/freshness and opens each NEW gap from the
+ *   round's own `currentGaps` (never the cumulative historical `gaps`, which
+ *   would reopen already-reconciled gaps on every healthy poll); a healthy,
+ *   non-partial round closes the outstanding gaps.
+ * - `end` writes the final coverage.
+ *
+ * Every store function is already failure-isolated (it returns a result rather
+ * than throwing); this adapter additionally swallows any unexpected fault so a
+ * broken store can never affect a job. It never writes a safety record.
+ */
+export function createStoreDelegationSink(
+  db: Database.Database,
+  identity: { attemptId: number; ordinal: number },
+): DelegationObservationSink {
+  const reportedGaps = new Set<DelegationGapReason>();
+  const iso = (ms: number): string => new Date(ms).toISOString();
+  const settle = (action: () => unknown): void => {
+    try {
+      action();
+    } catch {
+      // Store writes are best-effort; observation must never affect a job.
+    }
+  };
+  const coverageState = (status: DelegationCoverageRecord["status"]): string =>
+    status === "healthy" ? "ok" : status === "partial" ? "degraded" : "unavailable";
+
+  return {
+    begin(record: DelegationInvocationRecord): void {
+      settle(() =>
+        recordDelegationCoverage(db, {
+          attemptId: identity.attemptId,
+          invocationOrdinal: identity.ordinal,
+          at: iso(record.startedAt),
+          transport: "polling",
+          transportState: "unknown",
+        }),
+      );
+    },
+    upsert(node: DelegationObservedNode): void {
+      settle(() =>
+        recordDelegationObservation(db, {
+          attemptId: identity.attemptId,
+          invocationOrdinal: identity.ordinal,
+          sessionId: node.sessionId,
+          rootSessionId: node.rootSessionId,
+          ...(node.parentSessionId === undefined ? {} : { parentSessionId: node.parentSessionId }),
+          depth: node.depth,
+          sourceKind: "session-poll",
+          ...(node.identity.agentId === undefined ? {} : { agent: node.identity.agentId }),
+          ...(node.identity.model === undefined ? {} : { model: node.identity.model }),
+          ...(node.sourceCreatedAt === undefined
+            ? {}
+            : { sourceCreatedAt: iso(node.sourceCreatedAt) }),
+          ...(node.sourceUpdatedAt === undefined
+            ? {}
+            : { sourceUpdatedAt: iso(node.sourceUpdatedAt) }),
+          ...(node.sourceIdleAt === undefined ? {} : { sourceIdleAt: iso(node.sourceIdleAt) }),
+          observedAt: iso(node.lastObservedAt),
+          // A node whose refresh failed or that vanished is persisted as
+          // MISSING current evidence with a null active value, so the store
+          // cannot resurrect a stale running/succeeded state. Identity/outcome
+          // history is retained by the store's merge, not re-asserted here.
+          presence: node.presence,
+          active: node.presence === "observed" ? (node.active ?? null) : null,
+          outcome: node.presence === "observed" ? (node.outcome ?? null) : null,
+          cancellationRequested: node.cancellationRequested,
+        }),
+      );
+    },
+    coverage(record: DelegationCoverageRecord): void {
+      settle(() =>
+        recordDelegationCoverage(db, {
+          attemptId: identity.attemptId,
+          invocationOrdinal: identity.ordinal,
+          at: iso(record.observedAt),
+          transport: "polling",
+          transportState: coverageState(record.status),
+          lastAttemptAt: iso(record.observedAt),
+          ...(record.status === "healthy" ? { lastSuccessAt: iso(record.observedAt) } : {}),
+          truncated: record.truncated,
+          nodeLimitReached: record.gaps.includes("node-cap"),
+        }),
+      );
+      // Open only THIS round's gaps. `record.gaps` is cumulative history, so
+      // iterating it here would reopen a gap that a later healthy round already
+      // reconciled on every subsequent healthy poll; `currentGaps` is the round's
+      // own subset and is empty on a healthy round.
+      for (const gap of record.currentGaps) {
+        if (reportedGaps.has(gap)) continue;
+        reportedGaps.add(gap);
+        settle(() =>
+          reportDelegationGap(db, {
+            attemptId: identity.attemptId,
+            invocationOrdinal: identity.ordinal,
+            signature: gap,
+            detail: `delegation observation gap: ${gap}`,
+            at: iso(record.observedAt),
+          }),
+        );
+      }
+      if (record.status === "healthy" && !record.partial) {
+        settle(() =>
+          reconcileDelegationGaps(db, {
+            attemptId: identity.attemptId,
+            invocationOrdinal: identity.ordinal,
+            at: iso(record.observedAt),
+          }),
+        );
+        reportedGaps.clear();
+      }
+    },
+    end(record: DelegationInvocationEnd): void {
+      settle(() =>
+        recordDelegationCoverage(db, {
+          attemptId: identity.attemptId,
+          invocationOrdinal: identity.ordinal,
+          at: iso(record.endedAt),
+          transport: "polling",
+          transportState: coverageState(record.status),
+          lastAttemptAt: iso(record.endedAt),
+          ...(record.status === "healthy" ? { lastSuccessAt: iso(record.endedAt) } : {}),
+        }),
+      );
+    },
+  };
 }

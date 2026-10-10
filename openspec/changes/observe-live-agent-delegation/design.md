@@ -47,7 +47,7 @@ Project state from fresh supported evidence rather than reusing `classifyChildSe
 | Verified spawn/record, active state not yet known | Invoked; current execution unknown |
 | Nonterminal record plus fresh active presence | Running |
 | Nonterminal record plus fresh active absence | Idle, not finished |
-| Terminal outcome plus fresh active absence | Observed succeeded/failed/interrupted |
+| Terminal outcome without active contradiction | Observed succeeded/failed/interrupted |
 | Terminal record plus active presence, missing record or stale source | Unknown, retaining last-known evidence |
 
 Show cancellation requested independently until runtime interruption is confirmed. A poll refresh only advances last-observed time, not last-action/heartbeat; use source update/action metadata only when its semantics are verified. Elapsed time uses supported source bounds where available, otherwise clearly labeled observed duration; never invent a terminal end instant. Unknown children are not counted as completed, and active/completed counters are labeled observed when coverage is partial.
