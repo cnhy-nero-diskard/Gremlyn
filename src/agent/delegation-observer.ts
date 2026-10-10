@@ -459,7 +459,6 @@ export class DelegationObserver {
       options.perCallTimeoutMs,
       DELEGATION_OBSERVER_CALL_TIMEOUT_MS,
     );
-    this.roundBudgetMs = clampPositive(options.roundBudgetMs, this.perCallTimeoutMs);
     this.limiter =
       options.limiter ??
       new DelegationConcurrencyLimiter(
@@ -468,6 +467,16 @@ export class DelegationObserver {
     this.nodeLimit = clampCount(options.nodeLimit, DELEGATION_OBSERVER_NODE_LIMIT);
     this.depthLimit = clampCount(options.depthLimit, DELEGATION_OBSERVER_DEPTH_LIMIT);
     this.pageLimit = clampCount(options.pageLimit, DELEGATION_OBSERVER_PAGE_LIMIT);
+    // A normal single-page sweep lists and refreshes each node, emits each
+    // observation, and reads the active map/coverage. Give that bounded
+    // multi-read round a budget derived from its node cap instead of reusing the
+    // timeout for one GET. Every read and sink call remains individually
+    // bounded, and callers can still set a tighter explicit round budget.
+    const defaultRoundBudgetMs = this.perCallTimeoutMs * (3 * this.nodeLimit + 3);
+    this.roundBudgetMs = clampPositive(
+      options.roundBudgetMs,
+      Math.min(defaultRoundBudgetMs, 2_147_483_647),
+    );
     this.now = options.now ?? (() => Date.now());
     this.warn = options.warn ?? (() => {});
   }
@@ -692,7 +701,7 @@ export class DelegationObserver {
     }
     if (this.roundTimedOut && !this.disposed) {
       this.noteGap("call-timeout");
-      await this.publishCoverage(this.now(), this.knownNodes.size);
+      await this.publishCoverage(this.knownNodes.size);
     }
   }
 
@@ -711,19 +720,19 @@ export class DelegationObserver {
 
   private async reconcile(): Promise<void> {
     if (this.disposed) return;
-    const now = this.now();
     this.currentGaps.clear();
     this.truncatedLastRound = false;
 
     const root = this.rootSessionId;
     if (root === undefined) {
       this.noteGap("root-missing");
-      await this.publishIfRoundActive(now, 0);
+      await this.publishIfRoundActive(0);
       return;
     }
 
     const rootRead = await this.readSession(root);
     if (this.roundStopped()) return;
+    const rootObservedAt = this.now();
     if (rootRead.status !== "ok") {
       this.revokeRootVerification();
       this.noteGap(
@@ -733,13 +742,13 @@ export class DelegationObserver {
             ? rootRead.gap
             : "root-unverified",
       );
-      await this.publishIfRoundActive(now, 0);
+      await this.publishIfRoundActive(0);
       return;
     }
     if (!this.isVerifiedRoot(root, rootRead.record)) {
       this.revokeRootVerification();
       this.noteGap("root-unverified");
-      await this.publishIfRoundActive(now, 0);
+      await this.publishIfRoundActive(0);
       return;
     }
     // Runtime verification succeeded: the root is now attributable.
@@ -769,7 +778,14 @@ export class DelegationObserver {
         this.truncatedLastRound = true;
         continue;
       }
-      const node = await this.projectNode(id, discovered, root, rootRead.record, active, now);
+      const node = await this.projectNode(
+        id,
+        discovered,
+        root,
+        rootRead.record,
+        active,
+        rootObservedAt,
+      );
       observed += 1;
       if (this.roundStopped()) return;
       await this.emitSink(() => this.sink.upsert(node));
@@ -798,7 +814,7 @@ export class DelegationObserver {
       await this.emitSink(() => this.sink.upsert(lost));
     }
 
-    await this.publishIfRoundActive(now, observed);
+    await this.publishIfRoundActive(observed);
   }
 
   /**
@@ -806,9 +822,9 @@ export class DelegationObserver {
    * round publishes a single timeout snapshot from `reconcileSafely` instead, so
    * the body never leaves a half-observed round advertised as current coverage.
    */
-  private async publishIfRoundActive(now: number, nodeCount: number): Promise<void> {
+  private async publishIfRoundActive(nodeCount: number): Promise<void> {
     if (this.roundStopped()) return;
-    await this.publishCoverage(now, nodeCount);
+    await this.publishCoverage(nodeCount);
   }
 
   /**
@@ -830,15 +846,19 @@ export class DelegationObserver {
     root: string,
     rootRecord: DelegationSessionRecord,
     active: ReadonlySet<string> | undefined,
-    now: number,
+    rootObservedAt: number,
   ): Promise<DelegationObservedNode> {
     let record: DelegationSessionRecord | undefined;
     let presence: DelegationEvidencePresence = "observed";
+    let observedAt = rootObservedAt;
 
     if (id === root) {
       record = rootRecord;
     } else {
       const read = await this.readSession(id);
+      // This node's current evidence is timestamped at its own record-read
+      // completion, not at the beginning of a potentially long tree sweep.
+      observedAt = this.now();
       if (read.status === "ok") {
         if (
           read.record.parentIdUnrecognized ||
@@ -889,11 +909,13 @@ export class DelegationObserver {
     const observation = projectDelegationObservation({
       ...(record === undefined ? { sessionId: id } : { record }),
       ...(activePresence === undefined ? {} : { active: activePresence }),
-      lastObservedAt: now,
-      now,
+      lastObservedAt: observedAt,
+      now: observedAt,
       cancellationRequested: this.cancellationRequested,
     });
-    const firstObservedAt = prior?.firstObservedAt ?? now;
+    const firstObservedAt = prior?.firstObservedAt ?? observedAt;
+    const lastObservedAt =
+      presence === "observed" ? observedAt : (prior?.lastObservedAt ?? observedAt);
     const node: DelegationObservedNode = {
       sessionId: id,
       rootSessionId: root,
@@ -912,7 +934,7 @@ export class DelegationObserver {
       ...(sourceUpdatedAt === undefined ? {} : { sourceUpdatedAt }),
       ...(sourceIdleAt === undefined ? {} : { sourceIdleAt }),
       firstObservedAt,
-      lastObservedAt: now,
+      lastObservedAt,
       cancellationRequested: this.cancellationRequested,
     };
     this.knownNodes.set(id, {
@@ -922,7 +944,7 @@ export class DelegationObserver {
       depth: discovered.depth,
       role: node.role,
       firstObservedAt,
-      lastObservedAt: now,
+      lastObservedAt,
       last: node,
     });
     return node;
@@ -1206,7 +1228,7 @@ export class DelegationObserver {
     this.historicalGaps.add(reason);
   }
 
-  private async publishCoverage(now: number, nodeCount: number): Promise<void> {
+  private async publishCoverage(nodeCount: number): Promise<void> {
     const everObserved = this.knownNodes.size > 0;
     const partial = this.currentGaps.size > 0 || this.truncatedLastRound;
     const status: DelegationCoverageStatus = !everObserved
@@ -1219,7 +1241,7 @@ export class DelegationObserver {
         attemptId: this.attemptId,
         ordinal: this.ordinal,
         ...(this.rootSessionId === undefined ? {} : { rootSessionId: this.rootSessionId }),
-        observedAt: now,
+        observedAt: this.now(),
         status,
         partial,
         gaps: [...this.historicalGaps],

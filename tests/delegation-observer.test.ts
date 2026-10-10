@@ -19,6 +19,10 @@ import {
   type DelegationObservedNode,
   type DelegationObservationSink,
 } from "../src/agent/delegation-observer.js";
+import {
+  parseDelegationSessionRecord,
+  projectDelegationObservation,
+} from "../src/agent/delegation-observation.js";
 import type {
   ManagedHttpResult,
   ManagedSessionHttp,
@@ -440,6 +444,85 @@ test("individually refreshes a known record before classifying", async () => {
 
   assert.equal(sink.latest("ses_child")?.state, "running");
   assert.ok(server.recordCallsFor("ses_child") >= 1);
+});
+
+test("timestamps delayed child observations at read completion and ages them naturally", async () => {
+  const server = new FakeSessionServer();
+  server.add({ id: "ses_root", directory: DIR });
+  for (const id of ["ses_child_a", "ses_child_b", "ses_child_c"]) {
+    server.add({ id, parentID: "ses_root", directory: DIR });
+    server.recordDelayMs.set(`/api/session/${id}`, 700);
+  }
+  server.active.add("ses_child_c");
+  const sink = new RecordingSink();
+  const observer = observerFor(server, sink);
+  observer.attachRoot("ses_root");
+
+  const startedAt = Date.now();
+  await observer.observeOnce();
+  const completedAt = Date.now();
+  const child = sink.latest("ses_child_c");
+  assert.ok(child);
+  assert.ok(completedAt - startedAt > 2_000, "the round must exceed the freshness window");
+  assert.ok(completedAt - startedAt < 5_000, "the round must stay below one call timeout");
+  assert.ok(child.lastObservedAt - startedAt > 2_000, "the child timestamp follows its read");
+  assert.ok(child.lastObservedAt <= completedAt);
+  const coverage = sink.lastCoverage();
+  assert.ok(coverage);
+  assert.ok(coverage.observedAt - startedAt > 2_000);
+  assert.ok(completedAt - coverage.observedAt < 250, "coverage is timestamped at publication");
+
+  const record = parseDelegationSessionRecord({
+    data: {
+      id: "ses_child_c",
+      parentID: "ses_root",
+      location: { directory: DIR },
+    },
+  });
+  assert.ok(record);
+  assert.equal(
+    projectDelegationObservation({
+      record,
+      active: true,
+      lastObservedAt: child.lastObservedAt,
+      now: completedAt,
+    }).state,
+    "running",
+    "freshly read active evidence should render running on the first projection",
+  );
+  assert.equal(
+    projectDelegationObservation({
+      record,
+      active: true,
+      lastObservedAt: child.lastObservedAt,
+      now: child.lastObservedAt + 2_001,
+    }).state,
+    "unknown",
+    "the same evidence naturally becomes unknown after its freshness window",
+  );
+});
+
+test("the default round budget allows a bounded multi-child sweep beyond one read timeout", async () => {
+  const server = new FakeSessionServer();
+  server.add({ id: "ses_root", directory: DIR });
+  const childIds = ["ses_child_a", "ses_child_b", "ses_child_c", "ses_child_d", "ses_child_e"];
+  for (const id of childIds) {
+    server.add({ id, parentID: "ses_root", directory: DIR });
+    server.recordDelayMs.set(`/api/session/${id}`, 1_100);
+    server.active.add(id);
+  }
+  const sink = new RecordingSink();
+  const observer = observerFor(server, sink);
+  observer.attachRoot("ses_root");
+
+  const startedAt = Date.now();
+  await observer.observeOnce();
+
+  assert.ok(Date.now() - startedAt > 5_000, "the sweep must outlast one call timeout");
+  for (const id of childIds) {
+    assert.equal(sink.latest(id)?.presence, "observed", `${id} must be refreshed this round`);
+  }
+  assert.equal(sink.lastCoverage()?.status, "healthy");
 });
 
 test("a terminal outcome still listed active is unknown (contradiction)", async () => {

@@ -78,7 +78,7 @@
       "fact": "Session.Info.outcome is succeeded|failed|interrupted and is absent while execution is unsettled.",
       "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
       "status": "verified",
-      "limitation": "The current explicit terminal outcome is sufficient unless the active map affirmatively contradicts it by listing the session active; absence alone is never completion evidence."
+      "limitation": "The current explicit terminal outcome is sufficient for display unless the active map affirmatively contradicts it by listing the session active; safety settlement still requires a terminal outcome and fresh active-map absence."
     },
     {
       "id": "initial-identity",

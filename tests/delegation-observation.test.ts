@@ -650,7 +650,14 @@ test("the coverage matrix separates read-only proof, live-harness proof and unve
   assert.match(byId.get("active-map")!.limitation, /foreground/iu);
   assert.match(byId.get("active-map")!.limitation, /unproven/iu);
   assert.match(byId.get("active-map")!.limitation, /unknown\/limited, not idle/iu);
-  assert.match(byId.get("terminal-outcome")!.limitation, /explicit terminal outcome is sufficient/iu);
+  assert.match(
+    byId.get("terminal-outcome")!.limitation,
+    /explicit terminal outcome is sufficient/iu,
+  );
+  assert.match(
+    byId.get("terminal-outcome")!.limitation,
+    /safety settlement.*fresh active-map absence/iu,
+  );
   // The event stream is explicitly unverified and drives the polling fallback.
   assert.equal(byId.get("event-stream")!.status, "unverified");
   assert.equal(matrix.eventTransport.decision, "polling-only");
