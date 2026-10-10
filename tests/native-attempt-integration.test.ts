@@ -1126,9 +1126,9 @@ test("live observation sees concurrent foreground/background-shaped children bef
           assert.equal(live.get("ses_parent")?.rootSessionId, "ses_parent");
           // Foreground-shaped: fresh active presence -> running.
           assert.equal(live.get("ses_child_fg")?.lastState, "running");
-          // Background-shaped: nonterminal but absent from the active map ->
-          // idle (explicitly NOT finished), never terminal.
-          assert.equal(live.get("ses_child_bg")?.lastState, "idle");
+          // Background-shaped: absence from the foreground active map leaves
+          // activity unknown/limited, never idle or terminal.
+          assert.equal(live.get("ses_child_bg")?.lastState, "invoked");
           assert.equal(live.get("ses_child_bg")?.lastOutcome, null);
           // Same actual agent, distinct session ids (identity is the runtime's).
           assert.equal(live.get("ses_child_fg")?.agent, "reviewer");
@@ -1291,6 +1291,8 @@ test("source loss during a live parent run is projected unknown with an honest g
     assert.equal(node?.presence, "observed");
     assert.equal(node?.lastState, "interrupted");
     assert.ok(observationGaps(data.store.db).some((gap) => gap.signature === "transport-error"));
+    // The final interrupted source outcome is explicit, so active-map absence
+    // does not keep otherwise healthy coverage degraded.
     assert.deepEqual(coverageTransportStates(data.store.db), ["ok"]);
   } finally {
     closeObservedFixture(data);
@@ -1571,7 +1573,7 @@ test("an unsettled child blocks publication even when every observation write fa
   }
 });
 
-test("a nonterminal child absent from the active map displays idle yet still blocks publication", async () => {
+test("a nonterminal child absent from the active map stays unknown and blocks publication", async () => {
   const data = await setupNative({
     observe: true,
     behaviors: [{ sessionId: "ses_parent", exitCode: 0 }],
@@ -1596,13 +1598,14 @@ test("a nonterminal child absent from the active map displays idle yet still blo
       queued.attemptId,
     )!;
     const node = bucket.nodes.find((candidate) => candidate.sessionId === "ses_child")!;
-    assert.equal(node.lastState, "idle");
+    assert.equal(node.lastState, "invoked");
     assert.equal(node.lastOutcome, null);
     const report = reportDelegationObservations(bucket, {
       now: Date.parse(node.lastObservedAt!),
     });
     assert.equal(report.running, 0, "the observer displayed no running child");
-    assert.ok(report.idle >= 1, "the nonterminal child displayed as idle, not finished");
+    assert.ok(report.invoked >= 1, "the nonterminal child remains limited, not idle or finished");
+    assert.equal(report.idle, 0);
   } finally {
     closeObservedFixture(data);
   }

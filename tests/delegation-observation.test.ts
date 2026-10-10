@@ -451,14 +451,15 @@ test("terminal outcome contradicting a fresh active presence is unknown, not com
   assert.equal(projected.reason, "terminal-while-active");
 });
 
-test("terminal outcome without a confirmed active absence is unknown", () => {
+test("an explicit terminal outcome needs no active-map absence confirmation", () => {
   const projected = projectDelegationObservation({
     record: terminalRecord("succeeded"),
     lastObservedAt: 0,
     now: 5,
   });
-  assert.equal(projected.state, "unknown");
-  assert.equal(projected.reason, "active-absence-unconfirmed");
+  assert.equal(projected.state, "succeeded");
+  assert.equal(projected.outcome, "succeeded");
+  assert.equal(projected.contradiction, false);
 });
 
 test("a stale source becomes unknown even for a running record", () => {
@@ -648,6 +649,8 @@ test("the coverage matrix separates read-only proof, live-harness proof and unve
   // The active map's scope is documented as foreground drains, not background proof.
   assert.match(byId.get("active-map")!.limitation, /foreground/iu);
   assert.match(byId.get("active-map")!.limitation, /unproven/iu);
+  assert.match(byId.get("active-map")!.limitation, /unknown\/limited, not idle/iu);
+  assert.match(byId.get("terminal-outcome")!.limitation, /explicit terminal outcome is sufficient/iu);
   // The event stream is explicitly unverified and drives the polling fallback.
   assert.equal(byId.get("event-stream")!.status, "unverified");
   assert.equal(matrix.eventTransport.decision, "polling-only");

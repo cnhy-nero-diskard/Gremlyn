@@ -177,7 +177,7 @@ credential-free) and are not subjected to identifier syntax.
 | nonterminal | unknown | yes   | `invoked`                          |
 | terminal    | no      | yes   | `succeeded`/`failed`/`interrupted` |
 | terminal    | yes     | yes   | `unknown` (contradiction)          |
-| terminal    | unknown | yes   | `unknown` (absence unconfirmed)    |
+| terminal    | unknown | yes   | `succeeded`/`failed`/`interrupted` |
 
 A cancellation request is carried **independently**; only the runtime's own
 `interrupted` outcome confirms interruption. This projector deliberately does
@@ -186,13 +186,16 @@ session as unsettled); nothing here may authorize validation, quiescence,
 workspace reuse or publication, and absence from the active map is never
 terminal completion.
 
-The `active = no` row maps to `idle` exactly as design D4 prescribes, but it is
-scoped to the documented **process-owned foreground drains** (`Session` drains
-"currently owned by this OpenCode process"). `idle` therefore means "no fresh
-process-owned drain observed; not finished" and is **not** a demonstrated stop.
-Whether a model-backed `background:true` session always appears in that map is
-unproven (see below), so an `idle` projection must carry that scope and a
-coverage limitation, and active absence is never a safety proof.
+The `active = no` row maps to `idle` in the generic projector only when the
+caller can support that absence. The live observer does not forward active-map
+absence for a nonterminal delegated child as `false`: the map is scoped to the
+documented **process-owned foreground drains** (`Session` drains "currently owned
+by this OpenCode process"), and whether a model-backed `background:true`
+session always appears there is unproven (see below). Such child activity
+remains `invoked` or `unknown` with partial coverage, never `idle`. A fresh
+explicit terminal source outcome remains terminal unless the active map
+affirmatively contradicts it. Active absence is never a demonstrated stop or a
+safety proof.
 
 ### Bounds and redaction
 
@@ -233,23 +236,22 @@ is **not** a documented statement about model-backed `background:true` sessions.
   spawned in this read-only task (no model call), so live observation of a
   background child while it runs remains covered only by the opt-in harness.
 
-Reconciliation with the projector: `active = no` + nonterminal projects `idle`
-(the D4 matrix), scoped to the process-owned map (`DELEGATION_ACTIVE_MAP_SCOPE`)
-and explicitly nonterminal. It is a display label, not a claim that a background
-session stopped, and not a safety verdict. `unknown` remains reserved for a
-missing record, a stale source, a terminal/active contradiction, or an
-unconfirmed active absence after a terminal outcome.
+Reconciliation with the projector: the generic D4 `active = no` + nonterminal
+row is still `idle` for callers with supported absence, but the live observer
+omits `false` for an absent nonterminal delegated child and records
+`active-map-scope-limited`. Coverage is therefore partial and the current
+activity remains unknown (`invoked` before any supported activity was seen,
+otherwise `unknown`). An explicit terminal source outcome does not depend on
+active-map absence; a positive active entry still makes it contradictory and
+unknown.
 
-**Is this a blocking design contradiction?** No — not on the evidence
-available, so no guessed safety downgrade is applied. There is no proof that
-model-backed background sessions are absent from the process-owned map, which
-makes D4's active-absence→`idle` row an **unverified-coverage caveat**, not a
-demonstrated contradiction; and the safety classifier already requires a
-terminal outcome, so no label here authorizes or suppresses anything. If a
-future live probe establishes that a running `background:true` child is
-genuinely absent from the active map, then D4's row (and any `idle`
-presentation built on it) becomes a real contradiction to escalate before
-console work — not to patch silently here.
+**Safety impact:** none. The observer now conservatively leaves an absent
+nonterminal delegated child's current activity unknown and marks coverage
+partial rather than presenting `idle`. This does not assert whether background
+sessions are present in the process-owned map, and no observation state
+authorizes or suppresses settlement, validation, workspace reuse or publication.
+Live acceptance is still needed to verify a real delegated child on the
+authenticated stream.
 
 ## Tests and fixtures
 
@@ -272,9 +274,9 @@ console work — not to patch silently here.
 - Event transport is polling-only; a bounded event consumer and event→node
   mapping are unverified.
 - Background-child observation is partial; whether a running
-  `background:true` child appears in the process-owned active map is unproven,
-  so an `idle` projection is scoped and never a demonstrated stop. If a live
-  probe later proves background absence-while-running, D4's active-absence→
-  `idle` row must be escalated as a real contradiction before console work.
-- The observer loop, durable store and migrations (tasks 2+) are intentionally
-  out of scope here; only the safe parser/projector contract and fixtures exist.
+  `background:true` child appears in the process-owned active map is unproven.
+  The live observer treats an absent nonterminal child as unknown/limited rather
+  than idle; the opt-in model-backed harness remains required to verify live
+  rendering and terminal transitions on the authenticated stream.
+- The observer and durable store remain display-only and failure-isolated; they
+  do not replace or relax the independent fail-closed settlement path.

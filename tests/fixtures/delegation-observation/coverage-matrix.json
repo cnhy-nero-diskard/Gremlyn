@@ -71,14 +71,14 @@
       "fact": "GET /api/session/active returns {data:{ses-id:{type:\"running\"}}}; sessions absent are inactive.",
       "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
       "status": "verified",
-      "limitation": "Documented scope is process-owned FOREGROUND drains; absence means inactive for those drains. Whether every model-backed background:true child appears in the map is unproven (the pinned probe recorded one still running after its parent returned), so absence is never a demonstrated stop, terminal completion or safety proof."
+      "limitation": "Documented scope is process-owned FOREGROUND drains; absence means inactive for those drains. Whether every model-backed background:true child appears in the map is unproven (the pinned probe recorded one still running after its parent returned), so the live observer treats absent nonterminal delegated children as unknown/limited, not idle; absence is never a demonstrated stop or safety proof."
     },
     {
       "id": "terminal-outcome",
       "fact": "Session.Info.outcome is succeeded|failed|interrupted and is absent while execution is unsettled.",
       "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
       "status": "verified",
-      "limitation": "A terminal outcome still requires a fresh active-map absence before the observation asserts completion."
+      "limitation": "The current explicit terminal outcome is sufficient unless the active map affirmatively contradicts it by listing the session active; absence alone is never completion evidence."
     },
     {
       "id": "initial-identity",
@@ -99,7 +99,7 @@
       "fact": "A parent can own overlapping foreground and background child sessions, including a late-spawned background child.",
       "evidence": ["existing-live-harness"],
       "status": "partial",
-      "limitation": "Background attribution is covered by injected settlement tests and the opt-in live harness; this read-only probe observed only the live foreground active map and did not spawn a model-backed background child. Whether a running background:true child appears in the process-owned active map is unproven, so an idle projection is scoped and never a demonstrated stop."
+      "limitation": "Background attribution is covered by injected settlement tests and the opt-in live harness; this read-only probe observed only the live foreground active map and did not spawn a model-backed background child. Whether a running background:true child appears in the process-owned active map is unproven, so the live observer treats an absent nonterminal child as unknown/limited, not idle."
     },
     {
       "id": "nested-parentage",

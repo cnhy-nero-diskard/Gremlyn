@@ -46,6 +46,8 @@ class FakeSessionServer implements ManagedSessionHttp {
     [];
   /** Records appended to every listing, to exercise rejected-entry handling. */
   contaminants: FakeSession[] = [];
+  /** Raw rows appended to every listing, including malformed parser fixtures. */
+  additionalListingRows: unknown[] = [];
   /** Listing failures keyed by parent id. */
   listingFailFor = new Set<string>();
   /** Individual record failures keyed by session id. */
@@ -121,7 +123,10 @@ class FakeSessionServer implements ManagedSessionHttp {
         return {
           status: 200,
           body: {
-            data: rows.map((session) => this.recordBody(session)),
+            data: [
+              ...rows.map((session) => this.recordBody(session)),
+              ...this.additionalListingRows,
+            ],
             cursor: { previous: null, next },
           },
         };
@@ -227,7 +232,7 @@ const DIR = "/workspace/attempt";
  * 3.1 Root attachment
  * ------------------------------------------------------------------ */
 
-test("observes a verified root and concurrent/background descendants", async () => {
+test("observes a verified root and marks absent child activity as limited", async () => {
   const server = new FakeSessionServer();
   server.add({ id: "ses_root", directory: DIR });
   server.add({ id: "ses_a", parentID: "ses_root", directory: DIR, agent: "reviewer" });
@@ -244,9 +249,11 @@ test("observes a verified root and concurrent/background descendants", async () 
   assert.equal(sink.latest("ses_a")?.state, "running");
   assert.equal(sink.latest("ses_a")?.parentSessionId, "ses_root");
   assert.equal(sink.latest("ses_a")?.identity.agentId, "reviewer");
-  assert.equal(sink.latest("ses_b")?.state, "idle");
-  assert.equal(sink.lastCoverage()?.status, "healthy");
-  assert.equal(sink.lastCoverage()?.partial, false);
+  assert.equal(sink.latest("ses_b")?.state, "invoked");
+  assert.equal(sink.latest("ses_b")?.active, undefined);
+  assert.equal(sink.lastCoverage()?.status, "partial");
+  assert.equal(sink.lastCoverage()?.partial, true);
+  assert.ok(sink.lastCoverage()?.currentGaps.includes("active-map-scope-limited"));
 });
 
 test("missing root records a gap and stays unavailable", async () => {
@@ -448,7 +455,7 @@ test("a terminal outcome still listed active is unknown (contradiction)", async 
   assert.equal(sink.latest("ses_child")?.state, "unknown");
 });
 
-test("an unreadable active map leaves a terminal outcome unconfirmed", async () => {
+test("an unreadable active map does not erase an explicit terminal outcome", async () => {
   const server = new FakeSessionServer();
   server.add({ id: "ses_root", directory: DIR });
   server.add({ id: "ses_child", parentID: "ses_root", directory: DIR, outcome: "succeeded" });
@@ -458,7 +465,8 @@ test("an unreadable active map leaves a terminal outcome unconfirmed", async () 
   observer.attachRoot("ses_root");
   await observer.observeOnce();
 
-  assert.equal(sink.latest("ses_child")?.state, "unknown");
+  assert.equal(sink.latest("ses_child")?.state, "succeeded");
+  assert.equal(sink.latest("ses_child")?.active, undefined);
   assert.ok(sink.lastCoverage()?.gaps.includes("active-unavailable"));
 });
 
@@ -470,12 +478,91 @@ test("retains last-known evidence for a node lost from a later round", async () 
   const observer = observerFor(server, sink);
   observer.attachRoot("ses_root");
   await observer.observeOnce();
-  assert.equal(sink.latest("ses_child")?.state, "idle");
+  assert.equal(sink.latest("ses_child")?.state, "invoked");
 
   server.sessions.delete("ses_child");
   await observer.observeOnce();
   assert.equal(sink.latest("ses_child")?.state, "unknown");
   assert.ok(sink.lastCoverage()?.gaps.includes("node-lost"));
+});
+
+test("a background child absent from the foreground active map is not reported idle", async () => {
+  const server = new FakeSessionServer();
+  server.add({ id: "ses_root", directory: DIR });
+  // This fixture models a background:true child: its verified session record
+  // appears in the parent listing, but it is absent from the foreground-drain
+  // map. The observer cannot identify background mode from supported fields.
+  server.add({ id: "ses_background", parentID: "ses_root", directory: DIR });
+  const sink = new RecordingSink();
+  const observer = observerFor(server, sink);
+  observer.attachRoot("ses_root");
+  await observer.observeOnce();
+
+  const child = sink.latest("ses_background");
+  assert.equal(child?.presence, "observed");
+  assert.equal(child?.state, "invoked", "current execution remains unknown, never idle");
+  assert.equal(child?.active, undefined, "unsupported active-map absence is not persisted");
+  assert.equal(sink.lastCoverage()?.status, "partial");
+  assert.ok(sink.lastCoverage()?.currentGaps.includes("active-map-scope-limited"));
+});
+
+test("a malformed partial listing cannot prove a previously seen child was lost", async () => {
+  const server = new FakeSessionServer();
+  server.add({ id: "ses_root", directory: DIR });
+  server.add({ id: "ses_child", parentID: "ses_root", directory: DIR });
+  const sink = new RecordingSink();
+  const observer = observerFor(server, sink);
+  observer.attachRoot("ses_root");
+  await observer.observeOnce();
+  assert.equal(sink.latest("ses_child")?.presence, "observed");
+
+  server.sessions.delete("ses_child");
+  server.additionalListingRows = [{ id: "" }];
+  await observer.observeOnce();
+
+  assert.equal(sink.latest("ses_child")?.presence, "observed");
+  assert.equal(
+    sink.nodes.filter((node) => node.sessionId === "ses_child").length,
+    1,
+    "partial enumeration must not emit missing current evidence",
+  );
+  assert.ok(sink.lastCoverage()?.currentGaps.includes("listing-partial"));
+  assert.equal(sink.lastCoverage()?.status, "partial");
+  assert.equal(sink.lastCoverage()?.gaps.includes("node-lost"), false);
+});
+
+test("an over-cap listing page cannot prove an omitted previously seen child was lost", async () => {
+  const server = new FakeSessionServer();
+  server.add({ id: "ses_root", directory: DIR });
+  server.add({ id: "ses_child", parentID: "ses_root", directory: DIR });
+  const sink = new RecordingSink();
+  const observer = observerFor(server, sink);
+  observer.attachRoot("ses_root");
+  await observer.observeOnce();
+  assert.equal(sink.latest("ses_child")?.presence, "observed");
+
+  server.sessions.delete("ses_child");
+  // The parser keeps only the first 256 rows. The previously seen child's
+  // listing row is beyond that bound, so its omission cannot prove node loss.
+  server.additionalListingRows = [
+    ...Array.from({ length: 256 }, () => ({ id: "" })),
+    {
+      id: "ses_child",
+      parentID: "ses_root",
+      location: { directory: DIR },
+    },
+  ];
+  await observer.observeOnce();
+
+  assert.equal(sink.latest("ses_child")?.presence, "observed");
+  assert.equal(
+    sink.nodes.filter((node) => node.sessionId === "ses_child").length,
+    1,
+    "over-cap enumeration must not emit missing current evidence",
+  );
+  assert.ok(sink.lastCoverage()?.currentGaps.includes("listing-partial"));
+  assert.equal(sink.lastCoverage()?.status, "partial");
+  assert.equal(sink.lastCoverage()?.gaps.includes("node-lost"), false);
 });
 
 /* ------------------------------------------------------------------ *
