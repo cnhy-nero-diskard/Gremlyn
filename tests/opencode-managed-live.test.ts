@@ -50,6 +50,7 @@
  *
  *   # Windows (PowerShell)
  *   $env:GREMLYN_LIVE_OPENCODE_MODEL = "opencode/deepseek-v4-flash-free"
+ *   $env:GREMLYN_LIVE_OPENCODE_EFFORT = "max" # optional; defaults to none
  *   node --import tsx --test tests/opencode-managed-live.test.ts
  *
  * Prerequisites:
@@ -104,7 +105,7 @@ import {
   saveOpenCodeSelection,
 } from "../src/store/opencode-selections.js";
 import { syncRepositories } from "../src/runtime/repositories.js";
-import type { NormalizedEvent } from "../src/types.js";
+import { REASONING_EFFORTS, type NormalizedEvent, type ReasoningEffort } from "../src/types.js";
 import { git } from "../src/workspace/gitops.js";
 import { workspacePathFor } from "../src/workspace/worktree.js";
 import { createTempRepo, pushCommit, remoteSha } from "./helpers/gitrepo.js";
@@ -112,6 +113,8 @@ import { watchJobFragments } from "./helpers/delegation-live-stream.js";
 
 /** Env opt-in: `provider/model` id for the real model run. Unset skips the test. */
 const LIVE_MODEL_ENV = "GREMLYN_LIVE_OPENCODE_MODEL";
+/** Optional reasoning-effort tier; defaults to none to keep opt-in cost bounded. */
+const LIVE_EFFORT_ENV = "GREMLYN_LIVE_OPENCODE_EFFORT";
 /** Optional env: the OpenCode binary to invoke. Defaults to `opencode`. */
 const LIVE_BIN_ENV = "GREMLYN_LIVE_OPENCODE_BIN";
 
@@ -265,7 +268,12 @@ interface LiveFixture {
   nativeAgentId?: string;
 }
 
-async function setupLiveFixture(bin: string, model: string, native = false): Promise<LiveFixture> {
+async function setupLiveFixture(
+  bin: string,
+  model: string,
+  native = false,
+  effort: ReasoningEffort = "none",
+): Promise<LiveFixture> {
   const gitRepo = await createTempRepo();
   // Give the child a concrete, pre-existing target on the PR head.
   await pushCommit(
@@ -290,7 +298,7 @@ async function setupLiveFixture(bin: string, model: string, native = false): Pro
         agent: "opencode",
         provider: "opencode",
         model,
-        effort: "none",
+        effort,
         enabled: true,
         validationCommands: [markerAssertionCommand()],
         workspaceSeedFiles: [],
@@ -737,6 +745,13 @@ test("gated live acceptance: a real OpenCode 2.0.16 run delegates the edit to th
     );
     return;
   }
+  const requestedEffort = process.env[LIVE_EFFORT_ENV] ?? "none";
+  if (!REASONING_EFFORTS.includes(requestedEffort as ReasoningEffort)) {
+    throw new Error(
+      `${LIVE_EFFORT_ENV} must be one of ${REASONING_EFFORTS.join(", ")}; received ${JSON.stringify(requestedEffort)}`,
+    );
+  }
+  const effort = requestedEffort as ReasoningEffort;
   const bin = process.env[LIVE_BIN_ENV] ?? "opencode";
   const installed = await probeOpenCodeVersion(bin);
   if (installed !== EXPECTED_OPENCODE_VERSION) {
@@ -747,7 +762,7 @@ test("gated live acceptance: a real OpenCode 2.0.16 run delegates the edit to th
     return;
   }
 
-  const data = await setupLiveFixture(bin, model);
+  const data = await setupLiveFixture(bin, model, false, effort);
   const consoleToken = "fixture-live-console-token";
   const app = buildConsoleServer({
     db: data.store.db,
