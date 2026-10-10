@@ -65,10 +65,11 @@ export type DelegationTransportState = (typeof DELEGATION_TRANSPORT_STATES)[numb
  * - `invoked` — a record was verified but no active evidence has ever been
  *   observed; the current execution is unknown (design D4 "invoked; current
  *   execution unknown").
- * - `running`/`idle` — fresh nonterminal evidence with the current active map
- *   known present/absent. `idle` explicitly does NOT mean finished.
- * - a terminal outcome — the LATEST evidence reports a terminal outcome AND
- *   fresh evidence proves the session inactive.
+ * - `running`/`idle` — fresh nonterminal evidence with supported current active
+ *   presence/absence. `idle` explicitly does NOT mean finished.
+ * - a terminal outcome — the LATEST observation reports a terminal outcome and
+ *   active evidence does not contradict it. The source outcome itself is
+ *   sufficient; active-map absence is not required.
  * - `unknown` — missing record, stale source, a lost/unknown current active
  *   map (last-known activity is retained as history, never asserted current),
  *   or a terminal outcome that was retracted or contradicts a still-active
@@ -723,15 +724,14 @@ export interface DelegationEvidence {
  * - `missing` presence, a stale source, or a retracted/contradicted outcome is
  *   `unknown` (last-known evidence is retained on the node, not asserted
  *   current).
- * - A terminal outcome is shown only when the LATEST observation reported it,
- *   it is consistent with retained evidence, and fresh evidence proves the
- *   session inactive. A terminal outcome still listed active is a contradiction
- *   and becomes `unknown`.
- * - Fresh nonterminal evidence with current active presence/absence is
- *   `running`/`idle`. A fresh record whose active evidence has never been seen
- *   is `invoked` (verified record, current execution unknown); if activity was
- *   once known and is now unknown, it is `unknown` rather than a resurrected
- *   live state.
+ * - A terminal outcome is shown when the LATEST observation reported it and it
+ *   is consistent with retained evidence. A terminal outcome still listed
+ *   active is a contradiction and becomes `unknown`.
+ * - Fresh nonterminal evidence with current active presence is `running`; a
+ *   supported active absence is `idle`. A fresh record whose activity is
+ *   unknown is `invoked` (verified record, current execution unknown) if no
+ *   activity was previously known, otherwise `unknown` rather than a
+ *   resurrected live state.
  */
 export function classifyDelegationState(
   evidence: DelegationEvidence,
@@ -740,7 +740,7 @@ export function classifyDelegationState(
   if (evidence.presence === "missing") return "unknown";
   if (evidence.outcomeConflict) return "unknown";
   if (evidence.currentOutcome !== null) {
-    return evidence.active === false ? evidence.currentOutcome : "unknown";
+    return evidence.active === true ? "unknown" : evidence.currentOutcome;
   }
   if (!options.fresh) return "unknown";
   if (evidence.active === true) return "running";

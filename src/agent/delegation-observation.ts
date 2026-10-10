@@ -42,14 +42,16 @@
  * {@link projectDelegationObservation} produces a display state. It deliberately
  * does NOT reuse {@link classifyChildSession}: the safety classifier treats any
  * nonterminal session as unsettled, whereas the observation matrix may label a
- * fresh inactive nonterminal child `idle` (explicitly NOT finished). Nothing in
- * this module may authorize validation, quiescence, workspace reuse or
- * publication, and absence from the active map is never terminal completion.
+ * fresh inactive nonterminal child `idle` (explicitly NOT finished) when the
+ * caller can support that absence. Nothing in this module may authorize
+ * validation, quiescence, workspace reuse or publication, and absence from the
+ * active map is never terminal completion.
  *
  * The active map documents process-owned foreground drains
  * ({@link DELEGATION_ACTIVE_MAP_SCOPE}); whether model-backed `background:true`
- * sessions always appear there is UNPROVEN, so an `idle` projection is scoped
- * and never treated as a demonstrated stop.
+ * sessions always appear there is UNPROVEN. The live observer therefore does
+ * not forward active-map absence for delegated children as `false`; it records
+ * limited coverage and leaves their current activity unknown instead.
  */
 
 /** The observation snapshot format version emitted by this module. */
@@ -77,9 +79,8 @@ export const DELEGATION_MAX_EPOCH_MS = 253_402_300_799_999;
  * currently owned by this OpenCode process". Absence therefore means inactive
  * for those process-owned drains. Whether every model-backed `background:true`
  * child appears in this map is UNPROVEN (the existing live probe recorded such
- * a child still running after its parent returned); consumers must label an
- * `idle` projection with this scope and must never treat absence as a
- * demonstrated stop or as any safety proof.
+ * a child still running after its parent returned); consumers must never treat
+ * child absence as idle, a demonstrated stop or any safety proof.
  */
 export const DELEGATION_ACTIVE_MAP_SCOPE = "process-owned-foreground-drains" as const;
 
@@ -88,8 +89,9 @@ export type DelegationOutcome = "succeeded" | "failed" | "interrupted";
 
 /**
  * Presentation-only observation state. `invoked` means a record was verified
- * but the active map has not yet been read; `idle` is explicitly NOT finished.
- * `unknown` retains last-known evidence without asserting a live state.
+ * but no supported active evidence is available; `idle` is explicitly NOT
+ * finished. `unknown` retains last-known evidence without asserting a live
+ * state.
  */
 export type DelegationObservationState =
   "invoked" | "running" | "idle" | "succeeded" | "failed" | "interrupted" | "unknown";
@@ -160,10 +162,10 @@ export interface ProjectDelegationObservationInput {
   /**
    * Whether a fresh active map listed the session; `undefined` = not yet read.
    * `false` means absent from the documented {@link DELEGATION_ACTIVE_MAP_SCOPE}
-   * map, which the projector labels `idle` (nonterminal) — NOT finished and NOT
-   * a safety verdict. It does NOT prove a model-backed `background:true` child
-   * stopped; that background coverage is unproven and must surface as a
-   * coverage limitation, never as a stop.
+   * map, which the generic projector labels `idle` (nonterminal) — NOT finished
+   * and NOT a safety verdict. Callers must not pass unsupported absence for a
+   * delegated child: it does NOT prove a model-backed `background:true` child
+   * stopped, and must surface as a coverage limitation instead.
    */
   readonly active?: boolean;
   /** Epoch ms of the last successful observation of this node. */
@@ -484,17 +486,19 @@ export function assessDelegationFreshness(input: {
  * | nonterminal              | unknown  | yes   | invoked              |
  * | terminal                 | no       | yes   | succeeded/failed/…   |
  * | terminal                 | yes      | yes   | unknown (contradict) |
- * | terminal                 | unknown  | yes   | unknown (unconfirmed)|
+ * | terminal                 | unknown  | yes   | succeeded/failed/…   |
  *
- * A cancellation request is carried independently and is NEVER projected as an
- * outcome; only the runtime's own `interrupted` outcome confirms interruption.
+ * A current terminal outcome is explicit source evidence; it remains terminal
+ * when active-map evidence is unavailable, unless the map affirmatively
+ * contradicts it by listing the session active. A cancellation request is
+ * carried independently and is NEVER projected as an outcome; only the
+ * runtime's own `interrupted` outcome confirms interruption.
  *
- * The `active = no` row maps to `idle` exactly as design D4 prescribes, but it
- * is scoped to the documented {@link DELEGATION_ACTIVE_MAP_SCOPE} map and means
- * "no fresh process-owned drain observed", never "stopped" or "safe". Whether
- * model-backed `background:true` sessions appear in that map is unproven, so an
- * `idle` projection must be labeled with that scope and a coverage limitation,
- * and active absence is never a safety proof.
+ * The `active = no` row maps to `idle` exactly as design D4 prescribes only when
+ * the caller can support that absence. The live observer does not forward
+ * absence for delegated children because the map covers only the documented
+ * {@link DELEGATION_ACTIVE_MAP_SCOPE}; it leaves their activity unknown and
+ * reports limited coverage instead. Active absence is never a safety proof.
  */
 export function projectDelegationObservation(
   input: ProjectDelegationObservationInput,
@@ -553,14 +557,6 @@ export function projectDelegationObservation(
         state: "unknown",
         contradiction: true,
         reason: "terminal-while-active",
-      });
-    }
-    if (input.active !== false) {
-      return Object.freeze({
-        ...base,
-        state: "unknown",
-        contradiction: false,
-        reason: "active-absence-unconfirmed",
       });
     }
     return Object.freeze({

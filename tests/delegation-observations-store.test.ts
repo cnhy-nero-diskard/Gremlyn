@@ -552,6 +552,11 @@ test("latest terminal evidence drives projection; retraction and change stay unk
   track(iso(0), { outcome: "succeeded", active: false });
   assert.equal(projectDelegationState(read(), { now: iso(1_000) }), "succeeded");
 
+  // A terminal source outcome is sufficient even when the foreground active
+  // map cannot establish absence for a possibly background child.
+  track(iso(500), { outcome: "succeeded", active: null });
+  assert.equal(projectDelegationState(read(), { now: iso(1_000) }), "succeeded");
+
   // The terminal outcome is retracted by an inactive record that stops
   // reporting it: historic lastOutcome is preserved, display is unknown.
   track(iso(1_000), { active: false });

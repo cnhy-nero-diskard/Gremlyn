@@ -334,6 +334,53 @@ test("a verified record with no activity evidence reads invoked, never running",
   store.close();
 });
 
+test("a child absent from the foreground active map is visibly limited, never idle", () => {
+  const store = openStore();
+  const repo = insertRepository(store, "opencode", "managed");
+  const job = createJob(store, repo);
+  const attempt = insertAttempt(store, job, "opencode");
+  observe(store, attempt, 1, "ses_background", {
+    rootSessionId: "ses_root",
+    parentSessionId: "ses_root",
+  });
+  assert.equal(
+    recordDelegationCoverage(store.db, {
+      attemptId: attempt,
+      invocationOrdinal: 1,
+      at: iso(0),
+      transport: "polling",
+      transportState: "degraded",
+    }).ok,
+    true,
+  );
+  assert.equal(
+    reportDelegationGap(store.db, {
+      attemptId: attempt,
+      invocationOrdinal: 1,
+      signature: "active-map-scope-limited",
+      detail: "delegation observation gap: active-map-scope-limited",
+      at: iso(0),
+    }).ok,
+    true,
+  );
+
+  const model = readJobDetail(store.db, job, [], ".gremlyn", undefined, iso(500));
+  assert.ok(model);
+  const delegation = model.attempts[0]?.delegation;
+  assert.equal(delegation?.availability, "partial");
+  assert.equal(delegation?.invoked, 1);
+  assert.equal(delegation?.invocations[0]?.nodes[0]?.state, "invoked");
+
+  const html = jobRegions(model, "UTC")["job-detail-region"];
+  assert.match(html, /data-status-value="invoked"/u);
+  assert.match(
+    html,
+    /Child activity is unknown when a session is absent from the foreground active map; absence does not establish idle or completion\./u,
+  );
+  assert.doesNotMatch(html, /data-status-value="idle"/u);
+  store.close();
+});
+
 test("a healthy root with zero children reads 'no delegations observed yet'", () => {
   const store = openStore();
   const repo = insertRepository(store, "opencode", "managed");
@@ -422,6 +469,11 @@ test("root plus two children counts only the children and keeps the root visible
   assert.match(html, /data-delegation-root>invocation root/u);
   assert.match(html, new RegExp(`data-observed-session="ses_child_1"`, "u"));
   assert.match(html, new RegExp(`data-observed-session="ses_child_2"`, "u"));
+  assert.match(
+    html,
+    /<ul class="child-sessions delegation-tree"><li><details class="delegation-session"[^>]*data-observed-session="ses_root"[\s\S]*?<\/details><ul class="child-sessions delegation-tree"><li><details class="delegation-session"[^>]*data-observed-session="ses_child_1"/u,
+    "the root must contain its verified children in nested list markup",
+  );
   assert.match(html, /2 observed/u);
   store.close();
 });

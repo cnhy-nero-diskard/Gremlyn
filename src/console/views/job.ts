@@ -592,7 +592,13 @@ function delegationInvocationNotes(invocation: DelegationInvocationView): string
     );
   }
   for (const gap of invocation.openGaps) {
-    notes.push(`<p class="delegation-gap muted">Observation gap: ${escapeHtml(gap)}</p>`);
+    if (gap.endsWith("active-map-scope-limited")) {
+      notes.push(
+        '<p class="delegation-gap muted">Child activity is unknown when a session is absent from the foreground active map; absence does not establish idle or completion.</p>',
+      );
+    } else {
+      notes.push(`<p class="delegation-gap muted">Observation gap: ${escapeHtml(gap)}</p>`);
+    }
   }
   return notes.join("");
 }
@@ -609,21 +615,16 @@ function delegationInvocation(
     invocation.rootSessionId === null
       ? '<span class="muted">root session not captured</span>'
       : `root session <code class="session-id">${escapeHtml(invocation.rootSessionId)}</code>`;
-  const rootNodes = invocation.nodes.filter((node) => node.isRoot);
   const childNodes = invocation.nodes.filter((node) => !node.isRoot);
   const counts = observedCounts(childNodes);
-  // The root node stays in the tree (when observed) but has no children of its
-  // own shown as delegations. Children whose parent is the root nest under it
-  // when it is present, otherwise they sit at the top level.
-  const rootRows = rootNodes
-    .map((node) => delegationNode(node, attemptNumber, attemptId, invocation.ordinal, timeZone))
-    .join("");
-  const tree = delegationTree(childNodes);
-  const childBody =
-    childNodes.length > 0
+  // Include the root in the parent map so children with a verified edge to it
+  // render nested. Counts remain child-only, and a root with no children stays
+  // visible as the sole tree node.
+  const tree = delegationTree(invocation.nodes);
+  const body =
+    invocation.nodes.length > 0
       ? delegationTreeList(tree, attemptNumber, attemptId, invocation.ordinal, timeZone)
       : '<p class="muted">No child sessions observed under this invocation.</p>';
-  const body = rootRows.length > 0 ? `${rootRows}${childBody}` : childBody;
   return `<li class="delegation-invocation"><details class="delegation-invocation-tree" data-live-key="${escapeHtml(key)}" data-details-key="${escapeHtml(key)}"><summary><span class="chip">root invocation ${String(invocation.ordinal)}</span> ${root} <span class="muted">${escapeHtml(counts)}</span></summary>${delegationInvocationNotes(invocation)}${body}</details></li>`;
 }
 

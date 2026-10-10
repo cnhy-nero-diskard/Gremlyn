@@ -167,6 +167,7 @@ export type DelegationGapReason =
   | "node-lost"
   | "unattributed-record"
   | "active-unavailable"
+  | "active-map-scope-limited"
   | "call-timeout"
   | "transport-error";
 
@@ -396,6 +397,8 @@ type ActiveRead =
 interface ListingResult {
   readonly children: readonly DelegationSessionRecord[];
   readonly truncated: boolean;
+  /** False when a page could not establish a complete child enumeration. */
+  readonly complete: boolean;
   readonly error?: DelegationGapReason;
 }
 
@@ -868,7 +871,21 @@ export class DelegationObserver {
     const sourceUpdatedAt = record?.updatedAt ?? fallback?.sourceUpdatedAt;
     const sourceIdleAt = record?.idleAt ?? fallback?.sourceIdleAt;
 
-    const activePresence = active === undefined ? undefined : active.has(id);
+    let activePresence: boolean | undefined;
+    if (active !== undefined) {
+      if (id !== root && !active.has(id)) {
+        // The pinned map only covers process-owned foreground drains. An
+        // nonterminal child may still be running as a background session, so do
+        // not project `false` (idle) from this unsupported absence. An explicit
+        // terminal outcome remains usable on its own. The gap makes unresolved
+        // child activity's scope limitation visible to operators.
+        if (presence === "observed" && record?.outcome === undefined) {
+          this.noteGap("active-map-scope-limited");
+        }
+      } else {
+        activePresence = active.has(id);
+      }
+    }
     const observation = projectDelegationObservation({
       ...(record === undefined ? { sessionId: id } : { record }),
       ...(activePresence === undefined ? {} : { active: activePresence }),
@@ -935,9 +952,11 @@ export class DelegationObserver {
         complete = false; // a branch could not be read; absence proves nothing.
         continue;
       }
+      if (!listing.complete) complete = false;
       if (listing.truncated) {
         this.noteGap("node-cap");
         truncated = true;
+        complete = false;
       }
       if (atDepthLimit) {
         // We may not descend further. A boundary node WITH children means the
@@ -945,17 +964,20 @@ export class DelegationObserver {
         if (listing.children.length > 0) {
           this.noteGap("depth-cap");
           truncated = true;
+          complete = false;
         }
         continue;
       }
       for (const child of listing.children) {
         if (nodes.has(child.sessionId)) {
           this.noteGap("cycle");
+          complete = false;
           continue;
         }
         if (nodes.size >= this.nodeLimit) {
           this.noteGap("node-cap");
           truncated = true;
+          complete = false;
           break;
         }
         const depth = current.depth + 1;
@@ -986,10 +1008,13 @@ export class DelegationObserver {
     let cursor: string | undefined;
     let pages = 0;
     let truncated = false;
+    let complete = true;
     for (;;) {
       if (this.roundStopped()) break;
       pages += 1;
-      if (pages > this.pageLimit) return { children, truncated, error: "page-cap" };
+      if (pages > this.pageLimit) {
+        return { children, truncated, complete: false, error: "page-cap" };
+      }
       let result: ManagedHttpResult;
       try {
         result = await this.bounded(() =>
@@ -1003,15 +1028,23 @@ export class DelegationObserver {
           ),
         );
       } catch (error) {
-        return { children, truncated, error: this.transportGap(error) };
+        return { children, truncated, complete: false, error: this.transportGap(error) };
       }
-      if (result.status !== 200) return { children, truncated, error: "listing-failed" };
+      if (result.status !== 200) {
+        return { children, truncated, complete: false, error: "listing-failed" };
+      }
       const page = parseDelegationSessionListing(result.body);
-      if (page === undefined) return { children, truncated, error: "listing-unusable" };
-      if (page.skipped > 0) this.noteGap("listing-partial");
+      if (page === undefined) {
+        return { children, truncated, complete: false, error: "listing-unusable" };
+      }
+      if (page.skipped > 0) {
+        this.noteGap("listing-partial");
+        complete = false;
+      }
       for (const item of page.items) {
         if (item.parentIdUnrecognized || item.parentId !== parentId) {
           this.noteGap("unattributed-record");
+          complete = false;
           continue;
         }
         if (
@@ -1019,20 +1052,24 @@ export class DelegationObserver {
           !sameObservedDirectory(item.directory, this.workspacePath)
         ) {
           this.noteGap("unattributed-record");
+          complete = false;
           continue;
         }
         if (children.length >= this.nodeLimit) {
           truncated = true;
+          complete = false;
           break; // bound what a single listing can accumulate.
         }
         children.push(item);
       }
       if (page.nextCursor === undefined) break;
-      if (usedCursors.has(page.nextCursor)) return { children, truncated, error: "cycle" };
+      if (usedCursors.has(page.nextCursor)) {
+        return { children, truncated, complete: false, error: "cycle" };
+      }
       usedCursors.add(page.nextCursor);
       cursor = page.nextCursor;
     }
-    return { children, truncated };
+    return { children, truncated, complete };
   }
 
   private isVerifiedRoot(root: string, record: DelegationSessionRecord): boolean {
