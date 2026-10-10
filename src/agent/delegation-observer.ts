@@ -24,8 +24,10 @@
  * - Enumeration is capped at {@link DELEGATION_OBSERVER_NODE_LIMIT} nodes, eight
  *   levels and {@link DELEGATION_OBSERVER_PAGE_LIMIT} pages per listing; every
  *   transport call is capped by a per-call timeout and a process-wide
- *   concurrency limiter, and both queueing and whole rounds are time-bounded so
- *   a hung call can never stall reconciliation or finalization.
+ *   concurrency limiter, and both queueing and whole rounds are time-bounded.
+ *   End-of-invocation finalization has a separate
+ *   {@link DELEGATION_OBSERVER_FINALIZE_BUDGET_MS} total deadline, independent
+ *   of the node-derived polling-round budget.
  *
  * ## Attribution
  *
@@ -98,6 +100,12 @@ export const DELEGATION_OBSERVER_POLL_INTERVAL_MS = 1_000;
 
 /** Per-call transport bound; a hung read cannot outlive one observation round. */
 export const DELEGATION_OBSERVER_CALL_TIMEOUT_MS = 5_000;
+
+/** Total time an invocation may spend waiting for best-effort observer shutdown. */
+export const DELEGATION_OBSERVER_FINALIZE_BUDGET_MS = 1_000;
+
+/** Reserve for stale-evidence revocation, final coverage and the end record. */
+const DELEGATION_OBSERVER_FINALIZE_OUTPUT_RESERVE_MS = 300;
 
 /** Default process-wide cap on concurrent observation reads across every root. */
 export const DELEGATION_OBSERVER_GLOBAL_CONCURRENCY = 4;
@@ -440,6 +448,10 @@ export class DelegationObserver {
   private roundTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingReconcile = false;
   private truncatedLastRound = false;
+  private finalization: Promise<void> | undefined;
+  /** Nodes found/attempted by the current round, used to revoke stale evidence on shutdown. */
+  private roundDiscoveredNodes = new Map<string, DiscoveredNode>();
+  private readonly roundEmittedNodeIds = new Set<string>();
 
   private readonly knownNodes = new Map<string, KnownNode>();
   private readonly currentGaps = new Set<DelegationGapReason>();
@@ -536,34 +548,67 @@ export class DelegationObserver {
   }
 
   /**
-   * Finalize: stop scheduling, wait for any in-flight round to truly settle,
-   * run one deadline-bounded final reconcile, then emit the final coverage.
-   *
-   * The in-flight round and the final reconcile are each bounded internally
-   * (their body checks the round deadline between awaits, and every transport
-   * and sink await is per-call bounded), so this returns within a finite budget
-   * even if a call never settles. It deliberately does NOT race a timeout: the
-   * round body must finish before `end`, so no late round output can be emitted
-   * after the terminal record.
+   * Finalize under a short total deadline, independent of the node-derived
+   * polling budget. If a round cannot finish in time, revoke unvisited current
+   * evidence as missing/unknown, dispose the observer, and emit partial coverage
+   * before the terminal record. Disposed round continuations cannot write later.
    */
-  async finalize(): Promise<void> {
-    if (this.disposed) return;
+  finalize(): Promise<void> {
+    if (this.finalization !== undefined) return this.finalization;
+    if (this.disposed) return Promise.resolve();
     this.stopped = true;
     this.clearTimer();
-    await this.finalizeOnce();
+    this.finalization = this.finalizeOnce();
+    return this.finalization;
   }
 
   private async finalizeOnce(): Promise<void> {
+    const deadline = Date.now() + DELEGATION_OBSERVER_FINALIZE_BUDGET_MS;
+    let incomplete = false;
     const inFlight = this.currentRound;
     if (inFlight !== undefined) {
-      try {
-        await inFlight;
-      } catch {
-        // reconcileSafely swallows its own faults; this guards the await.
+      incomplete = !(await this.waitFor(
+        inFlight,
+        deadline - Date.now() - DELEGATION_OBSERVER_FINALIZE_OUTPUT_RESERVE_MS,
+      ));
+    }
+    if (!incomplete) {
+      const roundBudgetMs = deadline - Date.now() - DELEGATION_OBSERVER_FINALIZE_OUTPUT_RESERVE_MS;
+      if (roundBudgetMs <= 0) {
+        incomplete = true;
+      } else {
+        this.currentGaps.clear();
+        const round = this.reconcileSafely(roundBudgetMs);
+        this.currentRound = round;
+        const clear = (): void => {
+          if (this.currentRound === round) this.currentRound = undefined;
+        };
+        void round.then(clear, clear);
+        incomplete = !(await this.waitFor(round, roundBudgetMs)) || this.roundTimedOut;
       }
     }
-    this.currentGaps.clear();
-    await this.reconcileSafely();
+
+    if (incomplete || Date.now() >= deadline) {
+      // Do not wait for a late transport read: disposal makes its continuation
+      // stop before it can mutate evidence or emit another sink record.
+      this.roundTimedOut = true;
+      this.noteGap("call-timeout");
+      this.dispose();
+      await this.markUnvisitedEvidenceUnknown(deadline);
+      const remainingMs = deadline - Date.now();
+      if (remainingMs > 50) {
+        await this.publishCoverage(
+          this.knownNodes.size,
+          Math.min(this.perCallTimeoutMs, 100, remainingMs - 50),
+          true,
+        );
+      }
+    } else {
+      // The final round completed within the total shutdown budget. Closing
+      // first prevents any timer or late continuation from writing past `end`.
+      this.dispose();
+    }
+
     const endedAt = this.now();
     const everObserved = this.knownNodes.size > 0;
     const partial = this.currentGaps.size > 0 || this.truncatedLastRound;
@@ -572,16 +617,111 @@ export class DelegationObserver {
       : partial
         ? "partial"
         : "healthy";
-    await this.emitSink(() =>
-      this.sink.end({
-        attemptId: this.attemptId,
-        ordinal: this.ordinal,
-        ...(this.rootSessionId === undefined ? {} : { rootSessionId: this.rootSessionId }),
-        endedAt,
-        status,
-        gaps: [...this.historicalGaps],
-      }),
+    await this.emitSink(
+      () =>
+        this.sink.end({
+          attemptId: this.attemptId,
+          ordinal: this.ordinal,
+          ...(this.rootSessionId === undefined ? {} : { rootSessionId: this.rootSessionId }),
+          endedAt,
+          status,
+          gaps: [...this.historicalGaps],
+        }),
+      Math.max(1, Math.min(this.perCallTimeoutMs, deadline - Date.now())),
+      true,
     );
+  }
+
+  /** Wait no longer than the invocation's remaining shutdown budget. */
+  private async waitFor(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+    if (timeoutMs <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(false), Math.max(1, timeoutMs));
+    });
+    const settled = promise.then(
+      () => true,
+      () => true,
+    );
+    try {
+      return await Promise.race([settled, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /** Downgrade discovered-but-unemitted nodes before the terminal record. */
+  private async markUnvisitedEvidenceUnknown(deadline: number): Promise<void> {
+    const unvisited = new Map<string, DiscoveredNode | undefined>();
+    for (const [id, discovered] of this.roundDiscoveredNodes) {
+      if (!this.roundEmittedNodeIds.has(id)) unvisited.set(id, discovered);
+    }
+    for (const [id] of this.knownNodes) {
+      if (!this.roundEmittedNodeIds.has(id) && !unvisited.has(id)) unvisited.set(id, undefined);
+    }
+
+    // Leave time for the final coverage and terminal records even if a sink is
+    // slow. The production store sink is synchronous; the per-call bound still
+    // protects injected sinks that hang.
+    const terminalReserveMs = 200;
+    const unknownNodes: DelegationObservedNode[] = [];
+    for (const [id, discovered] of unvisited) {
+      if (!this.knownNodes.has(id) && this.knownNodes.size >= this.nodeLimit) {
+        this.noteGap("node-cap");
+        this.truncatedLastRound = true;
+        continue;
+      }
+      const node = this.unknownNode(id, discovered);
+      const known = this.knownNodes.get(id);
+      if (known !== undefined) {
+        known.lastObservedAt = node.lastObservedAt;
+        known.last = node;
+      } else {
+        this.knownNodes.set(id, {
+          ...(node.parentSessionId === undefined ? {} : { parentSessionId: node.parentSessionId }),
+          depth: node.depth,
+          role: node.role,
+          firstObservedAt: node.firstObservedAt,
+          lastObservedAt: node.lastObservedAt,
+          last: node,
+        });
+      }
+      unknownNodes.push(node);
+    }
+    for (const node of unknownNodes) {
+      const timeoutMs = Math.min(this.perCallTimeoutMs, deadline - Date.now() - terminalReserveMs);
+      if (timeoutMs <= 0) break;
+      await this.emitSink(() => this.sink.upsert(node), timeoutMs, true);
+    }
+  }
+
+  private unknownNode(id: string, discovered: DiscoveredNode | undefined): DelegationObservedNode {
+    const known = this.knownNodes.get(id);
+    const previous = known?.last;
+    const record = discovered?.record;
+    const parentSessionId = discovered?.parentSessionId ?? known?.parentSessionId;
+    const firstObservedAt = known?.firstObservedAt ?? this.now();
+    const lastObservedAt = known?.lastObservedAt ?? firstObservedAt;
+    const sourceCreatedAt = previous?.sourceCreatedAt ?? record?.createdAt;
+    const sourceUpdatedAt = previous?.sourceUpdatedAt ?? record?.updatedAt;
+    const sourceIdleAt = previous?.sourceIdleAt ?? record?.idleAt;
+    return {
+      sessionId: id,
+      rootSessionId: this.rootSessionId ?? id,
+      ...(parentSessionId === undefined ? {} : { parentSessionId }),
+      depth: discovered?.depth ?? known?.depth ?? previous?.depth ?? 0,
+      role: id === this.rootSessionId ? "root" : "child",
+      presence: "missing",
+      state: "unknown",
+      contradiction: false,
+      identity: previous?.identity ?? record?.identity ?? {},
+      ...(sourceCreatedAt === undefined ? {} : { sourceCreatedAt }),
+      ...(sourceUpdatedAt === undefined ? {} : { sourceUpdatedAt }),
+      ...(sourceIdleAt === undefined ? {} : { sourceIdleAt }),
+      firstObservedAt,
+      lastObservedAt,
+      cancellationRequested: this.cancellationRequested,
+    };
   }
 
   /**
@@ -681,13 +821,13 @@ export class DelegationObserver {
    * only once the body has truly settled. That keeps the single-flight gate
    * honest: nothing can begin while late work from an over-budget round runs.
    */
-  private async reconcileSafely(): Promise<void> {
+  private async reconcileSafely(roundBudgetMs = this.roundBudgetMs): Promise<void> {
     this.roundTimedOut = false;
     this.roundTimer = setTimeout(
       () => {
         this.roundTimedOut = true;
       },
-      Math.max(1, this.roundBudgetMs),
+      Math.max(1, Math.min(this.roundBudgetMs, roundBudgetMs)),
     );
     try {
       await this.reconcile();
@@ -722,6 +862,8 @@ export class DelegationObserver {
     if (this.disposed) return;
     this.currentGaps.clear();
     this.truncatedLastRound = false;
+    this.roundDiscoveredNodes = new Map();
+    this.roundEmittedNodeIds.clear();
 
     const root = this.rootSessionId;
     if (root === undefined) {
@@ -788,7 +930,9 @@ export class DelegationObserver {
       );
       observed += 1;
       if (this.roundStopped()) return;
-      await this.emitSink(() => this.sink.upsert(node));
+      const emitted = await this.emitSink(() => this.sink.upsert(node));
+      if (this.roundStopped()) return;
+      if (emitted) this.roundEmittedNodeIds.add(id);
     }
 
     // Retain last-known evidence for nodes missing from a COMPLETE enumeration.
@@ -811,7 +955,9 @@ export class DelegationObserver {
         lastObservedAt: known.lastObservedAt,
       };
       known.last = lost;
-      await this.emitSink(() => this.sink.upsert(lost));
+      const emitted = await this.emitSink(() => this.sink.upsert(lost));
+      if (this.roundStopped()) return;
+      if (emitted) this.roundEmittedNodeIds.add(id);
     }
 
     await this.publishIfRoundActive(observed);
@@ -856,6 +1002,7 @@ export class DelegationObserver {
       record = rootRecord;
     } else {
       const read = await this.readSession(id);
+      if (this.roundStopped()) return this.unknownNode(id, discovered);
       // This node's current evidence is timestamped at its own record-read
       // completion, not at the beginning of a potentially long tree sweep.
       observedAt = this.now();
@@ -960,6 +1107,7 @@ export class DelegationObserver {
   ): Promise<{ nodes: Map<string, DiscoveredNode>; truncated: boolean; complete: boolean }> {
     const nodes = new Map<string, DiscoveredNode>();
     nodes.set(root, { id: root, depth: 0, record: rootRecord });
+    this.roundDiscoveredNodes = nodes;
     const queue: Array<{ id: string; depth: number }> = [{ id: root, depth: 0 }];
     let truncated = false;
     let complete = true;
@@ -969,6 +1117,7 @@ export class DelegationObserver {
       const current = queue.shift()!;
       const atDepthLimit = current.depth >= this.depthLimit;
       const listing = await this.listChildren(current.id);
+      if (this.roundStopped()) break;
       if (listing.error !== undefined) {
         this.noteGap(listing.error);
         complete = false; // a branch could not be read; absence proves nothing.
@@ -1052,6 +1201,7 @@ export class DelegationObserver {
       } catch (error) {
         return { children, truncated, complete: false, error: this.transportGap(error) };
       }
+      if (this.roundStopped()) break;
       if (result.status !== 200) {
         return { children, truncated, complete: false, error: "listing-failed" };
       }
@@ -1201,19 +1351,20 @@ export class DelegationObserver {
   }
 
   /** Await `promise` for at most `ms`, swallowing and safely logging failure. */
-  private async raceSettle(promise: Promise<unknown>, ms: number): Promise<void> {
+  private async raceSettle(promise: Promise<unknown>, ms: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((resolveTimeout) => {
-      timer = setTimeout(resolveTimeout, Math.max(1, ms));
+    const timeout = new Promise<boolean>((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(false), Math.max(1, ms));
     });
     const guarded = promise.then(
-      () => undefined,
+      () => true,
       () => {
         this.safeWarn("delegation observation promise failed", this.safeFields());
+        return false;
       },
     );
     try {
-      await Promise.race([guarded, timeout]);
+      return await Promise.race([guarded, timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -1228,7 +1379,11 @@ export class DelegationObserver {
     this.historicalGaps.add(reason);
   }
 
-  private async publishCoverage(nodeCount: number): Promise<void> {
+  private async publishCoverage(
+    nodeCount: number,
+    timeoutMs = this.perCallTimeoutMs,
+    allowDisposed = false,
+  ): Promise<void> {
     const everObserved = this.knownNodes.size > 0;
     const partial = this.currentGaps.size > 0 || this.truncatedLastRound;
     const status: DelegationCoverageStatus = !everObserved
@@ -1236,20 +1391,23 @@ export class DelegationObserver {
       : partial
         ? "partial"
         : "healthy";
-    await this.emitSink(() =>
-      this.sink.coverage({
-        attemptId: this.attemptId,
-        ordinal: this.ordinal,
-        ...(this.rootSessionId === undefined ? {} : { rootSessionId: this.rootSessionId }),
-        observedAt: this.now(),
-        status,
-        partial,
-        gaps: [...this.historicalGaps],
-        currentGaps: [...this.currentGaps],
-        nodeCount,
-        truncated: this.truncatedLastRound,
-        transport: "polling",
-      }),
+    await this.emitSink(
+      () =>
+        this.sink.coverage({
+          attemptId: this.attemptId,
+          ordinal: this.ordinal,
+          ...(this.rootSessionId === undefined ? {} : { rootSessionId: this.rootSessionId }),
+          observedAt: this.now(),
+          status,
+          partial,
+          gaps: [...this.historicalGaps],
+          currentGaps: [...this.currentGaps],
+          nodeCount,
+          truncated: this.truncatedLastRound,
+          transport: "polling",
+        }),
+      timeoutMs,
+      allowDisposed,
     );
   }
 
@@ -1258,11 +1416,24 @@ export class DelegationObserver {
    * any failure or hang. Never propagates, so a broken or hung store cannot
    * affect the job or stall finalization.
    */
-  private async emitSink(action: () => void | Promise<void>): Promise<void> {
+  private async emitSink(
+    action: () => void | Promise<void>,
+    timeoutMs = this.perCallTimeoutMs,
+    allowDisposed = false,
+  ): Promise<boolean> {
+    if (this.disposed && !allowDisposed) return false;
+    let invoked = false;
     try {
-      await this.raceSettle(Promise.resolve().then(action), this.perCallTimeoutMs);
+      const pending = Promise.resolve().then(() => {
+        if (this.disposed && !allowDisposed) return;
+        invoked = true;
+        return action();
+      });
+      const settled = await this.raceSettle(pending, timeoutMs);
+      return settled && invoked;
     } catch {
       this.safeWarn("delegation observation sink failed", this.safeFields());
+      return false;
     }
   }
 

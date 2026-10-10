@@ -54,6 +54,14 @@ interface RunStep {
   edit?: Record<string, string>;
 }
 
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 class SequencedOpenCodeExecutor implements AgentExecutor {
   readonly id = "opencode";
   readonly usesSharedCredentials = true;
@@ -65,6 +73,7 @@ class SequencedOpenCodeExecutor implements AgentExecutor {
     private readonly events: string[],
     private readonly onRunStart?: (sessionId: string | undefined) => void,
     private readonly onRunEnd?: (sessionId: string | undefined) => void,
+    private readonly runCompletionGate?: Promise<void>,
   ) {}
 
   async checkVersion(): Promise<void> {}
@@ -90,6 +99,7 @@ class SequencedOpenCodeExecutor implements AgentExecutor {
         });
       });
     }
+    if (this.runCompletionGate !== undefined) await this.runCompletionGate;
     this.onRunEnd?.(step.sessionId);
     if (step.exitCode === 0) {
       for (const [relative, content] of Object.entries(step.edit ?? {})) {
@@ -112,12 +122,24 @@ class SequencedOpenCodeExecutor implements AgentExecutor {
 }
 
 /* ------------------------------------------------------------------ *
- * Scripted session surface: terminal roots, no children
+ * Scripted session surface: terminal roots and optional delegated children
  * ------------------------------------------------------------------ */
 
 class RootOnlySessionServer implements ManagedSessionHttp {
-  readonly sessions = new Map<string, { outcome?: "succeeded" | "failed" | "interrupted" }>();
+  readonly sessions = new Map<
+    string,
+    { outcome?: "succeeded" | "failed" | "interrupted"; parentId?: string }
+  >();
   readonly active = new Set<string>();
+  private readonly blockedRecordReads = new Map<
+    string,
+    {
+      consumed: boolean;
+      started: () => void;
+      startedPromise: Promise<void>;
+      released: Promise<void>;
+    }
+  >();
 
   addRunning(id: string): void {
     this.sessions.set(id, {});
@@ -129,32 +151,65 @@ class RootOnlySessionServer implements ManagedSessionHttp {
     this.active.delete(id);
   }
 
+  addChild(id: string, parentId: string): void {
+    this.sessions.set(id, { parentId, outcome: "succeeded" });
+  }
+
+  blockNextRecordRead(id: string): { started: Promise<void>; release: () => void } {
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>((done) => {
+      started = done;
+    });
+    const released = new Promise<void>((done) => {
+      release = done;
+    });
+    this.blockedRecordReads.set(id, {
+      consumed: false,
+      started,
+      startedPromise,
+      released,
+    });
+    return { started: startedPromise, release: () => release() };
+  }
+
   private body(id: string): Record<string, unknown> {
     const session = this.sessions.get(id)!;
     return {
       id,
       location: { directory: this.directory },
+      ...(session.parentId === undefined ? {} : { parentID: session.parentId }),
       ...(session.outcome === undefined ? {} : { outcome: session.outcome }),
     };
   }
 
   constructor(private readonly directory: string) {}
 
-  async get(path: string, _query?: Record<string, string>): Promise<ManagedHttpResult> {
+  async get(path: string, query?: Record<string, string>): Promise<ManagedHttpResult> {
     if (path === "/api/session/active") {
       const data: Record<string, unknown> = {};
       for (const id of this.active) data[id] = { type: "running" };
       return { status: 200, body: { data } };
     }
     if (path === "/api/session") {
+      const parentId = query?.parentID;
+      const children = [...this.sessions.entries()]
+        .filter(([, session]) => session.parentId === parentId)
+        .map(([id]) => this.body(id));
       return {
         status: 200,
-        body: { data: [], cursor: { previous: null, next: null } },
+        body: { data: children, cursor: { previous: null, next: null } },
       };
     }
     if (path.endsWith("/message")) return { status: 404, body: undefined };
     const id = path.slice("/api/session/".length);
     if (!this.sessions.has(id)) return { status: 404, body: undefined };
+    const blockedRead = this.blockedRecordReads.get(id);
+    if (blockedRead !== undefined && !blockedRead.consumed) {
+      blockedRead.consumed = true;
+      blockedRead.started();
+      await blockedRead.released;
+    }
     return { status: 200, body: { data: this.body(id) } };
   }
 
@@ -208,6 +263,7 @@ async function setup(options: {
   steps: readonly RunStep[];
   retries: number;
   observe: "events" | "throwing" | "store";
+  slowChildObservation?: boolean;
 }) {
   const gitRepo = await createTempRepo();
   const initialSha = await remoteSha(gitRepo.remotePath, gitRepo.headBranch);
@@ -243,6 +299,14 @@ async function setup(options: {
   // a provably quiescent root.
   server.addRunning("ses_root_1");
   server.addRunning("ses_root_2");
+  if (options.slowChildObservation) {
+    server.addChild("ses_child_1", "ses_root_1");
+    server.addChild("ses_child_2", "ses_root_1");
+  }
+  const blockedChildRead = options.slowChildObservation
+    ? server.blockNextRecordRead("ses_child_1")
+    : undefined;
+  const runCompletionGate = options.slowChildObservation ? createDeferred() : undefined;
 
   const github = new FixtureGitHubClient({
     login: "gremlyn-bot",
@@ -292,6 +356,7 @@ async function setup(options: {
     (sessionId) => {
       if (sessionId !== undefined) server.finish(sessionId);
     },
+    runCompletionGate?.promise,
   );
 
   const logger = new Logger({ level: "error", secrets: ["fixture-secret"], db: store.db });
@@ -340,7 +405,18 @@ async function setup(options: {
   };
   const [queued] = await orchestrator.handleEvent(repository, event);
   assert.ok(queued);
-  return { store, queued, events, server, workspace, gitRepo, dataDir, orchestrator };
+  return {
+    store,
+    queued,
+    events,
+    server,
+    workspace,
+    gitRepo,
+    dataDir,
+    orchestrator,
+    blockedChildRead,
+    releaseRun: () => runCompletionGate?.resolve(),
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -389,6 +465,62 @@ test("observes the root live and reconciles after settlement, per invocation", a
     .get() as { n: number };
   assert.equal(childRows.n, 0);
   data.store.close();
+});
+
+test("a slow child observation cannot hold job completion or write after observer end", async () => {
+  const data = await setup({
+    steps: [{ sessionId: "ses_root_1", exitCode: 0, edit: { "resolved.txt": "done\n" } }],
+    retries: 1,
+    observe: "events",
+    slowChildObservation: true,
+  });
+  assert.ok(data.blockedChildRead);
+  try {
+    let startedTimer: ReturnType<typeof setTimeout> | undefined;
+    const childReadStarted = await Promise.race([
+      data.blockedChildRead.started.then(() => true),
+      new Promise<boolean>((resolve) => {
+        startedTimer = setTimeout(() => resolve(false), 5_000);
+      }),
+    ]);
+    if (startedTimer !== undefined) clearTimeout(startedTimer);
+    assert.ok(
+      childReadStarted,
+      `the live observer should reach the deliberately blocked child read; events=${JSON.stringify(data.events)}`,
+    );
+    data.releaseRun();
+
+    let completionTimer: ReturnType<typeof setTimeout> | undefined;
+    const completion = await Promise.race([
+      data.queued.completed,
+      new Promise<undefined>((resolve) => {
+        completionTimer = setTimeout(() => resolve(undefined), 5_000);
+      }),
+    ]);
+    if (completionTimer !== undefined) clearTimeout(completionTimer);
+    assert.ok(completion, "the optional observation read must not hold job completion");
+    assert.equal(completion.kind, "completed");
+    assert.ok(
+      data.events.includes("obs:upsert:1/1:ses_child_1:unknown:missing"),
+      `unvisited child evidence is downgraded to missing/unknown; events=${JSON.stringify(data.events)}`,
+    );
+    assert.ok(data.events.includes("obs:upsert:1/1:ses_child_2:unknown:missing"));
+    assert.ok(data.events.includes("obs:coverage:1/1:partial"));
+
+    const endIndex = data.events.findIndex((event) => event === "obs:end:1/1:1");
+    assert.ok(endIndex >= 0, "the observer must emit its terminal record");
+    data.blockedChildRead.release();
+    await new Promise<void>((done) => setTimeout(done, 30));
+    assert.deepEqual(
+      data.events.slice(endIndex + 1).filter((event) => event.startsWith("obs:")),
+      [],
+      "the late child read must not emit sink output after the terminal record",
+    );
+  } finally {
+    data.releaseRun();
+    data.blockedChildRead.release();
+    data.store.close();
+  }
 });
 
 test("a throwing observation sink cannot change the job outcome or safety rows", async () => {
