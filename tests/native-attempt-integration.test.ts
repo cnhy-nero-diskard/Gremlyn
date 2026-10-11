@@ -22,17 +22,18 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentInventoryReader, AgentInventoryRecord } from "../src/agent/agent-inventory.js";
+import { defaultRunner, type ProcessRunner } from "../src/agent/launcher.js";
 import { OpenCodeExecutor } from "../src/agent/opencode.js";
 import {
   beginOpenCodeInvocation,
   opencodeOwnershipPath,
   readOpenCodeOwnership,
 } from "../src/agent/opencode-ownership.js";
-import type { ProcessRunner } from "../src/agent/launcher.js";
 import type {
   ManagedHttpResult,
   ManagedSessionHttp,
@@ -389,6 +390,8 @@ interface NativeFixtureOptions {
     | { pollIntervalMs?: number; perCallTimeoutMs?: number; globalConcurrencyLimit?: number };
   /** Back the store with a file (defaults to the harness's temp data dir). */
   persistent?: boolean;
+  /** Replace the fake with a real executor for process-start boundary tests. */
+  executor?: AgentExecutor;
 }
 
 async function setupNative(opts: NativeFixtureOptions = {}) {
@@ -480,16 +483,18 @@ async function setupNative(opts: NativeFixtureOptions = {}) {
   for (const behavior of opts.behaviors ?? []) {
     if (behavior.sessionId !== undefined) session.addParent(behavior.sessionId, workspace);
   }
-  const executor = new FakeOpenCodeExecutor(
-    opts.behaviors ?? [{ sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } }],
-    events,
-    opts.corruptInvocationRow === true
-      ? () => {
-          store.db.prepare("DELETE FROM opencode_invocations").run();
-        }
-      : undefined,
-    { store, session, workspace, events },
-  );
+  const executor =
+    opts.executor ??
+    new FakeOpenCodeExecutor(
+      opts.behaviors ?? [{ sessionId: "ses_parent", edits: { "resolved.txt": "resolved\n" } }],
+      events,
+      opts.corruptInvocationRow === true
+        ? () => {
+            store.db.prepare("DELETE FROM opencode_invocations").run();
+          }
+        : undefined,
+      { store, session, workspace, events },
+    );
   const records = opts.inventory ?? [nativeRecord(nativeId)];
   const inventory: AgentInventoryReader = async () => {
     events.push("preflight");
@@ -753,6 +758,49 @@ test("a nonzero native invocation retries only after its tree is proven quiescen
       [1, "ses_first", "proven"],
       [2, "ses_second", "proven"],
     ],
+  );
+  data.store.close();
+});
+
+test("a confirmed ENOENT spawn failure is durably marked not-started", async () => {
+  const missingCwd = join(tmpdir(), `gremlyn-missing-cwd-${randomUUID()}`);
+  const runner: ProcessRunner = (_binary, args, options) =>
+    defaultRunner(process.execPath, args, { ...options, cwd: missingCwd });
+  const data = await setupNative({ executor: new OpenCodeExecutor("opencode", runner) });
+  const queued = await resolveEvent(data);
+  await assert.rejects(() => queued.completed);
+
+  const invocation = new JobStore(data.store.db).listOpenCodeInvocations(queued.attemptId)[0];
+  assert.equal(invocation?.ownership_state, "not-started");
+  assert.equal(invocation?.status, "failed");
+  data.store.close();
+});
+
+test("an already-spawned EPIPE without a parent id remains unresolved and quarantined", async () => {
+  const spawnedFailure = {
+    stdout: "",
+    stderr: "",
+    exitCode: undefined,
+    timedOut: false,
+    isCanceled: false,
+    code: "EPIPE",
+    pid: 12345,
+    signal: undefined,
+  };
+  const runner: ProcessRunner = async () => spawnedFailure;
+  const data = await setupNative({ executor: new OpenCodeExecutor("opencode", runner) });
+  const queued = await resolveEvent(data);
+  await assert.rejects(() => queued.completed);
+
+  const attemptDir = join(data.dataDir, "attempts", String(queued.attemptId));
+  const invocationRecord = readOpenCodeOwnership(attemptDir)?.invocations[0];
+  assert.equal(invocationRecord?.launchState, "pending");
+  assert.equal(invocationRecord?.settled, false);
+  const invocation = new JobStore(data.store.db).listOpenCodeInvocations(queued.attemptId)[0];
+  assert.equal(invocation?.ownership_state, "quarantined");
+  assert.equal(
+    attemptRow(data, queued.attemptId).failure_reason,
+    "managed-session-discovery-failed",
   );
   data.store.close();
 });

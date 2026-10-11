@@ -17,6 +17,24 @@ export interface ProcessResult {
   spawnErrorCode?: string;
 }
 
+/**
+ * Return a spawn error only when the child process positively failed before
+ * creation. Execa's result `code` is deliberately not an input: it can describe
+ * failures after a child has already started.
+ */
+export function confirmedSpawnErrorCode(input: {
+  pid: number | undefined;
+  spawnEventSeen: boolean;
+  preSpawnErrorCode: string | undefined;
+  timedOut: boolean;
+  isCanceled: boolean;
+}): string | undefined {
+  if (input.pid !== undefined || input.spawnEventSeen || input.timedOut || input.isCanceled) {
+    return undefined;
+  }
+  return input.preSpawnErrorCode;
+}
+
 export type ProcessRunner = (
   binary: string,
   args: readonly string[],
@@ -119,6 +137,17 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
     ...(options.signal === undefined ? {} : { cancelSignal: options.signal }),
   });
+  let spawnEventSeen = subprocess.pid !== undefined;
+  let preSpawnErrorCode: string | undefined;
+  subprocess.once("spawn", () => {
+    spawnEventSeen = true;
+    preSpawnErrorCode = undefined;
+  });
+  subprocess.on("error", (error) => {
+    if (spawnEventSeen || subprocess.pid !== undefined) return;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (typeof code === "string") preSpawnErrorCode = code;
+  });
   if (options.onLine && subprocess.stdout) {
     // Observe the stream without consuming it: execa still buffers stdout, so
     // the completed result is unchanged whether or not anyone is watching.
@@ -150,6 +179,13 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     });
   }
   const result = await subprocess;
+  const spawnErrorCode = confirmedSpawnErrorCode({
+    pid: subprocess.pid,
+    spawnEventSeen,
+    preSpawnErrorCode,
+    timedOut: result.timedOut,
+    isCanceled: result.isCanceled,
+  });
   return {
     // execa leaves these undefined when CreateProcess fails before a child
     // exists (for example, ENAMETOOLONG on Windows). Keep the common result
@@ -160,8 +196,6 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     exitCode: result.exitCode,
     timedOut: result.timedOut,
     isCanceled: result.isCanceled,
-    ...(typeof result.code === "string" && result.signal === undefined
-      ? { spawnErrorCode: result.code }
-      : {}),
+    ...(spawnErrorCode === undefined ? {} : { spawnErrorCode }),
   };
 };
