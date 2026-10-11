@@ -852,6 +852,7 @@ export const clientScript = `
       filter: filter ? filter.value : '',
       follow: follow ? follow.checked : true,
       scrollTop: stream ? stream.scrollTop : 0,
+      scrollLeft: stream ? stream.scrollLeft : 0,
       pinned: stream ? stream.scrollHeight - stream.scrollTop - stream.clientHeight < 24 : true,
     };
   };
@@ -1151,7 +1152,7 @@ export const clientScript = `
         })
         .map((node) => node.getAttribute('data-status-value') || '')
         .filter(Boolean);
-      if (values.length) states.set(key, values.join('|'));
+      if (values.length) states.set(key, [...new Set(values)].join('|'));
     });
     return states;
   };
@@ -1163,7 +1164,8 @@ export const clientScript = `
       const actionable = /failed|cancelled|interrupted|error|bad/iu.test(value);
       if (previous === undefined && !actionable) return;
       const owner = root.id === key ? root : root.querySelector(keyedSelector(key));
-      const label = owner?.querySelector('h1, h2, h3, a')?.textContent?.replace(/\\s+/gu, ' ').trim()
+      const label = owner?.dataset.announcementLabel
+        || owner?.querySelector('h1, h2, h3, a')?.textContent?.replace(/\\s+/gu, ' ').trim()
         || 'An operational record';
       const status = value.split('|').join(', ');
       announce(
@@ -1241,6 +1243,14 @@ export const clientScript = `
     if (!owner || !root.contains(owner)) owner = root;
     return owner;
   };
+  // Resolve a descendant by selector, but also accept the owner itself: a
+  // keyed attempt/invocation/session node can be the element the snapshot
+  // points at, and querySelector never matches its own root.
+  const selectWithin = (owner, selector) => {
+    if (!owner) return null;
+    if (typeof owner.matches === 'function' && owner.matches(selector)) return owner;
+    return typeof owner.querySelector === 'function' ? owner.querySelector(selector) : null;
+  };
   const nextKeyFor = (owner) => {
     if (!owner || owner === owner.parentNode) return '';
     let sibling = owner.nextElementSibling;
@@ -1271,11 +1281,19 @@ export const clientScript = `
       selectionDirection: active.selectionDirection || 'none',
     };
   };
+  // Scroll identity is qualified by the owning live key so repeated session
+  // nodes in different attempts never share (or transfer) a position, and an
+  // attempt switch cannot inherit the previous attempt's reading place.
+  const scrollKeyFor = (root, el) => {
+    const owner = keyedOwner(root, el);
+    return (owner === root ? '' : directKey(owner)) + '::' + (el.dataset.scrollKeep || '');
+  };
   const scrollState = (root) => {
     const state = {};
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
-      state[el.dataset.scrollKeep] = {
+      state[scrollKeyFor(root, el)] = {
         top: el.scrollTop,
+        left: el.scrollLeft,
         pinned: el.scrollHeight - el.scrollTop - el.clientHeight < 24,
       };
     });
@@ -1357,7 +1375,7 @@ export const clientScript = `
       const owner = saved.ownerKey ? root.querySelector(keyedSelector(saved.ownerKey)) : root;
       if (!owner) return;
       const detail = saved.key
-        ? owner.querySelector('[data-details-key="' + escapeSelector(saved.key) + '"]')
+        ? selectWithin(owner, '[data-details-key="' + escapeSelector(saved.key) + '"]')
         : nodeAtPath(owner, saved.path);
       if (detail) detail.open = saved.open;
     });
@@ -1372,19 +1390,22 @@ export const clientScript = `
       node.classList.toggle('is-error', saved.error);
     });
     root.querySelectorAll('[data-scroll-keep]').forEach((el) => {
-      const saved = state.scrolls[el.dataset.scrollKeep];
+      const saved = state.scrolls[scrollKeyFor(root, el)];
       if (!saved) return;
       // The log panel has its own follow rule below; everything else simply
       // holds the operator's place, sticking to the bottom only if it was
-      // already there.
+      // already there. Restore the horizontal offset so a wide line stays in
+      // view even when the node survives a sibling or reconnect update.
       if (el.dataset.scrollKeep === 'log') return;
       if (el.dataset.scrollKeep === 'activity' && state.activity) {
         const follow = root.querySelector('[data-activity-follow]');
         if (follow) follow.checked = state.activity.follow;
         el.scrollTop = (state.activity.follow || saved.pinned) ? el.scrollHeight : saved.top;
+        if (typeof saved.left === 'number') el.scrollLeft = saved.left;
         return;
       }
       el.scrollTop = saved.pinned ? el.scrollHeight : saved.top;
+      if (typeof saved.left === 'number') el.scrollLeft = saved.left;
     });
     if (state.log) {
       const level = root.querySelector('[data-log-level]');
@@ -1397,7 +1418,10 @@ export const clientScript = `
       applyLogFilter(root);
       // Follow means stay on the newest line; otherwise hold the operator's
       // place so reading back through the log is not yanked away mid-scroll.
-      if (stream) stream.scrollTop = (state.log.follow || state.log.pinned) ? stream.scrollHeight : state.log.scrollTop;
+      if (stream) {
+        stream.scrollTop = (state.log.follow || state.log.pinned) ? stream.scrollHeight : state.log.scrollTop;
+        if (typeof state.log.scrollLeft === 'number') stream.scrollLeft = state.log.scrollLeft;
+      }
     }
     const confirmation = root.querySelector('[data-reset-confirm]'); const reset = root.querySelector('[data-reset-submit]');
     if (confirmation && reset) {
@@ -1411,7 +1435,16 @@ export const clientScript = `
     const focus = state.focus;
     if (!focus) return;
     const owner = focus.ownerKey ? root.querySelector(keyedSelector(focus.ownerKey)) : root;
-    const focused = owner ? nodeAtPath(owner, focus.path) : null;
+    // Prefer the stable id/name selector so a focused control survives sibling
+    // insertion or a re-render that shifts its positional path; fall back to
+    // the recorded path for controls without an id or name.
+    const focusSelector = focus.selector
+      ? (focus.selector.kind === 'name'
+        ? '[name="' + escapeSelector(focus.selector.value) + '"]'
+        : '#' + escapeSelector(focus.selector.value))
+      : null;
+    const focused = (focusSelector ? selectWithin(owner, focusSelector) : null)
+      || (owner ? nodeAtPath(owner, focus.path) : null);
     if (focused && typeof focused.focus === 'function') {
       focused.focus({ preventScroll: true });
       if (focus.selectionStart !== null && typeof focused.setSelectionRange === 'function') {

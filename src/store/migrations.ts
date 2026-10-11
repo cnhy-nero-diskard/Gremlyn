@@ -281,4 +281,137 @@ CREATE TABLE opencode_invocations (
 CREATE INDEX idx_opencode_invocations_attempt ON opencode_invocations(attempt_id);
 `,
   },
+  {
+    id: "0009_delegation_observations",
+    sql: `
+-- Tasks 2.1/2.2/2.3/2.4 (design D3/D4): durable, bounded, privacy-safe evidence
+-- of actual agent delegation. This is an observation store only: it never
+-- writes attempts, opencode_invocations, managed_child_sessions, or any other
+-- safety verdict. Every node is keyed by (attempt, invocation ordinal, session)
+-- so a repeated invocation of the same agent is a distinct node and a second
+-- parent invocation in one attempt never overwrites the first.
+--
+-- Only whitelisted scalar identity/state facts are stored: ids, source kind,
+-- supported actual agent/model, source timestamps when the runtime exposes
+-- them, observation bounds, last-known state/outcome and interruption-request
+-- metadata. Raw prompts, instructions, tool arguments, config dumps and event
+-- bodies are never represented here.
+
+-- Bounded observation nodes. first_observed_at is write-once; the last_*
+-- columns advance with each observation. last_outcome preserves the first
+-- terminal evidence and is never cleared, so an unresolved later round cannot
+-- erase a proven result. limited_uncertainty marks imported/ambiguous evidence
+-- whose parent edge, timestamps or identity could not be proven.
+CREATE TABLE delegation_observation_nodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  invocation_ordinal INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  root_session_id TEXT,
+  parent_session_id TEXT,
+  depth INTEGER,
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('session-poll', 'event-stream', 'legacy-managed', 'unknown')),
+  evidence_presence TEXT NOT NULL DEFAULT 'observed' CHECK (evidence_presence IN ('observed', 'missing')),
+  actual_agent TEXT,
+  actual_model TEXT,
+  source_created_at TEXT,
+  source_updated_at TEXT,
+  source_idle_at TEXT,
+  first_observed_at TEXT,
+  last_observed_at TEXT,
+  last_state TEXT NOT NULL DEFAULT 'unknown',
+  last_outcome TEXT CHECK (last_outcome IS NULL OR last_outcome IN ('succeeded', 'failed', 'interrupted')),
+  last_active INTEGER CHECK (last_active IS NULL OR last_active IN (0, 1)),
+  -- Most recent NON-NULL active evidence ever observed, retained only as history
+  -- and display context. It never makes a later unknown/absent active map assert
+  -- a live state, and it lets the projection distinguish a freshly verified
+  -- invoked record (no active evidence has ever been seen) from an unknown
+  -- record whose current active evidence was lost.
+  last_known_active INTEGER CHECK (last_known_active IS NULL OR last_known_active IN (0, 1)),
+  -- The terminal outcome the LATEST observation reported (NULL when that record
+  -- carried none). last_outcome is the retained historic terminal evidence
+  -- (never cleared); outcome_conflict records that the latest evidence
+  -- retracted or contradicted it, so the projection stays unknown until a fresh
+  -- record is consistent again.
+  current_outcome TEXT CHECK (current_outcome IS NULL OR current_outcome IN ('succeeded', 'failed', 'interrupted')),
+  outcome_conflict INTEGER NOT NULL DEFAULT 0,
+  cancellation_requested INTEGER NOT NULL DEFAULT 0,
+  cancellation_requested_at TEXT,
+  observation_generation INTEGER NOT NULL DEFAULT 0,
+  history_partial INTEGER NOT NULL DEFAULT 0,
+  limited_uncertainty INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(attempt_id, invocation_ordinal, session_id)
+);
+
+CREATE INDEX idx_delegation_nodes_attempt ON delegation_observation_nodes(attempt_id);
+CREATE INDEX idx_delegation_nodes_invocation ON delegation_observation_nodes(attempt_id, invocation_ordinal);
+
+-- Bounded safe state transitions. Not a token/tool event log: only the
+-- classified state, terminal outcome, active evidence and cancellation flag at
+-- each observed change. The store trims the oldest rows past the per-node and
+-- per-invocation caps and marks the node/coverage history partial.
+CREATE TABLE delegation_observation_transitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  invocation_ordinal INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  state TEXT NOT NULL,
+  outcome TEXT,
+  active INTEGER,
+  cancellation_requested INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_delegation_transitions_node
+  ON delegation_observation_transitions(attempt_id, invocation_ordinal, session_id, id);
+CREATE INDEX idx_delegation_transitions_invocation
+  ON delegation_observation_transitions(attempt_id, invocation_ordinal, id);
+
+-- One coverage record per (attempt, invocation ordinal): the reconciliation
+-- generation the console keys off, transport kind/state, freshness bounds,
+-- explicit gaps and truncation/limit markers. A missing row means coverage is
+-- not yet known, never that there were no delegations.
+CREATE TABLE delegation_invocation_coverage (
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  invocation_ordinal INTEGER NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0,
+  transport TEXT NOT NULL DEFAULT 'unknown' CHECK (transport IN ('polling', 'event-stream', 'legacy-managed', 'none', 'unknown')),
+  transport_state TEXT NOT NULL DEFAULT 'unknown' CHECK (transport_state IN ('ok', 'degraded', 'unavailable', 'unknown')),
+  last_success_at TEXT,
+  last_attempt_at TEXT,
+  gap_count INTEGER NOT NULL DEFAULT 0,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  history_partial INTEGER NOT NULL DEFAULT 0,
+  node_limit_reached INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (attempt_id, invocation_ordinal)
+);
+
+-- Explicit, durable observation gaps. A gap is opened when a round loses its
+-- source, misses observations or hits a bound, and closed (not deleted) when a
+-- later round reconciles successfully, so the historical note survives.
+CREATE TABLE delegation_observation_gaps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  invocation_ordinal INTEGER NOT NULL,
+  signature TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  closed_at TEXT
+);
+
+CREATE INDEX idx_delegation_gaps_invocation
+  ON delegation_observation_gaps(attempt_id, invocation_ordinal, id);
+
+-- Migration Plan step 1: existing managed child records are imported as
+-- explicitly limited legacy evidence by importLegacyManagedChildObservations
+-- (called at daemon startup), not by this schema migration. The import reads
+-- opencode_invocations, which is an additive prerequisite that a fresh schema
+-- may not have applied yet; keeping the seed out of the static migration keeps
+-- this migration order-independent and makes the import idempotent and testable
+-- on its own.
+`,
+  },
 ];

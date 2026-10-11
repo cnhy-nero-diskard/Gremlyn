@@ -1,0 +1,126 @@
+{
+  "runtime": {
+    "cli": "opencode",
+    "pinnedVersion": "2.0.16",
+    "probeMode": "read-only",
+    "modelCalls": 0,
+    "upgraded": false,
+    "credentialsReadFromFiles": false,
+    "rawPromptsOrEventsPersisted": false
+  },
+  "provenance": {
+    "readOnlyProbe": "opencode --version + `opencode api` GETs against the configured background service (installed pinned binary; no model invocation, no secret-file reads).",
+    "openApiDocument": "https://opencode.ai/v2/openapi.json (guidance; not proof of this installation).",
+    "existingLiveHarness": "tests/opencode-managed-live.test.ts and tests/managed-sessions.test.ts (opt-in / injected surfaces; skipped without GREMLYN_LIVE_OPENCODE_MODEL)."
+  },
+  "readOnlyProbes": [
+    { "command": "opencode --version", "result": "opencode v2.0.16" },
+    { "command": "opencode api GET /api/info", "result": "200 JSON; keys paths,pid,urls,version" },
+    {
+      "command": "opencode api GET /api/session/active",
+      "result": "200; {data} map keyed by ses-id with {type:\"running\"}"
+    },
+    {
+      "command": "opencode api GET /api/session",
+      "result": "200; {data:[Session.Info],cursor}; record keys agent,cost,id,location,model,projectID,time,title,tokens"
+    },
+    {
+      "command": "opencode api GET /api/session/<active-id>",
+      "result": "200; model keys id,providerID,variant; time keys created,updated; location key directory; outcome absent while unsettled"
+    },
+    {
+      "command": "opencode api GET /api/session/<active-id>/message?limit=1",
+      "result": "200; {data:[Message],cursor}; message[0] keys agent,content,cost,finish,id,model,providerState,snapshot,time,tokens,type"
+    },
+    {
+      "command": "opencode api GET /api/event",
+      "result": "bounded 8s then killed; 0 stdout bytes; no SSE fields; not a safely bounded consumer"
+    }
+  ],
+  "facts": [
+    {
+      "id": "early-parent-id",
+      "fact": "The non-interactive run stream's first step_start carries a top-level sessionID usable as the early parent handle.",
+      "evidence": ["existing-live-harness", "existing-fixture"],
+      "status": "verified",
+      "limitation": "The parser (openCodeStreamParentId) reads only the top-level sessionID and rejects nested part.sessionID; proven by unit fixtures, not by a fresh live run in this probe."
+    },
+    {
+      "id": "session-record-identity",
+      "fact": "A Session.Info record exposes agent and model{providerID,id,variant}.",
+      "evidence": ["read-only-probe", "openapi-documented"],
+      "status": "verified",
+      "limitation": "agent is mutable current state; the started identity still requires the first-assistant message read."
+    },
+    {
+      "id": "session-record-time",
+      "fact": "A Session.Info record exposes time.created and time.updated as epoch-ms numbers; time.idle is optional.",
+      "evidence": ["read-only-probe", "openapi-documented"],
+      "status": "verified",
+      "limitation": "time.idle was absent on the probed record; its idle semantics are not independently verified and are never treated as a heartbeat."
+    },
+    {
+      "id": "filtered-listing",
+      "fact": "GET /api/session supports parentID/directory/order/limit/cursor and returns {data:[Session.Info],cursor}.",
+      "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
+      "status": "verified",
+      "limitation": "The --param flag drops query parameters on 2.0.16, so filters must be encoded into the path; attribution must still echo parentID and directory."
+    },
+    {
+      "id": "active-map",
+      "fact": "GET /api/session/active returns {data:{ses-id:{type:\"running\"}}}; sessions absent are inactive.",
+      "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
+      "status": "verified",
+      "limitation": "Documented scope is process-owned FOREGROUND drains; absence means inactive for those drains. Whether every model-backed background:true child appears in the map is unproven (the pinned probe recorded one still running after its parent returned), so the live observer treats absent nonterminal delegated children as unknown/limited, not idle; absence is never a demonstrated stop or safety proof."
+    },
+    {
+      "id": "terminal-outcome",
+      "fact": "Session.Info.outcome is succeeded|failed|interrupted and is absent while execution is unsettled.",
+      "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
+      "status": "verified",
+      "limitation": "The current explicit terminal outcome is sufficient for display unless the active map affirmatively contradicts it by listing the session active; safety settlement still requires a terminal outcome and fresh active-map absence."
+    },
+    {
+      "id": "initial-identity",
+      "fact": "The first assistant message carries the started agent/model, distinct from the mutable session.agent field.",
+      "evidence": ["read-only-probe", "openapi-documented", "existing-live-harness"],
+      "status": "verified",
+      "limitation": "The live proof is opt-in; the read is bounded root-verified and returns unknown identity when unavailable."
+    },
+    {
+      "id": "message-identity",
+      "fact": "GET /api/session/{id}/message?type=assistant&order=asc&limit=1 returns earliest assistant identity.",
+      "evidence": ["openapi-documented", "existing-live-harness"],
+      "status": "verified",
+      "limitation": "The type filter is applied before pagination; the probe used only limit=1 and did not re-verify order/type filtering live."
+    },
+    {
+      "id": "foreground-background",
+      "fact": "A parent can own overlapping foreground and background child sessions, including a late-spawned background child.",
+      "evidence": ["existing-live-harness"],
+      "status": "partial",
+      "limitation": "Background attribution is covered by injected settlement tests and the opt-in live harness; this read-only probe observed only the live foreground active map and did not spawn a model-backed background child. Whether a running background:true child appears in the process-owned active map is unproven, so the live observer treats an absent nonterminal child as unknown/limited, not idle."
+    },
+    {
+      "id": "nested-parentage",
+      "fact": "Child discovery recurses through echoed parentID edges, each verified against parent and directory.",
+      "evidence": ["existing-live-harness", "openapi-documented"],
+      "status": "verified",
+      "limitation": "Depth (16) and node (1024) bounds are Gremlyn presentation/safety bounds, not runtime facts; nested spawning was proven by settlement fixtures, not a new live run here."
+    },
+    {
+      "id": "event-stream",
+      "fact": "GET /api/event exposes an SSE stream of native and plugin events.",
+      "evidence": ["openapi-documented", "read-only-probe"],
+      "status": "unverified",
+      "limitation": "Documented volatile by contract: a slow consumer overflows and fails the stream, and events during disconnection are missed. `opencode api GET /api/event` produced no usable output within an 8s bound and had to be killed, so no safely bounded event subscription exists through the configured CLI. Polling-only fallback is adopted; no event->delegation mapping is verified."
+    }
+  ],
+  "eventTransport": {
+    "decision": "polling-only",
+    "reason": "No safely bounded event subscription through the configured CLI; the stream is volatile and event shapes are not verified.",
+    "disconnect": "Events during disconnection are missed by contract; reconciliation must recover current/available terminal evidence without claiming continuous coverage.",
+    "overflow": "A slow consumer overflows and fails the stream by contract.",
+    "unsupported": "No per-event delegation discriminator is documented (V2EventEncoded is an opaque JSON string); mapping events to observed nodes is unverified."
+  }
+}

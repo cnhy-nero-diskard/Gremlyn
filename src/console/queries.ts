@@ -3,6 +3,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { activityPath, type AgentActivity } from "../agent/activity.js";
 import { type OpenCodePermission, parseOpenCodeAgentProfile } from "../config/opencode-profile.js";
 import { createRedactor, type Redactor } from "../log/redact.js";
+import {
+  projectDelegationState,
+  reportDelegationObservations,
+  safeReadDelegationObservations,
+  type DelegationAttemptObservations,
+  type DelegationInvocationCoverage,
+  type DelegationObservationGap,
+  type DelegationObservationNode,
+  type DelegationObservationReport,
+  type DelegationProjectedState,
+} from "../store/delegation-observations.js";
 import type { CommandOutcome, JobStatus } from "../types.js";
 
 /**
@@ -168,6 +179,11 @@ export interface JobSummary {
   finished_at?: string | null;
   current_attempt?: number;
   review_context?: string | null;
+  /**
+   * Observed delegation counts for this job, or absent when the job has no
+   * attempts to attribute. Never treats configured agents as executed.
+   */
+  delegation?: DelegationSummary;
 }
 
 export interface AttemptDetail {
@@ -215,6 +231,12 @@ export interface AttemptDetail {
    * possibly-unknown runtime primary. Empty for non-OpenCode attempts.
    */
   invocations: OpenCodeInvocationSummary[];
+  /**
+   * Observed delegation evidence for this attempt, or absent when nothing was
+   * observed / the attempt predates observation. Independent of
+   * {@link childSessions} safety settlement.
+   */
+  delegation?: DelegationAttemptDetail;
 }
 
 /**
@@ -233,6 +255,127 @@ export interface ManagedChildSessionSummary {
   state: string;
   /** Whether Gremlyn had to interrupt this child to reach quiescence. */
   interrupted: boolean;
+}
+
+/**
+ * Truthful delegation observability projected for the console (design D4/D5;
+ * capability `agent-delegation-observability`). `availability` keeps a
+ * supported-but-empty observation distinct from an executor that cannot expose
+ * attributed child sessions at all, so Cline is never rendered as "no
+ * subagents" and a lost OpenCode source is never rendered as an empty tree.
+ */
+export type DelegationAvailability = "observed" | "partial" | "unavailable" | "unsupported";
+
+/** Reuse the store's coverage vocabulary verbatim. */
+export type DelegationCoverage = "known" | "partial" | "unavailable" | "none";
+
+/** Observed child counts. Unknown is never folded into completed. */
+export interface DelegationCounts {
+  observed: number;
+  /** Verified records whose current execution has not been resolved yet. */
+  invoked: number;
+  running: number;
+  idle: number;
+  succeeded: number;
+  failed: number;
+  interrupted: number;
+  unknown: number;
+  cancellationRequested: number;
+}
+
+/** One subdued dashboard/attempt summary of actually observed execution. */
+export interface DelegationSummary extends DelegationCounts {
+  /** The executor kind that ran (resolved alias-aware), or null when unknown. */
+  executorKind: string | null;
+  availability: DelegationAvailability;
+  coverage: DelegationCoverage;
+  /** True when retained history/evidence is explicitly incomplete. */
+  limited: boolean;
+  /**
+   * The bounded scope this dashboard summary was computed over. Latest attempt
+   * only, so a job with many retries never projects an unbounded aggregate.
+   */
+  scope: "latest-attempt";
+}
+
+/**
+ * One configured, dashboard-managed callable definition. Kept strictly
+ * separate from observed session nodes: a configured child that was never
+ * observed never appears as having run.
+ */
+export interface DelegationConfiguredAgent {
+  id: string;
+  /** The exact runtime id the managed attempt generated for this definition. */
+  runtimeId: string;
+  callable: boolean;
+  primary: boolean;
+  model: string | null;
+}
+
+/** One observed session node as projected for the drilldown tree. */
+export interface DelegationNodeView {
+  id: number;
+  sessionId: string;
+  parentSessionId: string | null;
+  rootSessionId: string | null;
+  depth: number | null;
+  /**
+   * True when this node is a root invocation session (`sessionId ===
+   * rootSessionId` or `depth === 0`) rather than a delegated child. Roots stay
+   * visible in the tree but are excluded from every delegation count.
+   */
+  isRoot: boolean;
+  /** The raw runtime agent id when observed; never a configured label. */
+  agentId: string | null;
+  /** A friendly captured-definition id, only on an exact generated-id match. */
+  agentLabel: string | null;
+  /** True only when `agentLabel` came from an exact generated runtime-id match. */
+  agentFriendly: boolean;
+  model: string | null;
+  state: DelegationProjectedState;
+  outcome: string | null;
+  cancellationRequested: boolean;
+  cancellationRequestedAt: string | null;
+  firstObservedAt: string | null;
+  lastObservedAt: string | null;
+  sourceCreatedAt: string | null;
+  sourceUpdatedAt: string | null;
+  sourceIdleAt: string | null;
+  limitedUncertainty: boolean;
+  historyPartial: boolean;
+}
+
+/** One root invocation's bounded, attributed child tree. */
+export interface DelegationInvocationView {
+  ordinal: number;
+  rootSessionId: string | null;
+  nodes: DelegationNodeView[];
+  coverage: DelegationCoverage;
+  transport: string | null;
+  transportState: string | null;
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  gapCount: number;
+  truncated: boolean;
+  historyPartial: boolean;
+  nodeLimitReached: boolean;
+  /** Redacted open-gap details; empty when coverage is healthy. */
+  openGaps: string[];
+  /** Count of earlier gaps that were reconciled, retained as history. */
+  reconciledGaps: number;
+}
+
+/** One attempt's observed delegation tree plus configured callable agents. */
+export interface DelegationAttemptDetail extends DelegationCounts {
+  attemptId: number;
+  executorKind: string | null;
+  availability: DelegationAvailability;
+  coverage: DelegationCoverage;
+  /** Configured managed definitions, separate from observed nodes. */
+  configured: DelegationConfiguredAgent[];
+  invocations: DelegationInvocationView[];
+  openGaps: string[];
+  limited: boolean;
 }
 
 export interface StatusTimelineEntry {
@@ -440,6 +583,72 @@ function boundedLimit(limit: number): number {
 }
 
 /**
+ * Attach one batched delegation summary to every dashboard job. Only the latest
+ * attempt per job is considered (bounded to one row per job regardless of retry
+ * count) and its observations are read in one batched query, never a session
+ * query per row. The full attempt history remains available in job detail. A
+ * storage failure leaves every row without a delegation summary rather than
+ * failing the dashboard.
+ */
+function attachDashboardDelegation(
+  db: Database.Database,
+  jobs: JobSummary[],
+  repositoryAgents: ReadonlyMap<number, string | undefined>,
+  resolveExecutorKind: ExecutorKindResolver,
+  now: Date | number | string | undefined,
+): void {
+  if (jobs.length === 0) return;
+  const jobIds = jobs.map((job) => job.id);
+  const attemptsByJob = new Map<number, Array<{ id: number; agent: string | undefined }>>();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, job_id, agent FROM (
+           SELECT id, job_id, agent,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY job_id ORDER BY attempt_number DESC, id DESC
+                  ) AS rn
+           FROM attempts
+           WHERE job_id IN (${jobIds.map(() => "?").join(",")})
+         ) WHERE rn = 1`,
+      )
+      .all(...jobIds) as Array<{ id: number; job_id: number; agent: string | null }>;
+    for (const row of rows) {
+      const entry = { id: row.id, agent: row.agent === null ? undefined : row.agent };
+      const list = attemptsByJob.get(row.job_id);
+      if (list === undefined) attemptsByJob.set(row.job_id, [entry]);
+      else list.push(entry);
+    }
+  } catch {
+    return;
+  }
+  const attemptIds = [...attemptsByJob.values()].flat().map((attempt) => attempt.id);
+  const observationResult = safeReadDelegationObservations(db, attemptIds);
+  const observationsByAttempt = observationResult.ok
+    ? observationResult.value
+    : new Map<number, DelegationAttemptObservations>();
+  const nowMs = toMillis(now);
+  for (const job of jobs) {
+    const jobAttempts = attemptsByJob.get(job.id) ?? [];
+    const executorKind = jobExecutorKind(
+      jobAttempts
+        .map((attempt) => attempt.agent)
+        .filter((agent): agent is string => agent !== undefined),
+      repositoryAgents.get(job.id),
+      resolveExecutorKind,
+    );
+    const observations = jobAttempts
+      .map((attempt) => observationsByAttempt.get(attempt.id))
+      .filter((value): value is DelegationAttemptObservations => value !== undefined);
+    job.delegation = summarizeJobDelegation({
+      executorKind,
+      observations,
+      now: nowMs,
+    });
+  }
+}
+
+/**
  * Read the dashboard's repository and job lanes.  The legacy shape (separate
  * `running`, `queued`, and `recent` arrays) is retained so existing routes can
  * adopt the query without changing their rendering contract.
@@ -448,6 +657,7 @@ export function readDashboard(
   db: Database.Database,
   redaction: Redaction,
   options: DashboardReadOptions = {},
+  resolveExecutorKind: ExecutorKindResolver = (agentId) => agentId,
 ): DashboardModel {
   const redact = asRedactor(redaction);
   const opencodeProfiles = new Map<number, { revision: number; profileJson: string | null }>();
@@ -501,9 +711,11 @@ export function readDashboard(
         allowedModels: parseAllowedModels(safe.allowed_models),
       };
     });
+  const repositoryAgents = new Map<number, string | undefined>();
   const jobs = db
     .prepare(
-      `SELECT jobs.*, repositories.owner, repositories.name
+      `SELECT jobs.*, repositories.owner, repositories.name,
+              repositories.agent AS repository_agent
        FROM jobs JOIN repositories ON repositories.id = jobs.repo_id
        ORDER BY jobs.id DESC LIMIT 50`,
     )
@@ -515,10 +727,17 @@ export function readDashboard(
       const {
         opencode_profile_json: _profileJson,
         opencode_profile_revision: _revision,
+        repository_agent: repositoryAgent,
         ...safeRow
       } = row as Record<string, unknown>;
-      return redactRow(safeRow, redact) as unknown as JobSummary;
+      const job = redactRow(safeRow, redact) as unknown as JobSummary;
+      repositoryAgents.set(
+        job.id,
+        typeof repositoryAgent === "string" ? repositoryAgent : undefined,
+      );
+      return job;
     });
+  attachDashboardDelegation(db, jobs, repositoryAgents, resolveExecutorKind, options.now);
   const running = jobs.filter((job) => RUNNING_STATUSES.has(job.status));
   const queued = jobs.filter((job) => job.status === "queued");
   const recent = jobs.filter((job) => TERMINAL_STATUSES.has(job.status));
@@ -755,6 +974,338 @@ function readOpenCodeInvocations(
   return result;
 }
 
+/* ------------------------------------------------------------------ *
+ * Delegation observation projection (design D4/D5)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The per-attempt namespace the managed runner generates runtime agent ids
+ * under. Reconstructed here so a friendly configured label is shown only when
+ * an observed runtime id matches a captured generated definition exactly.
+ */
+function delegationAttemptNamespace(attemptId: number): string {
+  return `attempt-${String(attemptId)}`;
+}
+
+/**
+ * The configured callable managed definitions for one attempt, with the exact
+ * generated runtime id each would carry. This list is configuration, never
+ * evidence of execution; only an exact runtime-id match may borrow a label.
+ */
+function delegationConfiguredAgents(
+  profile: OpenCodeProfileSummary | null,
+  attemptId: number,
+): DelegationConfiguredAgent[] {
+  if (profile === null) return [];
+  const namespace = delegationAttemptNamespace(attemptId);
+  return [
+    {
+      id: profile.primaryId,
+      runtimeId: `${namespace}/${profile.primaryId}`,
+      callable: true,
+      primary: true,
+      model: null,
+    },
+    ...profile.subagents.map((subagent) => ({
+      id: subagent.id,
+      runtimeId: `${namespace}/${subagent.id}`,
+      callable: subagent.enabled,
+      primary: false,
+      model: subagent.model,
+    })),
+  ];
+}
+
+/**
+ * Resolve a display label for an observed runtime agent id: the captured
+ * definition id only on an exact generated runtime-id match, otherwise the raw
+ * (redacted) runtime id, or null for unknown identity. Only callable (generated)
+ * definitions may lend a label — a disabled definition was never materialized,
+ * so a runtime id matching one is not trusted. Never substitutes a configured
+ * definition for an unmatched runtime id.
+ */
+function delegationAgentLabel(
+  agentId: string | null,
+  configured: readonly DelegationConfiguredAgent[],
+): { label: string | null; friendly: boolean } {
+  if (agentId === null) return { label: null, friendly: false };
+  const match = configured.find(
+    (candidate) => candidate.callable && candidate.runtimeId === agentId,
+  );
+  return match === undefined
+    ? { label: agentId, friendly: false }
+    : { label: match.id, friendly: true };
+}
+
+function countsFromReport(report: DelegationObservationReport): DelegationCounts {
+  return {
+    observed: report.total,
+    invoked: report.invoked,
+    running: report.running,
+    idle: report.idle,
+    succeeded: report.succeeded,
+    failed: report.failed,
+    interrupted: report.interrupted,
+    unknown: report.unknown,
+    cancellationRequested: report.cancellationRequested,
+  };
+}
+
+/**
+ * An executor that does not own attributed session telemetry is explicitly
+ * unsupported (limited data), not an empty tree: Cline must never read as "no
+ * subagents". An OpenCode executor with no coverage record is unavailable until
+ * the observer attributes a root, matching design D2.
+ */
+function delegationAvailability(input: {
+  executorKind: string | undefined;
+  coverageRows: readonly DelegationInvocationCoverage[];
+  report: DelegationObservationReport | undefined;
+  limitedEvidence: boolean;
+}): { availability: DelegationAvailability; coverage: DelegationCoverage; limited: boolean } {
+  if (input.executorKind !== OPENCODE_EXECUTOR_ID) {
+    return { availability: "unsupported", coverage: "none", limited: true };
+  }
+  if (input.coverageRows.length === 0 || input.report === undefined) {
+    return { availability: "unavailable", coverage: "none", limited: true };
+  }
+  const limited = input.report.coverage === "partial" || input.limitedEvidence;
+  const availability: DelegationAvailability =
+    input.report.coverage === "unavailable" ? "unavailable" : limited ? "partial" : "observed";
+  return { availability, coverage: input.report.coverage, limited };
+}
+
+/**
+ * True when an observation node is a root invocation session rather than a
+ * delegated child. Roots are kept in the tree for legibility but never counted
+ * as delegations. Legacy imported children carry an unambiguous root id and a
+ * null immediate parent, so they stay children.
+ */
+function isDelegationRootNode(
+  node: Pick<DelegationObservationNode, "sessionId" | "rootSessionId" | "depth">,
+): boolean {
+  if (node.rootSessionId !== null && node.rootSessionId === node.sessionId) return true;
+  return node.depth === 0;
+}
+
+function delegationNodeView(
+  node: DelegationObservationNode,
+  configured: readonly DelegationConfiguredAgent[],
+  redact: Redactor,
+  now: number,
+): DelegationNodeView {
+  const label = delegationAgentLabel(node.agent, configured);
+  return {
+    id: node.id,
+    sessionId: redact(node.sessionId),
+    parentSessionId: node.parentSessionId === null ? null : redact(node.parentSessionId),
+    rootSessionId: node.rootSessionId === null ? null : redact(node.rootSessionId),
+    depth: node.depth,
+    isRoot: isDelegationRootNode(node),
+    agentId: node.agent === null ? null : redact(node.agent),
+    agentLabel: label.label === null ? null : redact(label.label),
+    agentFriendly: label.friendly,
+    model: node.model === null ? null : redact(node.model),
+    state: projectDelegationState(node, { now }),
+    outcome: node.lastOutcome,
+    cancellationRequested: node.cancellationRequested,
+    cancellationRequestedAt:
+      node.cancellationRequestedAt === null ? null : redact(node.cancellationRequestedAt),
+    firstObservedAt: node.firstObservedAt === null ? null : redact(node.firstObservedAt),
+    lastObservedAt: node.lastObservedAt === null ? null : redact(node.lastObservedAt),
+    sourceCreatedAt: node.sourceCreatedAt === null ? null : redact(node.sourceCreatedAt),
+    sourceUpdatedAt: node.sourceUpdatedAt === null ? null : redact(node.sourceUpdatedAt),
+    sourceIdleAt: node.sourceIdleAt === null ? null : redact(node.sourceIdleAt),
+    limitedUncertainty: node.limitedUncertainty,
+    historyPartial: node.historyPartial,
+  };
+}
+
+/**
+ * Group one attempt's observations into root-invocation trees. Multiple
+ * invocation ordinals stay separate (internal retries), each node keeps its own
+ * session identity, and coverage/gaps are reported per ordinal.
+ */
+function delegationInvocations(
+  observations: DelegationAttemptObservations,
+  configured: readonly DelegationConfiguredAgent[],
+  redact: Redactor,
+  now: number,
+): DelegationInvocationView[] {
+  const nodesByOrdinal = new Map<number, DelegationObservationNode[]>();
+  for (const node of observations.nodes) {
+    const list = nodesByOrdinal.get(node.invocationOrdinal);
+    if (list === undefined) nodesByOrdinal.set(node.invocationOrdinal, [node]);
+    else list.push(node);
+  }
+  const ordinals = new Set<number>([
+    ...nodesByOrdinal.keys(),
+    ...observations.coverage.map((row) => row.invocationOrdinal),
+    ...observations.gaps.map((gap) => gap.invocationOrdinal),
+  ]);
+  return [...ordinals]
+    .sort((left, right) => left - right)
+    .map((ordinal) => {
+      const nodes = (nodesByOrdinal.get(ordinal) ?? [])
+        .slice()
+        .sort((left, right) => (left.depth ?? 0) - (right.depth ?? 0) || left.id - right.id);
+      const coverageRows = observations.coverage.filter((row) => row.invocationOrdinal === ordinal);
+      const gapRows = observations.gaps.filter((gap) => gap.invocationOrdinal === ordinal);
+      const openGaps = gapRows
+        .filter((gap) => gap.closedAt === null)
+        .map((gap) => redact(gap.detail));
+      // Counts are child-only: a healthy root with no children reads "no
+      // delegations observed yet", never one active delegation.
+      const childNodes = nodes.filter((node) => !isDelegationRootNode(node));
+      const report = reportDelegationObservations(
+        {
+          attemptId: observations.attemptId,
+          nodes: childNodes,
+          coverage: coverageRows,
+          gaps: gapRows,
+        },
+        { now },
+      );
+      const row = coverageRows[0];
+      const rootSessionId =
+        nodes.find((node) => node.rootSessionId !== null)?.rootSessionId ?? null;
+      return {
+        ordinal,
+        rootSessionId: rootSessionId === null ? null : redact(rootSessionId),
+        nodes: nodes.map((node) => delegationNodeView(node, configured, redact, now)),
+        coverage: report.coverage,
+        transport: row?.transport ?? null,
+        transportState: row?.transportState ?? null,
+        lastSuccessAt: row?.lastSuccessAt ?? null,
+        lastAttemptAt: row?.lastAttemptAt ?? null,
+        gapCount: row?.gapCount ?? openGaps.length,
+        truncated: report.truncated,
+        historyPartial: coverageRows.some((entry) => entry.historyPartial),
+        nodeLimitReached: coverageRows.some((entry) => entry.nodeLimitReached),
+        openGaps,
+        reconciledGaps: gapRows.filter((gap) => gap.closedAt !== null).length,
+      };
+    });
+}
+
+function buildDelegationAttemptDetail(input: {
+  attemptId: number;
+  executorKind: string | undefined;
+  profile: OpenCodeProfileSummary | null;
+  observations: DelegationAttemptObservations | undefined;
+  redact: Redactor;
+  now: number;
+}): DelegationAttemptDetail {
+  const configured = delegationConfiguredAgents(input.profile, input.attemptId);
+  const observations = input.observations;
+  const nodes = observations?.nodes ?? [];
+  const coverageRows = observations?.coverage ?? [];
+  const gaps = observations?.gaps ?? [];
+  const childNodes = nodes.filter((node) => !isDelegationRootNode(node));
+  const report =
+    observations === undefined
+      ? undefined
+      : reportDelegationObservations(
+          { attemptId: observations.attemptId, nodes: childNodes, coverage: coverageRows, gaps },
+          { now: input.now },
+        );
+  const limitedEvidence =
+    nodes.some((node) => node.limitedUncertainty) ||
+    coverageRows.some((row) => row.historyPartial || row.truncated || row.nodeLimitReached);
+  const availability = delegationAvailability({
+    executorKind: input.executorKind,
+    coverageRows,
+    report,
+    limitedEvidence,
+  });
+  return {
+    attemptId: input.attemptId,
+    executorKind: input.executorKind ?? null,
+    availability: availability.availability,
+    coverage: availability.coverage,
+    configured,
+    invocations:
+      observations === undefined
+        ? []
+        : delegationInvocations(observations, configured, input.redact, input.now),
+    openGaps: gaps.filter((gap) => gap.closedAt === null).map((gap) => input.redact(gap.detail)),
+    limited: availability.limited,
+    ...(report === undefined
+      ? {
+          observed: 0,
+          invoked: 0,
+          running: 0,
+          idle: 0,
+          succeeded: 0,
+          failed: 0,
+          interrupted: 0,
+          unknown: 0,
+          cancellationRequested: 0,
+        }
+      : countsFromReport(report)),
+  };
+}
+
+/**
+ * Aggregate one job's attempt observations into a single dashboard summary.
+ * Batched read, no per-row session query; unknown is never counted as
+ * completed.
+ */
+function summarizeJobDelegation(input: {
+  executorKind: string | undefined;
+  observations: readonly DelegationAttemptObservations[];
+  now: number;
+}): DelegationSummary {
+  const nodes: DelegationObservationNode[] = [];
+  const coverage: DelegationInvocationCoverage[] = [];
+  const gaps: DelegationObservationGap[] = [];
+  for (const observation of input.observations) {
+    for (const node of observation.nodes) {
+      if (!isDelegationRootNode(node)) nodes.push(node);
+    }
+    coverage.push(...observation.coverage);
+    gaps.push(...observation.gaps);
+  }
+  const report = reportDelegationObservations(
+    { attemptId: 0, nodes, coverage, gaps },
+    { now: input.now },
+  );
+  const limitedEvidence =
+    nodes.some((node) => node.limitedUncertainty) ||
+    coverage.some((row) => row.historyPartial || row.truncated || row.nodeLimitReached);
+  const availability = delegationAvailability({
+    executorKind: input.executorKind,
+    coverageRows: coverage,
+    report,
+    limitedEvidence,
+  });
+  return {
+    executorKind: input.executorKind ?? null,
+    availability: availability.availability,
+    coverage: availability.coverage,
+    limited: availability.limited,
+    scope: "latest-attempt",
+    ...countsFromReport(report),
+  };
+}
+
+/**
+ * The executor kind for a job's recorded work, resolved alias-aware from the
+ * configured definitions. Attempts are historical evidence and win over the
+ * repository's current (mutable) agent.
+ */
+function jobExecutorKind(
+  attemptAgents: readonly string[],
+  repositoryAgent: string | undefined,
+  resolveKind: ExecutorKindResolver,
+): string | undefined {
+  for (const agent of attemptAgents) {
+    const kind = resolveKind(agent);
+    if (kind !== undefined) return kind;
+  }
+  return repositoryAgent === undefined ? undefined : resolveKind(repositoryAgent);
+}
+
 /** Read and redact a complete job diagnostic projection. */
 export function readJobDetail(
   db: Database.Database,
@@ -762,6 +1313,7 @@ export function readJobDetail(
   redaction: Redaction,
   dataDir = ".gremlyn",
   resolveExecutorKind: ExecutorKindResolver = (agentId) => agentId,
+  now?: Date | number | string,
 ): JobDetail | undefined {
   const baseRedact = asRedactor(redaction);
   const jobRow = db
@@ -812,10 +1364,27 @@ export function readJobDetail(
   const attemptIds = mappedAttempts.map((attempt) => attempt.id);
   const childSessions = readManagedChildSessions(db, attemptIds, redact);
   const invocations = readOpenCodeInvocations(db, attemptIds, redact);
+  // Observation is a separate, failure-isolated read: a broken observation
+  // store degrades the delegation panel to unavailable telemetry and never
+  // takes down the job view or its safety evidence.
+  const observationResult = safeReadDelegationObservations(db, attemptIds);
+  const observationsByAttempt = observationResult.ok
+    ? observationResult.value
+    : new Map<number, DelegationAttemptObservations>();
+  const capturedProfile = readJobOpenCodeProfile(jobRow, redact);
+  const nowMs = now === undefined ? Date.now() : toMillis(now);
   const attempts = mappedAttempts.map((attempt) => ({
     ...attempt,
     childSessions: childSessions.get(attempt.id) ?? [],
     invocations: invocations.get(attempt.id) ?? [],
+    delegation: buildDelegationAttemptDetail({
+      attemptId: attempt.id,
+      executorKind: resolveExecutorKind(attempt.agent),
+      profile: capturedProfile,
+      observations: observationsByAttempt.get(attempt.id),
+      redact,
+      now: nowMs,
+    }),
   }));
   const timeline = db
     .prepare(
@@ -862,7 +1431,7 @@ export function readJobDetail(
   return {
     job: {
       ...safeJob,
-      opencodeProfile: readJobOpenCodeProfile(jobRow, redact),
+      opencodeProfile: capturedProfile,
       opencodeSelection: readCapturedOpenCodeSelection(jobRow, redact, isOpenCodeJob),
     },
     attempts,
@@ -1094,11 +1663,16 @@ export function createConsoleQueries(
   const resolveExecutorKind = input.resolveExecutorKind ?? ((agentId) => agentId);
   return {
     readDashboard: (readOptions = {}) =>
-      readDashboard(input.db, redact, {
-        pollIntervalSec,
-        concurrency,
-        ...readOptions,
-      }),
+      readDashboard(
+        input.db,
+        redact,
+        {
+          pollIntervalSec,
+          concurrency,
+          ...readOptions,
+        },
+        resolveExecutorKind,
+      ),
     readHealth: (now) => readHealth(input.db, pollIntervalSec, concurrency, now),
     readJobDetail: (jobId) =>
       readJobDetail(input.db, jobId, redact, input.dataDir ?? ".gremlyn", resolveExecutorKind),

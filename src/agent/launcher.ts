@@ -13,6 +13,26 @@ export interface ProcessResult {
   exitCode: number | undefined;
   timedOut: boolean;
   isCanceled: boolean;
+  /** Present only when the OS refused to create the child process. */
+  spawnErrorCode?: string;
+}
+
+/**
+ * Return a spawn error only when the child process positively failed before
+ * creation. Execa's result `code` is deliberately not an input: it can describe
+ * failures after a child has already started.
+ */
+export function confirmedSpawnErrorCode(input: {
+  pid: number | undefined;
+  spawnEventSeen: boolean;
+  preSpawnErrorCode: string | undefined;
+  timedOut: boolean;
+  isCanceled: boolean;
+}): string | undefined {
+  if (input.pid !== undefined || input.spawnEventSeen || input.timedOut || input.isCanceled) {
+    return undefined;
+  }
+  return input.preSpawnErrorCode;
 }
 
 export type ProcessRunner = (
@@ -117,6 +137,17 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
     ...(options.signal === undefined ? {} : { cancelSignal: options.signal }),
   });
+  let spawnEventSeen = subprocess.pid !== undefined;
+  let preSpawnErrorCode: string | undefined;
+  subprocess.once("spawn", () => {
+    spawnEventSeen = true;
+    preSpawnErrorCode = undefined;
+  });
+  subprocess.on("error", (error) => {
+    if (spawnEventSeen || subprocess.pid !== undefined) return;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (typeof code === "string") preSpawnErrorCode = code;
+  });
   if (options.onLine && subprocess.stdout) {
     // Observe the stream without consuming it: execa still buffers stdout, so
     // the completed result is unchanged whether or not anyone is watching.
@@ -148,11 +179,23 @@ export const defaultRunner: ProcessRunner = async (binary, args, options) => {
     });
   }
   const result = await subprocess;
+  const spawnErrorCode = confirmedSpawnErrorCode({
+    pid: subprocess.pid,
+    spawnEventSeen,
+    preSpawnErrorCode,
+    timedOut: result.timedOut,
+    isCanceled: result.isCanceled,
+  });
   return {
-    stdout: result.stdout,
-    stderr: result.stderr,
+    // execa leaves these undefined when CreateProcess fails before a child
+    // exists (for example, ENAMETOOLONG on Windows). Keep the common result
+    // contract stable so executors can classify that failure without parsing
+    // an undefined stream as if a process had run.
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
     exitCode: result.exitCode,
     timedOut: result.timedOut,
     isCanceled: result.isCanceled,
+    ...(spawnErrorCode === undefined ? {} : { spawnErrorCode }),
   };
 };

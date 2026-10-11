@@ -27,6 +27,29 @@ import { join } from "node:path";
 
 export type ActivityKind = "reasoning" | "text" | "tool" | "iteration" | "usage" | "result";
 
+/** Whether a block belongs to the invocation root or to a verified child session. */
+export type ActivityRole = "parent" | "child";
+
+/**
+ * Verified session attribution for a block (design D3). Populated only by the
+ * caller *after* the observer has proven ownership; a raw stream line never
+ * establishes its own attribution. Every field is sanitized before it reaches a
+ * block or disk, and the whole object is optional so old snapshots and ordinary
+ * single-session runs stay valid.
+ */
+export interface ActivityAttribution {
+  /** Verified session this stream's activity belongs to. */
+  sessionId?: string;
+  /** Verified invocation-root session for the attempt. */
+  rootSessionId?: string;
+  /** Verified parent session, when the attributed session is a child. */
+  parentSessionId?: string;
+  /** Invocation ordinal within the attempt, when known. */
+  invocation?: number;
+  /** Role of the attributed session within the invocation. */
+  role?: ActivityRole;
+}
+
 export interface ActivityBlock {
   seq: number;
   kind: ActivityKind;
@@ -34,6 +57,12 @@ export interface ActivityBlock {
   text: string;
   /** Set once the agent closes the block; an open block is still growing. */
   done: boolean;
+  /** Verified attribution, present only after observer verification. */
+  sessionId?: string;
+  rootSessionId?: string;
+  parentSessionId?: string;
+  invocation?: number;
+  role?: ActivityRole;
 }
 
 export interface AgentActivity {
@@ -60,6 +89,235 @@ function clamp(text: string): string {
   return text.length <= MAX_BLOCK_CHARS
     ? text
     : `${text.slice(0, MAX_BLOCK_CHARS)}\n… truncated (${String(text.length - MAX_BLOCK_CHARS)} more characters)`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Delegation tools hand work to another session. Their arguments are the
+ * operator's prompt/instructions and their results can quote the child's
+ * transcript, so neither may enter the parent's persisted activity: only the
+ * tool name plus safe state/session/agent references are retained (design D3).
+ *
+ * Names are matched exactly against the recognized task/subagent/delegation
+ * spellings, plus any name that self-identifies as a subagent or delegation
+ * tool. Unrelated tools (including `task_progress`-style reporting tools) keep
+ * their existing rendering.
+ */
+const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "task",
+  "new_task",
+  "newtask",
+  "subtask",
+  "sub_task",
+  "task_agent",
+  "subagent",
+  "sub_agent",
+  "sub_agents",
+  "use_subagents",
+  "spawn_agent",
+  "spawn_subagent",
+  "delegate",
+  "delegate_task",
+  "delegation",
+  "agent",
+]);
+
+/** True when a tool name denotes spawning or handing work to another session. */
+export function isDelegationToolName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  if (DELEGATION_TOOL_NAMES.has(normalized)) return true;
+  return (
+    normalized.includes("subagent") ||
+    normalized.includes("sub_agent") ||
+    normalized.includes("delegat")
+  );
+}
+
+/**
+ * Well-known credential shapes. Shared by the reference whitelist (which
+ * rejects them outright) and the baseline snapshot scrubber (which redacts
+ * them), so a credential can neither be retained as a "reference" nor survive
+ * on disk when the caller configured no redactor.
+ */
+const CREDENTIAL_SHAPES: readonly RegExp[] = [
+  /sk-ant-[A-Za-z0-9_-]{8,}/gu,
+  /sk-[A-Za-z0-9_-]{16,}/gu,
+  /ghp_[A-Za-z0-9]{20,}/gu,
+  /gho_[A-Za-z0-9]{20,}/gu,
+  /ghs_[A-Za-z0-9]{20,}/gu,
+  /ghr_[A-Za-z0-9]{20,}/gu,
+  /github_pat_[A-Za-z0-9_]{20,}/gu,
+  /xox[baprs]-[A-Za-z0-9-]{8,}/gu,
+  /AKIA[0-9A-Z]{16}/gu,
+  /ASIA[0-9A-Z]{16}/gu,
+  /AIza[0-9A-Za-z_-]{20,}/gu,
+  /ya29\.[A-Za-z0-9_-]{8,}/gu,
+  /\bBearer\s+[A-Za-z0-9._~+/_-]{8,}=*/giu,
+  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/gu,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/gu,
+];
+
+/** Credential-looking prefixes used to veto an otherwise plausible reference. */
+const CREDENTIAL_LIKE =
+  /(?:^|[^A-Za-z0-9])(?:sk|ghp|gho|ghs|ghr|github_pat|xox[baprs]|akia|asia|aiza|ya29|bearer)[-_A-Za-z0-9]{4,}|(?:^|[^A-Za-z0-9])eyj[A-Za-z0-9._-]{8,}|(?:api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|password)[:=\s]/iu;
+
+/**
+ * Redact well-known credential shapes from any string before it is persisted.
+ * Applied after the caller's own redactor, so a credential the caller has not
+ * configured still cannot reach an activity snapshot.
+ */
+export function redactCredentials(value: string): string {
+  let out = value;
+  for (const pattern of CREDENTIAL_SHAPES) out = out.replace(pattern, "[redacted]");
+  return out;
+}
+
+/**
+ * Accept only a verified session reference: an OpenCode `ses…` id, or a Cline
+ * documented `conv_…` task id. Everything else — including credential-shaped
+ * and arbitrary strings — is rejected.
+ */
+function openCodeSessionId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 128) return undefined;
+  if (CREDENTIAL_LIKE.test(trimmed)) return undefined;
+  return /^ses[A-Za-z0-9_-]+$/u.test(trimmed) ? trimmed : undefined;
+}
+
+/** Accept only a Cline documented `conv_…` task id. */
+function clineSessionId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 128) return undefined;
+  if (CREDENTIAL_LIKE.test(trimmed)) return undefined;
+  return /^conv_[A-Za-z0-9_-]+$/u.test(trimmed) ? trimmed : undefined;
+}
+
+/** Verified attribution/delegation session reference: either executor's shape. */
+function sessionRef(value: unknown): string | undefined {
+  return openCodeSessionId(value) ?? clineSessionId(value);
+}
+
+/** Tool lifecycle states that are recognized; anything else is dropped. */
+const KNOWN_TOOL_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "running",
+  "completed",
+  "error",
+  "cancelled",
+  "canceled",
+  "failed",
+  "success",
+]);
+
+/** Accept only a known, lowercase tool status; arbitrary identifiers are dropped. */
+function toolStatusRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return KNOWN_TOOL_STATUSES.has(normalized) ? normalized : undefined;
+}
+
+/**
+ * Accept only a bounded, credential-free agent identifier. A managed agent
+ * reference may be scoped with slashes (`attempt-1/reviewer`), but URL/userinfo
+ * shapes are still rejected: the character set excludes `:`, `@`, `?`, `#`,
+ * `=`, `&`, `%`, whitespace, leading/trailing slashes, empty segments and `.`/
+ * `..` segments. The value is copied, never substituted from configuration.
+ */
+function agentRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 64) return undefined;
+  if (!/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/u.test(trimmed)) return undefined;
+  if (trimmed.split("/").some((segment) => segment === "." || segment === "..")) return undefined;
+  return CREDENTIAL_LIKE.test(trimmed) ? undefined : trimmed;
+}
+
+/** Fixed, safe stand-in when a delegation tool's own name is not safe to render. */
+const DELEGATION_TOOL_FALLBACK = "delegation tool";
+
+/** Accept only a bounded, credential-free tool name; unsafe names use the fallback. */
+function toolNameRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 64) return undefined;
+  if (!/^[A-Za-z0-9._:-]+$/u.test(trimmed)) return undefined;
+  return CREDENTIAL_LIKE.test(trimmed) ? undefined : trimmed;
+}
+
+/** A valid wall-clock instant, or now when the source sent nothing usable. */
+function safeTimestampMillis(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  return new Date().toISOString();
+}
+
+/** A valid timestamp string (kept verbatim), or now when it is missing/malformed. */
+function safeTimestampText(value: unknown): string {
+  if (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value) &&
+    Number.isFinite(Date.parse(value))
+  )
+    return new Date(value).toISOString();
+  return new Date().toISOString();
+}
+
+/** Render only the whitelisted references of a delegation tool, never its input/output. */
+function delegationToolText(
+  name: string,
+  refs: { status?: string | undefined; session?: string | undefined; agent?: string | undefined },
+): string {
+  const lines = [toolNameRef(name) ?? DELEGATION_TOOL_FALLBACK];
+  if (refs.status !== undefined) lines.push(`state: ${refs.status}`);
+  if (refs.session !== undefined) lines.push(`session: ${refs.session}`);
+  if (refs.agent !== undefined) lines.push(`agent: ${refs.agent}`);
+  return lines.join("\n");
+}
+
+/** Delegation references from an OpenCode `tool_use` part (structured fields only). */
+function openCodeDelegationText(part: Record<string, unknown>): string {
+  const name = typeof part.tool === "string" ? part.tool : "tool";
+  const state = isRecord(part.state) ? part.state : {};
+  const input = isRecord(state.input) ? state.input : {};
+  const metadata = isRecord(state.metadata) ? state.metadata : {};
+  return delegationToolText(name, {
+    status: toolStatusRef(state.status),
+    session:
+      sessionRef(metadata.sessionId) ??
+      sessionRef(metadata.sessionID) ??
+      sessionRef(input.sessionId) ??
+      sessionRef(input.sessionID),
+    agent:
+      agentRef(input.subagent_type) ??
+      agentRef(input.subagentType) ??
+      agentRef(input.agent) ??
+      agentRef(input.subagent),
+  });
+}
+
+/** Delegation references from a Cline tool event (structured fields only). */
+function clineDelegationText(payload: Record<string, unknown>): string {
+  const name = typeof payload.toolName === "string" ? payload.toolName : "tool";
+  const input = isRecord(payload.input) ? payload.input : {};
+  return delegationToolText(name, {
+    status: toolStatusRef(payload.status) ?? toolStatusRef(input.status),
+    session:
+      sessionRef(input.sessionId) ?? sessionRef(input.session_id) ?? sessionRef(input.taskId),
+    agent:
+      agentRef(input.subagent_type) ??
+      agentRef(input.subagentType) ??
+      agentRef(input.agent) ??
+      agentRef(input.subagent),
+  });
 }
 
 /**
@@ -90,6 +348,73 @@ export interface ActivityMapperContext {
 export type ActivityLineMapper = (line: string, ctx: ActivityMapperContext) => void;
 
 /**
+ * Ownership of a single stream line, as far as its own event shape reveals.
+ * `absent` means the line carries no session field at all; `invalid` means a
+ * field is present but malformed, oversized or otherwise not a trustworthy
+ * session reference. The two must not be conflated: a malformed raw session
+ * must never be treated as "no session" and then stamped as the verified
+ * parent.
+ */
+export type ActivitySessionOwnership =
+  | { readonly kind: "absent" }
+  | { readonly kind: "valid"; readonly sessionId: string }
+  | { readonly kind: "invalid" };
+
+/**
+ * Reads the stream session ownership a single line declares. Used only to
+ * decide whether a line may be attributed to a verified session — never to
+ * invent attribution.
+ */
+export type ActivityLineSessionReader = (line: string) => ActivitySessionOwnership;
+
+/** Classify a present-or-absent raw session field without losing malformed ownership. */
+function classifySession(
+  raw: unknown,
+  accept: (value: unknown) => string | undefined,
+): ActivitySessionOwnership {
+  if (raw === undefined || raw === null) return { kind: "absent" };
+  const sessionId = accept(raw);
+  return sessionId === undefined ? { kind: "invalid" } : { kind: "valid", sessionId };
+}
+
+/**
+ * OpenCode carries its stream session as top-level `sessionID`. Only that value
+ * is authoritative; nested tool output is never read.
+ */
+function openCodeStreamOwnership(line: string): ActivitySessionOwnership {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return { kind: "absent" };
+  let event: unknown;
+  try {
+    event = JSON.parse(trimmed);
+  } catch {
+    return { kind: "absent" };
+  }
+  if (!isRecord(event)) return { kind: "absent" };
+  return classifySession(event.sessionID, openCodeSessionId);
+}
+
+/** Cline carries `taskId` (and session aliases) on its hook/agent events. */
+function clineStreamOwnership(line: string): ActivitySessionOwnership {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return { kind: "absent" };
+  let event: unknown;
+  try {
+    event = JSON.parse(trimmed);
+  } catch {
+    return { kind: "absent" };
+  }
+  if (!isRecord(event)) return { kind: "absent" };
+  // First present field decides ownership; a malformed value is `invalid`, not
+  // a reason to fall through to another alias.
+  for (const candidate of [event.taskId, event.sessionId, event.session_id, event.sessionID]) {
+    if (candidate !== undefined && candidate !== null)
+      return classifySession(candidate, clineSessionId);
+  }
+  return { kind: "absent" };
+}
+
+/**
  * Pull the readable text out of one Cline content event.
  *
  * The three content types do not share a field, which is easy to get wrong:
@@ -109,6 +434,9 @@ function clineContentText(
   }
   if (kind === "tool") {
     const name = typeof payload.toolName === "string" ? payload.toolName : "tool";
+    // Delegation tools carry prompts/instructions as arguments; retain only
+    // their safe references so they can never be flattened into the transcript.
+    if (isDelegationToolName(name)) return clineDelegationText(payload);
     if (payload.input === undefined) return name;
     let rendered: string;
     try {
@@ -139,7 +467,7 @@ export function clineLineMapper(line: string, ctx: ActivityMapperContext): void 
   } catch {
     return;
   }
-  const at = typeof event.ts === "string" ? event.ts : new Date().toISOString();
+  const at = safeTimestampText(event.ts);
 
   if (event.type === "hook_event" && event.hookEventName === "tool_call") {
     ctx.countToolCall();
@@ -217,10 +545,7 @@ export function opencodeLineMapper(line: string, ctx: ActivityMapperContext): vo
   } catch {
     return;
   }
-  const at =
-    typeof event.timestamp === "number"
-      ? new Date(event.timestamp).toISOString()
-      : new Date().toISOString();
+  const at = safeTimestampMillis(event.timestamp);
 
   switch (event.type) {
     case "text": {
@@ -236,7 +561,13 @@ export function opencodeLineMapper(line: string, ctx: ActivityMapperContext): vo
     case "tool_use": {
       const part = event.part as Record<string, unknown> | undefined;
       if (!part) return;
-      ctx.pushClosedBlock("tool", at, openCodeToolText(part));
+      const name = typeof part.tool === "string" ? part.tool : "tool";
+      // Delegation tools carry prompts/instructions and outputs; retain only
+      // their safe references, never the arbitrary input or output.
+      const text = isDelegationToolName(name)
+        ? openCodeDelegationText(part)
+        : openCodeToolText(part);
+      ctx.pushClosedBlock("tool", at, text);
       ctx.countToolCall();
       return;
     }
@@ -275,6 +606,41 @@ export const ACTIVITY_LINE_MAPPERS: Record<string, ActivityLineMapper> = {
   opencode: opencodeLineMapper,
 };
 
+/** Per-executor-kind stream-session readers, matched to {@link ACTIVITY_LINE_MAPPERS}. */
+export const ACTIVITY_LINE_SESSIONS: Record<string, ActivityLineSessionReader> = {
+  cline: clineStreamOwnership,
+  opencode: openCodeStreamOwnership,
+};
+
+/** Resolve the session reader that belongs to a mapper, by identity. */
+function lineSessionReaderFor(mapper: ActivityLineMapper): ActivityLineSessionReader | undefined {
+  for (const [id, candidate] of Object.entries(ACTIVITY_LINE_MAPPERS)) {
+    if (candidate === mapper) return ACTIVITY_LINE_SESSIONS[id];
+  }
+  return undefined;
+}
+
+/** Sanitize caller-supplied attribution; reject anything not a safe, bounded reference. */
+function normalizeAttribution(input: ActivityAttribution): ActivityAttribution {
+  const sessionId = sessionRef(input.sessionId);
+  const rootSessionId = sessionRef(input.rootSessionId);
+  const parentSessionId = sessionRef(input.parentSessionId);
+  const invocation =
+    typeof input.invocation === "number" &&
+    Number.isInteger(input.invocation) &&
+    input.invocation >= 0
+      ? input.invocation
+      : undefined;
+  const role = input.role === "parent" || input.role === "child" ? input.role : undefined;
+  return {
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(rootSessionId === undefined ? {} : { rootSessionId }),
+    ...(parentSessionId === undefined ? {} : { parentSessionId }),
+    ...(invocation === undefined ? {} : { invocation }),
+    ...(role === undefined ? {} : { role }),
+  };
+}
+
 /**
  * Folds an agent's structured stdout stream into an ordered transcript, via a
  * per-agent {@link ActivityLineMapper}. The block shape, caps, and snapshot
@@ -288,15 +654,46 @@ export class ActivityRecorder implements ActivityMapperContext {
   private iterations = 0;
   private usage: Record<string, unknown> | null = null;
   private dirty = false;
+  /**
+   * Verified attribution applied to every subsequent block. Set only through
+   * {@link push}; an absent line attribution preserves the last verified value,
+   * and an empty object clears it.
+   */
+  private attributed: ActivityAttribution = {};
 
-  constructor(private readonly mapper: ActivityLineMapper = clineLineMapper) {}
+  private readonly sessionReader: ActivityLineSessionReader | undefined;
+
+  constructor(
+    private readonly mapper: ActivityLineMapper = clineLineMapper,
+    sessionReader?: ActivityLineSessionReader,
+  ) {
+    this.sessionReader = sessionReader ?? lineSessionReaderFor(mapper);
+  }
 
   /** True when something changed since the last {@link snapshot} was taken. */
   get hasChanges(): boolean {
     return this.dirty;
   }
 
-  push(line: string): void {
+  /**
+   * Fold one stream line in, optionally under verified attribution. With a
+   * verified session, only lines whose own stream ownership matches it are
+   * kept: absent, malformed or different ownership is dropped, so an ambiguous
+   * raw session can never be stamped as the verified parent and a child event
+   * can never be flattened into the parent's transcript. Without attribution
+   * the legacy unbounded behavior is unchanged.
+   */
+  push(line: string, attribution?: ActivityAttribution): void {
+    if (attribution !== undefined) {
+      const next = normalizeAttribution(attribution);
+      if (JSON.stringify(next) !== JSON.stringify(this.attributed)) {
+        // Never update an open block created under another invocation/session,
+        // including the transition from unverified to verified attribution.
+        this.finish();
+      }
+      this.attributed = next;
+    }
+    if (!this.acceptsLine(line)) return;
     try {
       this.mapper(line, this);
     } catch {
@@ -305,13 +702,46 @@ export class ActivityRecorder implements ActivityMapperContext {
     }
   }
 
+  /**
+   * Decide whether a line may carry the verified session attribution. Unbound
+   * streams (no verified session) accept everything. A verified session only
+   * accepts an exact, valid ownership match — anything else, including a
+   * missing reader or absent/malformed ownership, is dropped rather than
+   * mis-attributed.
+   */
+  private acceptsLine(line: string): boolean {
+    const expected = this.attributed.sessionId;
+    if (expected === undefined) return true;
+    const ownership = this.sessionReader?.(line);
+    return ownership?.kind === "valid" && ownership.sessionId === expected;
+  }
+
+  /** The verified attribution fields to stamp onto a new block, if any. */
+  private attributionFields(): Partial<ActivityBlock> {
+    const a = this.attributed;
+    return {
+      ...(a.sessionId === undefined ? {} : { sessionId: a.sessionId }),
+      ...(a.rootSessionId === undefined ? {} : { rootSessionId: a.rootSessionId }),
+      ...(a.parentSessionId === undefined ? {} : { parentSessionId: a.parentSessionId }),
+      ...(a.invocation === undefined ? {} : { invocation: a.invocation }),
+      ...(a.role === undefined ? {} : { role: a.role }),
+    };
+  }
+
   setOpenBlockText(kind: ActivityKind, at: string, text: string): void {
     const existing = this.open.get(kind);
     if (existing) {
       existing.text = clamp(text);
       existing.at = at;
     } else {
-      const block: ActivityBlock = { seq: ++this.seq, kind, at, text: clamp(text), done: false };
+      const block: ActivityBlock = {
+        seq: ++this.seq,
+        kind,
+        at,
+        text: clamp(text),
+        done: false,
+        ...this.attributionFields(),
+      };
       this.blocks.push(block);
       this.open.set(kind, block);
       this.trimBlocks();
@@ -328,7 +758,14 @@ export class ActivityRecorder implements ActivityMapperContext {
   }
 
   pushClosedBlock(kind: ActivityKind, at: string, text: string): void {
-    this.blocks.push({ seq: ++this.seq, kind, at, text: clamp(text), done: true });
+    this.blocks.push({
+      seq: ++this.seq,
+      kind,
+      at,
+      text: clamp(text),
+      done: true,
+      ...this.attributionFields(),
+    });
     this.trimBlocks();
     this.dirty = true;
   }
@@ -393,9 +830,22 @@ export function writeActivity(
 ): string {
   const path = activityPath(dataDir, attemptId);
   mkdirSync(join(dataDir, "output"), { recursive: true });
+  // The caller's redactor knows project-specific secrets; the baseline scrubber
+  // removes well-known credential shapes the caller may not have configured.
+  const scrub = (value: string): string => redactCredentials(redact(value));
   const safe: AgentActivity = {
     ...activity,
-    blocks: activity.blocks.map((block) => ({ ...block, text: redact(block.text) })),
+    blocks: activity.blocks.map((block) => ({
+      ...block,
+      text: scrub(block.text),
+      // Attribution references are whitelisted at creation, and redacted again
+      // here so a credential that happened to survive is never persisted.
+      ...(block.sessionId === undefined ? {} : { sessionId: scrub(block.sessionId) }),
+      ...(block.rootSessionId === undefined ? {} : { rootSessionId: scrub(block.rootSessionId) }),
+      ...(block.parentSessionId === undefined
+        ? {}
+        : { parentSessionId: scrub(block.parentSessionId) }),
+    })),
   };
   writeFileSync(path, JSON.stringify(safe), "utf8");
   return path;

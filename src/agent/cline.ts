@@ -6,9 +6,9 @@ import type { AgentExecutor, AgentResult, AgentRunOptions } from "../types.js";
  * The single Cline release whose argv surface design D10 was probed against.
  * Bumped from 3.0.60 to 3.0.61 without re-running that probe — a patch-level
  * bump accepted on trust that the invocation surface didn't change.
- * @pin-sync 3.0.67 -> 3.0.69 on 2026-10-07; surface verified via cline --help.
+ * @pin-sync 3.0.69 -> 3.0.70 on 2026-10-10; surface verified via cline --help.
  */
-export const EXPECTED_CLINE_VERSION = "3.0.69";
+export const EXPECTED_CLINE_VERSION = "3.0.70";
 
 export class AgentVersionError extends Error {
   constructor(message: string) {

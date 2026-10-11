@@ -2,6 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { activityPath } from "../agent/activity.js";
+import {
+  DELEGATION_STALE_AFTER_MS,
+  delegationObservationSignature,
+} from "../store/delegation-observations.js";
 
 export type StreamChange = { sequence: number; kind: "change" | "heartbeat" };
 export type StreamListener = (change: StreamChange) => void;
@@ -118,9 +122,55 @@ export class SharedChangeTicker {
           return `${path}:missing`;
         }
       });
-      return JSON.stringify({ ...row, files });
+      // Observation revision is computed only over the bounded recent/live
+      // attempts already present in this signature (at most a few hundred ids),
+      // never a global scan of node/transition/coverage history. The count of
+      // fresh unresolved nodes changes as each one crosses the staleness
+      // window, so an expiring sibling refreshes even while another stays fresh;
+      // historical terminal records never contribute and cannot cause constant
+      // heartbeat announcements.
+      const scopedAttemptIds = new Set<number>();
+      const addScoped = (value: string): void => {
+        const id = Number(value);
+        if (Number.isInteger(id) && id > 0) scopedAttemptIds.add(id);
+      };
+      if (typeof row.live_attempts === "string") {
+        for (const id of row.live_attempts.split("|")) addScoped(id);
+      }
+      if (typeof row.recent_attempt_states === "string") {
+        for (const entry of row.recent_attempt_states.split("|")) {
+          addScoped(entry.split(":", 1)[0] ?? "");
+        }
+      }
+      const scopedIds = [...scopedAttemptIds].slice(0, 200);
+      const delegationSignature = delegationObservationSignature(this.db, scopedIds);
+      const freshDelegations = this.freshDelegationCount(scopedIds);
+      return JSON.stringify({ ...row, files, delegationSignature, freshDelegations });
     } catch {
       return "closed";
+    }
+  }
+  /**
+   * Count live (nonterminal) observation nodes whose last observation is still
+   * within the staleness window, over the bounded scoped attempt ids only. The
+   * count drops as each node expires, which changes the ticker signature without
+   * waiting for another write.
+   */
+  private freshDelegationCount(ids: readonly number[]): number {
+    if (ids.length === 0) return 0;
+    const list = ids.map(() => "?").join(",");
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM delegation_observation_nodes
+           WHERE last_outcome IS NULL AND last_observed_at IS NOT NULL
+             AND attempt_id IN (${list})
+             AND (julianday('now') - julianday(last_observed_at)) * 86400000 < ?`,
+        )
+        .get(...ids, DELEGATION_STALE_AFTER_MS) as { count: number };
+      return row.count;
+    } catch {
+      return 0;
     }
   }
 }

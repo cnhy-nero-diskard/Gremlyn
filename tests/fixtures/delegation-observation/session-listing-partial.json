@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "id": "ses_fixture_parent",
+      "agent": "build",
+      "model": { "id": "model-large", "providerID": "fixture" },
+      "location": { "directory": "C:\\work\\fixture-workspace" },
+      "time": { "created": 1788408290000, "updated": 1788408390000 }
+    },
+    { "id": "" },
+    { "not": "a session" }
+  ],
+  "cursor": { "previous": null, "next": "cursor-page-2" }
+}

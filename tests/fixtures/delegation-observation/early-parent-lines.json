@@ -1,0 +1,8 @@
+{
+  "lines": [
+    "{\"type\":\"step_start\",\"timestamp\":1788408388432,\"sessionID\":\"ses_fixture_parent\",\"part\":{\"id\":\"prt_fixture\",\"type\":\"step-start\"}}",
+    "{\"type\":\"text\",\"timestamp\":1788408389127,\"sessionID\":\"ses_fixture_parent\",\"part\":{\"id\":\"prt_text\",\"type\":\"text\",\"text\":\"READY\",\"sessionID\":\"ses_nested_must_be_ignored\"}}",
+    "not json",
+    "{\"part\":{\"sessionID\":\"ses_nested_must_be_ignored\"}}"
+  ]
+}
