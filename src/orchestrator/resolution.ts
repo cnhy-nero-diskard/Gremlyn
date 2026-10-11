@@ -3085,7 +3085,8 @@ export class ResolutionOrchestrator {
  *   round's own `currentGaps` (never the cumulative historical `gaps`, which
  *   would reopen already-reconciled gaps on every healthy poll); a healthy,
  *   non-partial round closes the outstanding gaps.
- * - `end` writes the final coverage.
+ * - `end` writes the final coverage and fences every later write from this
+ *   invocation, including a continuation of an already-started async sink call.
  *
  * Every store function is already failure-isolated (it returns a result rather
  * than throwing); this adapter additionally swallows any unexpected fault so a
@@ -3096,6 +3097,10 @@ export function createStoreDelegationSink(
   identity: { attemptId: number; ordinal: number },
 ): DelegationObservationSink {
   const reportedGaps = new Set<DelegationGapReason>();
+  // The observer can bound an asynchronous sink call, but cannot cancel one
+  // that has already started. Fence the durable adapter at the terminal record
+  // so a delayed continuation cannot resurrect evidence after invocation end.
+  let ended = false;
   const iso = (ms: number): string => new Date(ms).toISOString();
   const settle = (action: () => unknown): void => {
     try {
@@ -3109,6 +3114,7 @@ export function createStoreDelegationSink(
 
   return {
     begin(record: DelegationInvocationRecord): void {
+      if (ended) return;
       settle(() =>
         recordDelegationCoverage(db, {
           attemptId: identity.attemptId,
@@ -3120,6 +3126,7 @@ export function createStoreDelegationSink(
       );
     },
     upsert(node: DelegationObservedNode): void {
+      if (ended) return;
       settle(() =>
         recordDelegationObservation(db, {
           attemptId: identity.attemptId,
@@ -3151,6 +3158,7 @@ export function createStoreDelegationSink(
       );
     },
     coverage(record: DelegationCoverageRecord): void {
+      if (ended) return;
       settle(() =>
         recordDelegationCoverage(db, {
           attemptId: identity.attemptId,
@@ -3193,6 +3201,10 @@ export function createStoreDelegationSink(
       }
     },
     end(record: DelegationInvocationEnd): void {
+      if (ended) return;
+      // Set the fence before persistence: even a storage failure must not allow
+      // a late observation to follow the terminal sink boundary.
+      ended = true;
       settle(() =>
         recordDelegationCoverage(db, {
           attemptId: identity.attemptId,

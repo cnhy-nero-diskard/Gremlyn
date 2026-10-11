@@ -26,6 +26,7 @@ import {
   createStoreDelegationSink,
   ResolutionOrchestrator,
 } from "../src/orchestrator/resolution.js";
+import { DelegationObserver } from "../src/agent/delegation-observer.js";
 import type {
   DelegationCoverageRecord,
   DelegationInvocationEnd,
@@ -227,6 +228,7 @@ class EventSink implements DelegationObservationSink {
     private readonly label: string,
     private readonly events: string[],
     private readonly throwing = false,
+    private readonly onEnd?: () => void,
   ) {}
 
   private fail(): void {
@@ -252,6 +254,7 @@ class EventSink implements DelegationObservationSink {
   end(record: DelegationInvocationEnd): void {
     this.fail();
     this.events.push(`obs:end:${this.label}:${String(record.ordinal)}`);
+    this.onEnd?.();
   }
 }
 
@@ -294,6 +297,7 @@ async function setup(options: {
   const workspace = workspacePathFor(gitRepo.workspaceRoot, prNumber);
   const server = new RootOnlySessionServer(workspace);
   const events: string[] = [];
+  const observationEnded = createDeferred();
   // Both invocations start running; the executor flips each to terminal right
   // before it returns, so observation sees "running" live and settlement sees
   // a provably quiescent root.
@@ -369,7 +373,7 @@ async function setup(options: {
         });
       }
       const label = `${String(input.attemptId)}/${String(input.ordinal)}`;
-      return new EventSink(label, events, options.observe === "throwing");
+      return new EventSink(label, events, options.observe === "throwing", observationEnded.resolve);
     },
     pollIntervalMs: 5,
   };
@@ -415,6 +419,7 @@ async function setup(options: {
     dataDir,
     orchestrator,
     blockedChildRead,
+    observationEnded: observationEnded.promise,
     releaseRun: () => runCompletionGate?.resolve(),
   };
 }
@@ -490,15 +495,18 @@ test("a slow child observation cannot hold job completion or write after observe
     );
     data.releaseRun();
 
-    let completionTimer: ReturnType<typeof setTimeout> | undefined;
-    const completion = await Promise.race([
-      data.queued.completed,
-      new Promise<undefined>((resolve) => {
-        completionTimer = setTimeout(() => resolve(undefined), 5_000);
+    // Bound observer teardown itself. Git validation/publication may take
+    // longer under full-suite load and says nothing about a blocked read.
+    let observerTimer: ReturnType<typeof setTimeout> | undefined;
+    const observerEnded = await Promise.race([
+      data.observationEnded.then(() => true),
+      new Promise<boolean>((resolve) => {
+        observerTimer = setTimeout(() => resolve(false), 5_000);
       }),
     ]);
-    if (completionTimer !== undefined) clearTimeout(completionTimer);
-    assert.ok(completion, "the optional observation read must not hold job completion");
+    if (observerTimer !== undefined) clearTimeout(observerTimer);
+    assert.ok(observerEnded, "the optional observation read must not hold observer teardown");
+    const completion = await data.queued.completed;
     assert.equal(completion.kind, "completed");
     assert.ok(
       data.events.includes("obs:upsert:1/1:ses_child_1:unknown:missing"),
@@ -519,6 +527,7 @@ test("a slow child observation cannot hold job completion or write after observe
   } finally {
     data.releaseRun();
     data.blockedChildRead.release();
+    await data.queued.completed;
     data.store.close();
   }
 });
@@ -644,6 +653,101 @@ test("the store adapter writes missing evidence without resurrecting a live stat
   assert.equal(missing.last_state, "unknown");
   assert.equal(missing.last_active, null);
   assert.equal(missing.actual_agent, "reviewer", "identity history is retained");
+  data.store.close();
+});
+
+test("a deferred sink upsert cannot write after the invocation end record", async () => {
+  const data = await setup({
+    steps: [
+      {
+        sessionId: "ses_root_1",
+        exitCode: 0,
+        delayMs: 20,
+        edit: { "resolved.txt": "done\n" },
+      },
+    ],
+    retries: 1,
+    observe: "store",
+  });
+  await data.queued.completed;
+
+  // Put the fake runtime back in a live state so the delayed write would
+  // resurrect `running` if it crossed the terminal sink boundary.
+  data.server.addRunning("ses_root_1");
+  const attemptId = data.queued.attemptId;
+  const ordinal = 99;
+  const durableSink = createStoreDelegationSink(data.store.db, { attemptId, ordinal });
+  const releaseLateUpsert = createDeferred();
+  const lateUpsertStarted = createDeferred();
+  const sinkOrder: string[] = [];
+  let deferObservedUpsert = true;
+  const sink: DelegationObservationSink = {
+    begin: (record) => durableSink.begin(record),
+    upsert: async (node) => {
+      if (node.presence === "observed" && deferObservedUpsert) {
+        deferObservedUpsert = false;
+        sinkOrder.push("upsert:deferred");
+        lateUpsertStarted.resolve();
+        await releaseLateUpsert.promise;
+        sinkOrder.push("upsert:released");
+      } else {
+        sinkOrder.push(`upsert:${node.presence}:${node.state}`);
+      }
+      durableSink.upsert(node);
+    },
+    coverage: (record) => durableSink.coverage(record),
+    end: (record) => {
+      durableSink.end(record);
+      sinkOrder.push("end");
+    },
+  };
+  const observer = new DelegationObserver({
+    attemptId,
+    ordinal,
+    workspacePath: data.workspace,
+    http: data.server,
+    sink,
+    perCallTimeoutMs: 2_000,
+  });
+  observer.attachRoot("ses_root_1");
+
+  const round = observer.observeOnce();
+  await lateUpsertStarted.promise;
+  await observer.finalize();
+
+  const readNode = (): {
+    evidence_presence: string;
+    last_state: string;
+    last_active: number | null;
+    observation_generation: number;
+  } =>
+    data.store.db
+      .prepare(
+        `SELECT evidence_presence, last_state, last_active, observation_generation
+         FROM delegation_observation_nodes
+         WHERE attempt_id = ? AND invocation_ordinal = ? AND session_id = 'ses_root_1'`,
+      )
+      .get(attemptId, ordinal) as {
+      evidence_presence: string;
+      last_state: string;
+      last_active: number | null;
+      observation_generation: number;
+    };
+
+  const finalized = readNode();
+  assert.deepEqual(sinkOrder.slice(-2), ["upsert:missing:unknown", "end"]);
+  assert.equal(finalized.evidence_presence, "missing");
+  assert.equal(finalized.last_state, "unknown");
+  assert.equal(finalized.last_active, null);
+
+  // The already-invoked async sink call now resumes after `end`. Its attempt to
+  // write the old running snapshot is fenced by the durable adapter.
+  releaseLateUpsert.resolve();
+  await round;
+  assert.deepEqual(sinkOrder.slice(-2), ["end", "upsert:released"]);
+  assert.deepEqual(readNode(), finalized, "late evidence cannot change durable state");
+
+  observer.dispose();
   data.store.close();
 });
 
