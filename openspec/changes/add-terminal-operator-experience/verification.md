@@ -36,6 +36,83 @@ the existing pinned `prestart` is unchanged, and the example terminal block
 keeps sound disabled by default. These results do not substitute for the
 manual Windows acceptance task.
 
+## Terminal UX refinement evidence (approved scope)
+
+An approved compact-surface refinement changed the default terminal layout: the
+dashboard now prioritizes bounded current active/queued work plus at most one
+`Latest:` completion, instead of listing many recent rows. History stays in the
+read-only detail logs; the manual Windows task 5.3 remains unchecked.
+
+Focused refinements and regressions added and passing (terminal suites: 34
+projection/renderer/integration tests plus 97 options/input/audio/logging/
+startup tests, zero failures):
+
+Final refinement checks: full `npm test` passed with 1,106 tests, 1,103
+passed, zero failed and the same three expected skips (182.47 seconds).
+Repository-wide `npm run lint`, `npm run build`, changed-file Prettier checks
+and `git diff --check` also passed. A read-only review found no concrete
+correctness or safety gaps. The sample idle layout was additionally rendered
+through the real `snapshotLines` function with the screenshot's 3/3 repository
+and zero active/queued state; this is not an interactive desktop verification.
+
+- An idle daemon with 240 stored completions (mixed failures and successes)
+  shows the idle waiting line and exactly one latest completion: zero history
+  rows and zero overflow (`overflow` counts current work only).
+- The single latest completion is ordered by finish time, so a newer committed
+  success supersedes an older failure; a genuinely newest failure still
+  surfaces naturally.
+- Current-work overflow: with 50 active, 50 queued and 200 terminal jobs and a
+  row limit of ten, the surface lists only current rows and reports
+  `overflow === 90` (terminal history never enters the count).
+- Colliding repository names: two displayed repos named `widgets` under
+  different owners render `owner/name`; a lone displayed `widgets` shortens.
+  Repeated rows of the same repository keep the short label.
+- Layout: internal job ids are not rendered, stage-identical outcomes are not
+  repeated, `... N more active/queued` labels overflow, and a narrow row budget
+  truncates current rows while still labeling the backlog. Renderer
+  sanitization, geometry/fallback, single-owner anchoring and the no-full-clear
+  rule are unchanged (existing renderer cases still green).
+- Overflow is exact at tight budgets: the summary slot is reserved before rows
+  are placed (never fabricated by replacing a rendered row), so a budget of one
+  body line reports the full `active + queued` backlog, an orphaned `Active (N)`
+  heading never appears without its rows, multiple truncated lanes keep one
+  exact summary line, and the single latest completion is emitted only when it
+  really fits.
+- Colliding `owner/name` concatenations are re-sanitized, so a combined label is
+  still bounded by the single-label length limit and printable-ASCII contract;
+  a test drives 300-char owners through the bound.
+- The sound hint is action-oriented: `Sound: disabled [m: enable]` and
+  `Sound: enabled [m: mute]` asserts are green (a hand-written sample previously
+  showed a misleading `disabled [m: mute]`; the controller's `soundLabel` was
+  already correct and is now locked by a renderer test).
+- Redaction/sanitization coverage still asserts ASCII fallback, secret
+  redaction and instruction omission on the new short labels.
+
+Sample renders (24-row budget) produced by the approved layout:
+
+```text
+=== IDLE (240 historical jobs) ===
+Gremlyn | ready | connection: healthy
+Repos: 1/1 enabled | Active: 0 | Queued: 0
+Poll: 4s ago | Sound: disabled [m: enable] | Details: npm run logs -- --data-dir <directory>
+Idle. Waiting for authorized review commands.
+Latest: widgets PR #1239 | succeeded | 1s
+
+=== BUSY (3 active, 12 queued, 241 history) ===
+Gremlyn | ready | connection: healthy
+Repos: 1/1 enabled | Active: 3 | Queued: 12
+Poll: 4s ago | Sound: enabled [m: mute] | Details: npm run logs -- --data-dir <directory>
+Active (3)
+  widgets PR #2002 | running | 40s
+  widgets PR #2001 | running | 35s
+  widgets PR #2000 | running | 30s
+Queued (12)
+  widgets PR #3000 | queued | 9s
+  ...
+... 7 more active/queued
+Latest: widgets PR #1239 | succeeded | 1s
+```
+
 ## Windows shell smoke checks performed
 
 | Case | Result | Evidence boundary |

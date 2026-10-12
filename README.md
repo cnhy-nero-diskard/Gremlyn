@@ -449,10 +449,16 @@ If a previous run was interrupted by a reboot or power loss, Gremlyn reclaims it
 The browser is optional for observation: in supported interactive CMD,
 PowerShell and Windows Terminal hosts, `npm start` automatically uses a compact
 stderr dashboard. It shows startup readiness, **observed** connection health,
-enabled/configured repositories, latest successful poll and freshness, active
-and queued counts, and bounded active/queued/recent job rows. Job rows identify
-repository, PR, stage, elapsed seconds and the latest recorded attempt outcome.
-Overflow is summarized instead of dumping the backlog. Repository labels use
+enabled/configured repositories, latest successful poll age, and active/queued
+counts. Current work appears in small labeled `Active`/`Queued` sections with a
+bounded set of rows identifying repository, PR, stage and elapsed seconds; a
+live backlog is summarized by a `... N more active/queued` line instead of being
+dumped. History lives in the read-only detail logs: the dashboard lists at most
+one `Latest:` completion (the most recently finished job, ordered by finish
+time), so a fresh success naturally replaces an older failure rather than
+re-highlighting stale rows. Repository labels use the repository name and fall
+back to `owner/name` only when two displayed repositories share a name; internal
+job ids and stage-identical outcome repeats are omitted. Repository labels use
 an ASCII fallback, and colors never replace textual states.
 
 Keep the existing config-path launch, adding options after npm's `--` separator:

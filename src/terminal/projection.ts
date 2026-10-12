@@ -15,15 +15,22 @@ import { createRedactor, type Redactor } from "../log/redact.js";
  * sanitized (control/ANSI/OSC stripped, ASCII fallback) before it leaves this
  * module, so the renderer can print it verbatim. All statements are SELECT-only;
  * nothing here mutates job, queue or repository state.
+ *
+ * The projected surface is deliberately small: bounded current work plus at
+ * most one most recent completion. Full history remains in the durable logs.
  */
 
 /** Observed connection health, derived only from polling observations. */
 export type TerminalConnection = "unknown" | "healthy" | "stale" | "failed";
 
+/** Lifecycle lane a projected row belongs to. */
+export type TerminalLane = "active" | "queued" | "recent";
+
 /** One bounded lifecycle row for the operator surface. */
 export interface TerminalJobRow {
+  /** Durable job id, kept for correlation/tests; never rendered. */
   id: number;
-  /** `owner/name`, redacted and sanitized; never instruction text. */
+  /** Display label: the bare repository name, or `owner/name` when names collide. */
   repository: string;
   pr: number;
   /** The job's current lifecycle stage (`queued`, `running`, `succeeded`, ...). */
@@ -32,6 +39,8 @@ export interface TerminalJobRow {
   elapsedSec: number;
   /** The latest attempt's recorded outcome, or null when none is recorded. */
   outcome: string | null;
+  /** Which lane the row was drawn from. */
+  lane: TerminalLane;
 }
 
 /** A complete, bounded, observational terminal snapshot. */
@@ -51,11 +60,22 @@ export interface TerminalSnapshot {
   activeCount: number;
   /** Full-database count of queued jobs. */
   queuedCount: number;
-  /** Full-database count of terminal jobs. */
+  /** Full-database count of terminal jobs; retained for context, not listed. */
   recentCount: number;
-  /** Bounded active-then-queued-then-recent rows, at most `rowLimit`. */
+  /**
+   * Bounded current work only: active rows first, then queued, at most
+   * `rowLimit`. Historical completions are never listed here.
+   */
   rows: TerminalJobRow[];
-  /** Displayable jobs omitted from `rows`, so a backlog is never silently hidden. */
+  /**
+   * At most the single most recently finished terminal job, ordered by finish
+   * time so a newer success naturally supersedes a stale failure, or null.
+   */
+  latestCompletion: TerminalJobRow | null;
+  /**
+   * Current active/queued jobs omitted from `rows`, so a live backlog is never
+   * silently hidden. It never counts terminal history.
+   */
   overflow: number;
 }
 
@@ -86,8 +106,8 @@ export interface TerminalSnapshotOptions {
 
 /** Default bound applied to a single projected label. */
 export const DEFAULT_TERMINAL_TEXT_LENGTH = 200;
-/** Default number of job rows a snapshot carries. */
-export const DEFAULT_TERMINAL_ROW_LIMIT = 15;
+/** Default bound on the current active/queued rows a snapshot carries. */
+export const DEFAULT_TERMINAL_ROW_LIMIT = 8;
 /** Hard ceiling for a caller-supplied row limit. */
 export const MAX_TERMINAL_ROW_LIMIT = 500;
 
@@ -274,14 +294,89 @@ function readLane(
 }
 
 /**
+ * The single most recently completed terminal job. Ordering by finish time
+ * (falling back to creation time) means a newer committed success naturally
+ * supersedes an older failure instead of surfacing a stale one; only one row is
+ * ever read.
+ */
+function readLatestCompletion(db: Database.Database): JobLaneRow | null {
+  const row = db
+    .prepare(
+      `SELECT jobs.id, jobs.pr_number, jobs.status AS stage,
+              jobs.created_at, jobs.finished_at,
+              repositories.owner, repositories.name,
+              attempt.started_at AS attempt_started_at,
+              attempt.outcome AS attempt_outcome,
+              (SELECT at FROM status_events WHERE job_id = jobs.id AND status = 'queued' ORDER BY id DESC LIMIT 1) AS queued_at
+       FROM jobs
+       JOIN repositories ON repositories.id = jobs.repo_id
+       LEFT JOIN attempts AS attempt ON attempt.id = (
+         SELECT id FROM attempts WHERE job_id = jobs.id ORDER BY attempt_number DESC, id DESC LIMIT 1
+       )
+       WHERE jobs.status IN ${TERMINAL_STATUS_SQL}
+       ORDER BY COALESCE(jobs.finished_at, jobs.created_at) DESC, jobs.id DESC
+       LIMIT 1`,
+    )
+    .get() as JobLaneRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Build display labels for a fixed set of displayed repositories: the bare
+ * repository name unless two displayed names collide, in which case
+ * `owner/name` disambiguates. Every component is redacted and sanitized before
+ * it leaves this module, so the renderer can print the result verbatim.
+ */
+function repositoryLabels(redact: Redactor, rows: readonly JobLaneRow[]): string[] {
+  const names = rows.map((row) => sanitizeTerminalText(redact(row.name)));
+  const owners = rows.map((row) => sanitizeTerminalText(redact(row.owner)));
+  // Only distinct owners sharing one displayed name make a label ambiguous;
+  // repeated rows of the same repository must not defeat the short label.
+  const ownersByName = new Map<string, Set<string>>();
+  names.forEach((name, index) => {
+    const seen = ownersByName.get(name) ?? new Set<string>();
+    seen.add(owners[index] ?? "");
+    ownersByName.set(name, seen);
+  });
+  return names.map((name, index) =>
+    (ownersByName.get(name)?.size ?? 0) > 1
+      ? // Re-sanitize the concatenation so the combined label still obeys the
+        // single-label length bound and printable-ASCII contract.
+        sanitizeTerminalText(`${owners[index]}/${name}`)
+      : name,
+  );
+}
+
+/** Project one raw lane row into the bounded display shape. */
+function toTerminalRow(
+  redact: Redactor,
+  row: JobLaneRow,
+  repository: string,
+  lane: TerminalLane,
+  nowMs: number,
+): TerminalJobRow {
+  return {
+    id: row.id,
+    repository,
+    pr: row.pr_number,
+    stage: sanitizeTerminalText(redact(row.stage)),
+    elapsedSec: elapsedSeconds(row, nowMs),
+    outcome:
+      row.attempt_outcome === null ? null : sanitizeTerminalText(redact(row.attempt_outcome)),
+    lane,
+  };
+}
+
+/**
  * Build a bounded, read-only terminal snapshot.
  *
  * Counts are computed over the whole database (never over the previous
- * 50-row dashboard window) while rows are drawn from three individually
- * bounded lanes and assembled active-first, then queued, then recent. Anything
- * omitted is summarized by {@link TerminalSnapshot.overflow}. No statement
- * writes, and every display string is redacted before being sanitized and
- * truncated.
+ * 50-row dashboard window). `rows` carries only bounded current work
+ * (active-first, then queued) and {@link TerminalSnapshot.latestCompletion}
+ * carries at most one most recent terminal job; older history stays in the
+ * read-only detail logs. Omitted current work is summarized by
+ * {@link TerminalSnapshot.overflow}. No statement writes, and every display
+ * string is redacted before being sanitized and truncated.
  */
 export function readTerminalSnapshot(
   db: Database.Database,
@@ -317,24 +412,30 @@ export function readTerminalSnapshot(
 
   const activeRows = readLane(db, `jobs.status IN ${ACTIVE_STATUS_SQL}`, "DESC", rowLimit);
   const queuedRows = readLane(db, `jobs.status = 'queued'`, "ASC", rowLimit);
-  const recentRows = readLane(db, `jobs.status IN ${TERMINAL_STATUS_SQL}`, "DESC", rowLimit);
+  const latestRow = readLatestCompletion(db);
 
-  const selected = [...activeRows, ...queuedRows, ...recentRows].slice(0, rowLimit);
-  const rows: TerminalJobRow[] = selected.map((row) => ({
-    id: row.id,
-    repository: sanitizeTerminalText(redact(`${row.owner}/${row.name}`)),
-    pr: row.pr_number,
-    stage: sanitizeTerminalText(redact(row.stage)),
-    elapsedSec: elapsedSeconds(row, nowMs),
-    outcome:
-      row.attempt_outcome === null ? null : sanitizeTerminalText(redact(row.attempt_outcome)),
-  }));
+  const tagged = [
+    ...activeRows.map((row) => ({ row, lane: "active" as const })),
+    ...queuedRows.map((row) => ({ row, lane: "queued" as const })),
+  ].slice(0, rowLimit);
+  const displayed = [
+    ...tagged.map((entry) => entry.row),
+    ...(latestRow === null ? [] : [latestRow]),
+  ];
+  const labels = repositoryLabels(redact, displayed);
+  const rows: TerminalJobRow[] = tagged.map((entry, index) =>
+    toTerminalRow(redact, entry.row, labels[index] ?? "", entry.lane, nowMs),
+  );
+  const latestCompletion =
+    latestRow === null
+      ? null
+      : toTerminalRow(redact, latestRow, labels[labels.length - 1] ?? "", "recent", nowMs);
 
   const activeCount = Number(jobCounts.active);
   const queuedCount = Number(jobCounts.queued);
   const recentCount = Number(jobCounts.recent);
-  const displayable = activeCount + queuedCount + recentCount;
-  const overflow = Math.max(0, displayable - rows.length);
+  const currentCount = activeCount + queuedCount;
+  const overflow = Math.max(0, currentCount - rows.length);
 
   const connection = deriveConnection(options.pollObservation, options.pollIntervalSec, nowMs);
 
@@ -349,6 +450,7 @@ export function readTerminalSnapshot(
     queuedCount,
     recentCount,
     rows,
+    latestCompletion,
     overflow,
   };
 }

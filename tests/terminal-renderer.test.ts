@@ -177,33 +177,176 @@ test("JSON pathway keeps legacy flattened fields and has no controls; unsafe ter
   }
 });
 
-test("terminal layout identifies lifecycle rows and overflow within the row budget", () => {
-  const snapshot: TerminalSnapshot = {
+function snapshotRow(
+  id: number,
+  lane: "active" | "queued" | "recent",
+  overrides: Partial<TerminalSnapshot["rows"][number]> = {},
+): TerminalSnapshot["rows"][number] {
+  return {
+    id,
+    repository: "widgets",
+    pr: id,
+    stage: lane === "recent" ? "succeeded" : lane === "active" ? "running" : "queued",
+    elapsedSec: id,
+    outcome: null,
+    lane,
+    ...overrides,
+  };
+}
+
+function terminalSnapshot(overrides: Partial<TerminalSnapshot> = {}): TerminalSnapshot {
+  return {
     readiness: "ready",
-    connection: "stale",
+    connection: "healthy",
     configured: 2,
     enabled: 1,
     lastPollAt: null,
+    pollAgeSec: 3,
+    activeCount: 0,
+    queuedCount: 0,
+    recentCount: 0,
+    rows: [],
+    latestCompletion: null,
+    overflow: 0,
+    ...overrides,
+  };
+}
+
+test("terminal layout prioritizes current work, labels overflow and shows one completion", () => {
+  const snapshot = terminalSnapshot({
+    connection: "stale",
     pollAgeSec: null,
     activeCount: 2,
     queuedCount: 50,
     recentCount: 10,
-    rows: [1, 2, 3].map((id) => ({
-      id,
-      repository: "owner/repo",
-      pr: id,
-      stage: "validating",
-      elapsedSec: 10,
-      outcome: "agent-succeeded",
-    })),
-    overflow: 59,
-  };
-  const lines = snapshotLines(snapshot, "disabled", 7);
-  assert.equal(lines.length, 7);
+    rows: [
+      snapshotRow(1, "active", { stage: "validating", outcome: "agent-succeeded" }),
+      snapshotRow(2, "active"),
+      snapshotRow(3, "queued"),
+    ],
+    latestCompletion: snapshotRow(4, "recent", { stage: "succeeded", outcome: "succeeded" }),
+    overflow: 49,
+  });
+  const lines = snapshotLines(snapshot, "disabled", 12);
   assert.match(lines[0]!, /connection: stale/);
   assert.match(lines[1]!, /Active: 2 \| Queued: 50/);
-  assert.match(lines[4]!, /PR #1 \| validating \| 10s/);
-  assert.match(lines[6]!, /60 more jobs/);
+  assert.match(lines[2]!, /Poll: not observed/);
+  assert.match(lines[2]!, /Sound: disabled/);
+  assert.match(lines[3]!, /^Active \(2\)$/);
+  // A distinct recorded outcome is shown once, next to its stage.
+  assert.match(lines[4]!, /widgets PR #1 \| validating \(agent-succeeded\) \| 1s/);
+  assert.match(lines[5]!, /widgets PR #2 \| running \| 2s/);
+  assert.match(lines[6]!, /^Queued \(50\)$/);
+  assert.match(lines[7]!, /widgets PR #3 \| queued \| 3s/);
+  assert.match(lines[8]!, /^\.\.\. 49 more active\/queued$/);
+  // The stage-identical outcome is never repeated on the completion line.
+  assert.match(lines[9]!, /^Latest: widgets PR #4 \| succeeded \| 4s$/);
+  assert.equal(lines.length, 10);
+});
+
+test("idle layout waits and shows at most one latest completion, never history", () => {
+  const snapshot = terminalSnapshot({
+    recentCount: 412,
+    latestCompletion: snapshotRow(7, "recent", {
+      stage: "failed",
+      outcome: "failed",
+      elapsedSec: 4,
+    }),
+  });
+  const lines = snapshotLines(snapshot, "enabled", 20);
+  assert.equal(lines.length, 5);
+  assert.match(lines[1]!, /Active: 0 \| Queued: 0/);
+  assert.match(lines[3]!, /^Idle\. Waiting for authorized review commands\.$/);
+  assert.match(lines[4]!, /^Latest: widgets PR #7 \| failed \| 4s$/);
+  assert.doesNotMatch(lines.join("\n"), /412|more/);
+});
+
+test("idle layout without any completion shows only the waiting line", () => {
+  const lines = snapshotLines(terminalSnapshot(), "disabled", 20);
+  assert.equal(lines.length, 4);
+  assert.match(lines[3]!, /^Idle\. Waiting for authorized review commands\.$/);
+});
+
+test("a narrow row budget truncates current work but still labels the backlog exactly", () => {
+  const snapshot = terminalSnapshot({
+    activeCount: 3,
+    queuedCount: 20,
+    rows: [
+      snapshotRow(1, "active"),
+      snapshotRow(2, "active"),
+      snapshotRow(3, "active"),
+      snapshotRow(4, "queued"),
+    ],
+    overflow: 19,
+  });
+  // available = 5 - 3 = 2, which cannot hold a label, a row and the summary,
+  // so the surface reports the full 3 + 20 backlog instead of an off-by-one.
+  const lines = snapshotLines(snapshot, "disabled", 5);
+  assert.equal(lines.length, 4);
+  assert.doesNotMatch(lines[3]!, /^Active \(3\)$/);
+  assert.match(lines[3]!, /^\.\.\. 23 more active\/queued$/);
+  assert.doesNotMatch(lines.join("\n"), /recent/);
+});
+
+test("an extremely tight budget shows the exact summary and never an orphan heading", () => {
+  const snapshot = terminalSnapshot({
+    activeCount: 3,
+    queuedCount: 0,
+    rows: [snapshotRow(1, "active"), snapshotRow(2, "active"), snapshotRow(3, "active")],
+    latestCompletion: snapshotRow(9, "recent", { stage: "succeeded", outcome: "succeeded" }),
+  });
+  // available = 4 - 3 = 1: only the summary fits, so the "Active (3)" heading
+  // must not be shown without its rows, and the count is exact (3 active).
+  const lines = snapshotLines(snapshot, "disabled", 4);
+  assert.equal(lines.length, 4);
+  assert.doesNotMatch(lines[3]!, /^Active \(3\)$/);
+  assert.match(lines[3]!, /^\.\.\. 3 more active\/queued$/);
+  assert.doesNotMatch(lines.join("\n"), /Latest:/);
+});
+
+test("a tight budget keeps exact per-lane counts when multiple lanes are truncated", () => {
+  const snapshot = terminalSnapshot({
+    activeCount: 1,
+    queuedCount: 2,
+    rows: [snapshotRow(1, "active"), snapshotRow(2, "queued"), snapshotRow(3, "queued")],
+    latestCompletion: snapshotRow(9, "recent", { stage: "succeeded", outcome: "succeeded" }),
+  });
+  // available = 7 - 3 = 4: one active row, the block summary for the two queued
+  // rows that cannot fit beside it, and the completion all fit exactly.
+  const lines = snapshotLines(snapshot, "disabled", 7);
+  assert.equal(lines.length, 7);
+  assert.match(lines[3]!, /^Active \(1\)$/);
+  assert.match(lines[4]!, /widgets PR #1 \| running \| 1s/);
+  assert.match(lines[5]!, /^\.\.\. 2 more active\/queued$/);
+  assert.match(lines[6]!, /^Latest: /);
+  assert.equal(
+    lines.join("\n").match(/more active\/queued/g)?.length,
+    1,
+    "the overflow line is emitted exactly once",
+  );
+});
+
+test("the sound hint offers enable while disabled and mute once enabled", () => {
+  const stream = new FakeStream();
+  const presentation = new TerminalPresentation(
+    { ...DEFAULT_TERMINAL_OPTIONS, presentation: "terminal", noColor: true },
+    stream,
+    { TERM: "xterm" },
+  );
+  try {
+    presentation.setSoundControlAvailable(true);
+    presentation.setReadiness("ready");
+    const before = stream.output.join("");
+    assert.match(before, /Sound: disabled \[m: enable\]/);
+    assert.doesNotMatch(before, /\[m: mute\]/);
+
+    presentation.setSound(true, false);
+    const after = stream.output.join("");
+    assert.match(after, /\[m: mute\]/);
+    assert.doesNotMatch(after, /disabled \[m: mute\]/);
+  } finally {
+    presentation.dispose();
+  }
 });
 
 test("presentation redacts quoted credentials before serializing the JSON pathway", () => {

@@ -3,38 +3,113 @@ import { formatJsonRecord, type LogRecord, type LogSink } from "../log/logger.js
 import { createPlainSink, formatPlainRecord } from "../log/presentation.js";
 import { createRedactor, redactStructuredFields } from "../log/redact.js";
 import { AnchoredRenderer, type PresentationStream } from "./renderer.js";
-import { readTerminalSnapshot, sanitizeTerminalText, type TerminalSnapshot } from "./projection.js";
+import {
+  DEFAULT_TERMINAL_ROW_LIMIT,
+  readTerminalSnapshot,
+  sanitizeTerminalText,
+  type TerminalJobRow,
+  type TerminalSnapshot,
+} from "./projection.js";
 import { resolvePresentation, type TerminalOptions } from "./options.js";
 import { formatStartupDiagnostic, type StartupStage } from "./diagnostics.js";
+
+/** Idle indicator shown while no active or queued work exists. */
+const IDLE_LINE = "Idle. Waiting for authorized review commands.";
+
+/**
+ * One display token for a job state. The recorded attempt outcome is appended
+ * only when it differs from the lifecycle stage, so a `succeeded`/`failed` row
+ * is never repeated as `succeeded | last: succeeded`.
+ */
+function stateLabel(job: TerminalJobRow): string {
+  return job.outcome !== null && job.outcome.toLowerCase() !== job.stage.toLowerCase()
+    ? `${job.stage} (${job.outcome})`
+    : job.stage;
+}
+
+/** A current-work row, indented under its lane label. No internal ids. */
+function workLine(job: TerminalJobRow): string {
+  return `  ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${job.elapsedSec}s`;
+}
+
+/** The single most recent completion. */
+function completionLine(job: TerminalJobRow): string {
+  return `Latest: ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${job.elapsedSec}s`;
+}
+
+/** Compact fixed status header: readiness, observed health, repos, poll, sound. */
+function headerLines(snapshot: TerminalSnapshot, sound: string): string[] {
+  const poll = snapshot.pollAgeSec === null ? "not observed" : `${snapshot.pollAgeSec}s ago`;
+  return [
+    `Gremlyn | ${snapshot.readiness} | connection: ${snapshot.connection}`,
+    `Repos: ${snapshot.enabled}/${snapshot.configured} enabled | Active: ${snapshot.activeCount} | Queued: ${snapshot.queuedCount}`,
+    `Poll: ${poll} | Sound: ${sound} | Details: npm run logs -- --data-dir <directory>`,
+  ];
+}
 
 export function snapshotLines(
   snapshot: TerminalSnapshot,
   sound: string,
   rowBudget: number,
 ): string[] {
-  const header = [
-    `Gremlyn | ${snapshot.readiness} | connection: ${snapshot.connection}`,
-    `Repositories: ${snapshot.enabled}/${snapshot.configured} enabled | Active: ${snapshot.activeCount} | Queued: ${snapshot.queuedCount}`,
-    `Last poll: ${snapshot.lastPollAt ?? "not observed"}${snapshot.pollAgeSec === null ? "" : ` (${snapshot.pollAgeSec}s ago)`}`,
-    `Sound: ${sound} | Details: npm run logs -- --data-dir <directory>`,
-  ];
-  if (rowBudget <= header.length) return header.slice(0, rowBudget);
-  const available = Math.max(0, rowBudget - header.length - 1);
-  const visible = snapshot.rows.slice(0, available);
-  const rows = visible.map(
-    (job) =>
-      `#${job.id} ${job.repository} PR #${job.pr} | ${job.stage} | ${job.elapsedSec}s${job.outcome ? ` | last: ${job.outcome}` : ""}`,
-  );
-  const overflow = snapshot.overflow + snapshot.rows.length - visible.length;
-  return [
-    ...header,
-    ...rows,
-    overflow
-      ? `... ${overflow} more jobs (active/queued/recent)`
-      : rows.length
-        ? ""
-        : "No jobs yet. Waiting for authorized review commands.",
-  ];
+  const budget = Math.max(0, Math.trunc(rowBudget));
+  const header = headerLines(snapshot, sound);
+  if (budget <= header.length) return header.slice(0, budget);
+
+  const available = budget - header.length;
+  const totalRows = snapshot.rows.length;
+  const active = snapshot.rows.filter((job) => job.lane === "active");
+  const queued = snapshot.rows.filter((job) => job.lane === "queued");
+  const completion = snapshot.latestCompletion;
+  const body: string[] = [];
+
+  // Exact layout cost of showing `shown` current rows: one label per lane that
+  // contributes a row, the rows themselves, and the current-work overflow
+  // summary line when any current job is omitted. The summary slot is reserved
+  // up front, so it can never be fabricated by replacing a rendered row.
+  const workCost = (shown: number): number => {
+    const activeShown = Math.min(shown, active.length);
+    const queuedShown = Math.max(0, shown - active.length);
+    const labels = (activeShown > 0 ? 1 : 0) + (queuedShown > 0 ? 1 : 0);
+    const omitted = snapshot.overflow + (totalRows - shown);
+    return labels + shown + (omitted > 0 ? 1 : 0);
+  };
+
+  if (totalRows > 0) {
+    // Priority: maximize current work rows first; the single completion is
+    // appended only when it fits afterward.
+    let shown = totalRows;
+    while (shown > 0 && workCost(shown) > available) shown -= 1;
+
+    let emitted = 0;
+    if (shown > 0 && active.length > 0) {
+      body.push(`Active (${snapshot.activeCount})`);
+      for (const job of active) {
+        if (emitted >= shown) break;
+        body.push(workLine(job));
+        emitted += 1;
+      }
+    }
+    if (shown > 0 && emitted < shown && queued.length > 0) {
+      body.push(`Queued (${snapshot.queuedCount})`);
+      for (const job of queued) {
+        if (emitted >= shown) break;
+        body.push(workLine(job));
+        emitted += 1;
+      }
+    }
+    // Exact: the full current counts minus the rows actually rendered. Terminal
+    // history never contributes to this number.
+    const omitted = snapshot.activeCount + snapshot.queuedCount - emitted;
+    if (omitted > 0) body.push(`... ${omitted} more active/queued`);
+  } else {
+    body.push(IDLE_LINE);
+  }
+
+  // At most one latest completion, and only when the row budget allows it.
+  if (completion !== null && body.length < available) body.push(completionLine(completion));
+
+  return [...header, ...body];
 }
 
 /** Single stderr owner. All methods are observational, synchronous and best effort. */
@@ -102,7 +177,10 @@ export class TerminalPresentation {
     this.reportReason();
     if (!this.timer)
       this.renderer?.render(
-        [`Gremlyn | ${readiness} | connection: unknown`, `Sound: ${this.soundLabel()}`],
+        [
+          `Gremlyn | ${readiness} | connection: unknown`,
+          `Active: 0 | Queued: 0 | Sound: ${this.soundLabel()}`,
+        ],
         this.color,
       );
   }
@@ -150,7 +228,7 @@ export class TerminalPresentation {
           readiness: this.readiness,
           pollObservation: { lastSuccessAt: this.lastSuccessAt, failed: this.failed },
           secrets: this.secrets,
-          rowLimit: 16,
+          rowLimit: DEFAULT_TERMINAL_ROW_LIMIT,
           ...(configuredRepositoryIds === undefined ? {} : { configuredRepositoryIds }),
         });
         this.renderer?.render(

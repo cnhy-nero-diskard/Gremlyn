@@ -224,7 +224,7 @@ test("counts cover every configured repository including disabled ones", () => {
     // A disabled repository's queued job stays visible rather than vanishing.
     assert.equal(snapshot.queuedCount, 1);
     assert.equal(snapshot.rows.length, 1);
-    assert.equal(snapshot.rows[0]?.repository, "acme/legacy");
+    assert.equal(snapshot.rows[0]?.repository, "legacy");
     // Disabled repositories never make an unobserved connection look healthy.
     assert.equal(snapshot.connection, "unknown");
     void enabledRepo;
@@ -342,8 +342,11 @@ test("durations use the latest attempt, then requeue time, then created_at", () 
     assert.equal(rowById(snapshot.rows, running).elapsedSec, 30);
     assert.equal(rowById(snapshot.rows, running).stage, "running");
     assert.equal(rowById(snapshot.rows, running).outcome, null);
-    assert.equal(rowById(snapshot.rows, done).elapsedSec, 20);
-    assert.equal(rowById(snapshot.rows, done).outcome, "succeeded");
+    // The terminal job is no longer a current row: it is the single completion.
+    assert.ok(snapshot.latestCompletion);
+    assert.equal(snapshot.latestCompletion?.id, done);
+    assert.equal(snapshot.latestCompletion?.elapsedSec, 20);
+    assert.equal(snapshot.latestCompletion?.outcome, "succeeded");
     assert.equal(rowById(snapshot.rows, waiting).elapsedSec, 10);
     assert.equal(rowById(snapshot.rows, retried).elapsedSec, 6);
   } finally {
@@ -392,13 +395,16 @@ test("labels are stripped, redacted and ASCII-fallback safe; instructions never 
     addJob(store, secretRepo, "queued", { pr: 6 });
 
     const snapshot = readTerminalSnapshot(store.db, options({ secrets: [SECRET], rowLimit: 15 }));
-    const primary = rowById(snapshot.rows, job);
-    assert.equal(primary.repository, "acme/widgets");
-    assert.equal(primary.stage, "failed");
-    assert.equal(primary.outcome, "failed");
+    const primary = snapshot.latestCompletion;
+    assert.ok(primary);
+    assert.equal(primary?.id, job);
+    // The bare repository name is used because no displayed name collides.
+    assert.equal(primary?.repository, "widgets");
+    assert.equal(primary?.stage, "failed");
+    assert.equal(primary?.outcome, "failed");
 
     const secretRow = rowById(snapshot.rows, job + 1);
-    assert.equal(secretRow.repository, "acme/widgets-[redacted]");
+    assert.equal(secretRow.repository, "widgets-[redacted]");
 
     // Every emitted string is printable ASCII with no escape introducers.
     const serialized = JSON.stringify(snapshot);
@@ -441,12 +447,12 @@ test("readTerminalSnapshot performs no mutations", () => {
   }
 });
 
-test("rowLimit defaults and clamps into a bounded, usable integer", () => {
+test("rowLimit defaults and clamps into a bounded, usable integer for current work", () => {
   const store = new Store({ dataDir: ".", file: ":memory:" });
   try {
     const repo = addRepo(store, "acme", "widgets");
     for (let i = 0; i < 5; i += 1) {
-      addJob(store, repo, "succeeded", { pr: 10 + i, commentId: 10 + i, finishedAt: iso(NOW) });
+      addJob(store, repo, "queued", { pr: 10 + i, commentId: 10 + i });
     }
 
     const byDefault = readTerminalSnapshot(store.db, options());
@@ -455,10 +461,201 @@ test("rowLimit defaults and clamps into a bounded, usable integer", () => {
 
     const clampedLow = readTerminalSnapshot(store.db, options({ rowLimit: 0 }));
     assert.equal(clampedLow.rows.length, 1);
+    assert.equal(clampedLow.overflow, 4);
 
     const clampedHigh = readTerminalSnapshot(store.db, options({ rowLimit: 10_000 }));
     assert.equal(clampedHigh.rows.length, 5);
     assert.ok(MAX_TERMINAL_ROW_LIMIT >= 5);
+  } finally {
+    store.close();
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Refinement: compact current-work surface for a busy history
+ * ------------------------------------------------------------------ */
+
+test("an idle daemon with hundreds of completed jobs shows no history rows and one latest completion", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const repo = addRepo(store, "acme", "widgets");
+    for (let i = 0; i < 240; i += 1) {
+      const finishedAt = iso(NOW - (240 - i) * 1_000);
+      const failure = i % 7 === 0;
+      const id = addJob(store, repo, failure ? "failed" : "succeeded", {
+        pr: 1_000 + i,
+        commentId: 1_000 + i,
+        createdAt: iso(NOW - (240 - i) * 2_000),
+        finishedAt,
+      });
+      addAttempt(store, id, 1, {
+        startedAt: iso(NOW - (240 - i) * 2_000),
+        outcome: failure ? "failed" : "succeeded",
+      });
+    }
+
+    const snapshot = readTerminalSnapshot(store.db, options());
+    assert.equal(snapshot.activeCount, 0);
+    assert.equal(snapshot.queuedCount, 0);
+    assert.equal(snapshot.recentCount, 240);
+    // No historical rows are listed, and history is not reported as overflow.
+    assert.deepEqual(snapshot.rows, []);
+    assert.equal(snapshot.overflow, 0);
+    // Exactly one completion, the newest by finish time.
+    assert.ok(snapshot.latestCompletion);
+    assert.equal(snapshot.latestCompletion?.pr, 1_239);
+    assert.equal(snapshot.latestCompletion?.stage, "succeeded");
+    assert.equal(snapshot.latestCompletion?.lane, "recent");
+  } finally {
+    store.close();
+  }
+});
+
+test("the latest completion is the newest finish, so a success supersedes an older failure", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const repo = addRepo(store, "acme", "widgets");
+    const olderFailure = addJob(store, repo, "failed", {
+      pr: 1,
+      createdAt: iso(NOW - 60_000),
+      finishedAt: iso(NOW - 50_000),
+    });
+    addAttempt(store, olderFailure, 1, { startedAt: iso(NOW - 60_000), outcome: "failed" });
+
+    const newerSuccess = addJob(store, repo, "succeeded", {
+      pr: 2,
+      createdAt: iso(NOW - 30_000),
+      finishedAt: iso(NOW - 10_000),
+    });
+    addAttempt(store, newerSuccess, 1, {
+      startedAt: iso(NOW - 30_000),
+      outcome: "succeeded",
+    });
+
+    const snapshot = readTerminalSnapshot(store.db, options());
+    // Job ids descend newer-first, but ordering is by finish time, so the
+    // stale failure is never surfaced over the newer success.
+    assert.equal(snapshot.latestCompletion?.id, newerSuccess);
+    assert.equal(snapshot.latestCompletion?.stage, "succeeded");
+    assert.equal(
+      snapshot.latestCompletion?.id === olderFailure,
+      false,
+      "an older failure must not supersede a newer success",
+    );
+
+    // A genuinely newer failure still surfaces naturally.
+    const newestFailure = addJob(store, repo, "failed", {
+      pr: 3,
+      createdAt: iso(NOW - 5_000),
+      finishedAt: iso(NOW - 1_000),
+    });
+    addAttempt(store, newestFailure, 1, { startedAt: iso(NOW - 5_000), outcome: "failed" });
+    const after = readTerminalSnapshot(store.db, options());
+    assert.equal(after.latestCompletion?.id, newestFailure);
+    assert.equal(after.latestCompletion?.stage, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+test("overflow counts only bounded current active/queued work, never terminal history", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const repo = addRepo(store, "acme", "widgets");
+    for (let i = 0; i < 50; i += 1) {
+      addJob(store, repo, "running", { pr: 100 + i, commentId: 100 + i });
+    }
+    for (let i = 0; i < 50; i += 1) {
+      addJob(store, repo, "queued", { pr: 300 + i, commentId: 300 + i });
+    }
+    for (let i = 0; i < 200; i += 1) {
+      addJob(store, repo, "succeeded", {
+        pr: 500 + i,
+        commentId: 500 + i,
+        finishedAt: iso(NOW - i * 1_000),
+      });
+    }
+
+    const snapshot = readTerminalSnapshot(store.db, options({ rowLimit: 10 }));
+    assert.equal(snapshot.activeCount, 50);
+    assert.equal(snapshot.queuedCount, 50);
+    assert.equal(snapshot.recentCount, 200);
+    assert.equal(snapshot.rows.length, 10);
+    // Only the 90 omitted current jobs count; 200 terminal jobs do not.
+    assert.equal(snapshot.overflow, 100 - 10);
+    assert.equal(
+      snapshot.rows.every((row) => row.lane === "active"),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("colliding display names fall back to owner/name while unique names stay short", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const acme = addRepo(store, "acme", "widgets");
+    const beta = addRepo(store, "beta", "widgets");
+    addJob(store, acme, "running", { pr: 1 });
+    addJob(store, beta, "queued", { pr: 2 });
+
+    const snapshot = readTerminalSnapshot(store.db, options());
+    // Both displayed "widgets" names collide across lanes, so owner/name is
+    // kept to remove the ambiguity.
+    assert.deepEqual(
+      snapshot.rows.map((row) => row.repository),
+      ["acme/widgets", "beta/widgets"],
+    );
+  } finally {
+    store.close();
+  }
+
+  const unique = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    const acme = addRepo(unique, "acme", "widgets");
+    const only = addRepo(unique, "acme", "gadgets");
+    addJob(unique, acme, "running", { pr: 1 });
+    addJob(unique, only, "queued", { pr: 3 });
+
+    const snapshot = readTerminalSnapshot(unique.db, options());
+    // With no displayed collision the bare repository name is enough.
+    assert.deepEqual(
+      snapshot.rows.map((row) => row.repository),
+      ["widgets", "gadgets"],
+    );
+  } finally {
+    unique.close();
+  }
+});
+
+test("a colliding owner/name label stays within the single-label sanitization bound", () => {
+  const store = new Store({ dataDir: ".", file: ":memory:" });
+  try {
+    // Two owners, one shared name, so owner/name disambiguation is required and
+    // the concatenation must still obey the length bound and ASCII contract.
+    const ownerA = "a".repeat(300);
+    const ownerB = "b".repeat(300);
+    const acme = addRepo(store, ownerA, "widgets");
+    const beta = addRepo(store, ownerB, "widgets");
+    addJob(store, acme, "running", { pr: 1 });
+    addJob(store, beta, "queued", { pr: 2 });
+
+    const snapshot = readTerminalSnapshot(store.db, options());
+    assert.equal(snapshot.rows.length, 2);
+    for (const row of snapshot.rows) {
+      assert.ok(
+        row.repository.length <= DEFAULT_TERMINAL_TEXT_LENGTH,
+        `label must not exceed ${DEFAULT_TERMINAL_TEXT_LENGTH} chars`,
+      );
+      assert.equal(row.repository.length > 0, true);
+    }
+    const [first, second] = snapshot.rows.map((row) => row.repository);
+    assert.notEqual(first, second, "distinct owners keep distinct labels");
+    assert.equal(
+      /[^\u0020-\u007e]/.test(snapshot.rows.map((row) => row.repository).join("")),
+      false,
+    );
   } finally {
     store.close();
   }

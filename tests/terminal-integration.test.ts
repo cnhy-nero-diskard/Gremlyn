@@ -458,13 +458,14 @@ test("daemon fixture spans queued, running, validating and succeeded with accura
     assert.equal(validationRun.exit_code, 0);
 
     // Terminal successor counts include the cancelled lane from the fixture and
-    // the succeeded job, exactly as stored.
+    // the succeeded job, exactly as stored. The compact surface lists no history
+    // rows; it surfaces only the single most recent completion.
     const finalSnapshot = terminalSnapshot(fixture);
     assert.equal(finalSnapshot.activeCount, 0);
     assert.equal(finalSnapshot.queuedCount, 0);
     assert.equal(finalSnapshot.recentCount, 2);
-    assert.ok(finalSnapshot.rows.some((row) => row.stage === "succeeded"));
-    assert.ok(finalSnapshot.rows.some((row) => row.stage === "cancelled"));
+    assert.equal(finalSnapshot.rows.length, 0);
+    assert.equal(finalSnapshot.latestCompletion?.stage, "succeeded");
 
     // Publication semantics are unchanged: one pushed commit and one reply.
     assert.notEqual(
