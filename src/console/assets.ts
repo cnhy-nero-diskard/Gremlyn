@@ -669,18 +669,41 @@ label { gap: var(--space-2); }
 /* Run with agent: the repository-scoped primary-source draft. A deliberate
    native select plus Apply/Cancel, kept visually distinct from the model and
    executor pickers so an operator can tell what an apply will change. */
-.repo-primary-source { display: grid; gap: var(--space-3); background: var(--surface-quiet);
+.repo-primary-source { display: grid; min-width: 0; gap: var(--space-3); background: var(--surface-quiet);
   border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); padding: var(--space-4); }
 .repo-primary-source h4 { margin: 0; }
 .opencode-selection-controls { display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: end; }
-.opencode-selection-controls label { display: grid; gap: var(--space-1); font-size: var(--type-meta);
+.opencode-selection-controls label { display: grid; min-width: 0; width: min(14rem, 100%); gap: var(--space-1); font-size: var(--type-meta);
   font-weight: var(--weight-semibold); color: var(--text-secondary); }
-.opencode-selection-controls select { min-width: 14rem; }
-.opencode-selection-managed { display: inline-flex; gap: var(--space-2); align-items: center;
+.opencode-selection-controls select { min-width: 0; width: 100%; max-width: 100%; }
+.opencode-selection-managed { display: inline-flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: var(--space-2); align-items: center;
   color: var(--text-muted); font-size: var(--type-meta); }
 .opencode-selection-description { color: var(--text-muted); font-size: var(--type-meta); }
 .opencode-selection-saved { margin: 0; }
 .opencode-selection-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+
+/* Agent workflow: the one prominent per-repository summary (design D1). The
+   status sentence, the new-jobs line and the historical launch line stay
+   visible without opening any details; the amber inactive state uses the
+   existing semantic warning tokens and is readable from text alone. */
+.repo-opencode-workflow { display: grid; gap: var(--space-2); background: var(--surface-panel);
+  border: var(--border-thin) solid var(--divider); border-radius: var(--radius-md); padding: var(--space-4); }
+.repo-opencode-workflow h4 { margin: 0; }
+.repo-opencode-workflow .workflow-status { margin: 0; color: var(--text-secondary); font-size: var(--type-control); }
+.repo-opencode-workflow .workflow-status strong { text-transform: uppercase; letter-spacing: .04em; }
+.repo-opencode-workflow .workflow-notice { margin: 0; color: var(--text-secondary); }
+.repo-opencode-workflow .workflow-detail { margin: 0; color: var(--text-muted); font-size: var(--type-meta); overflow-wrap: anywhere; }
+.repo-opencode-workflow .workflow-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+.repo-opencode-workflow.is-inactive { border-color: var(--status-warning-border);
+  background: var(--status-warning-bg); }
+.repo-opencode-workflow.is-inactive .workflow-status strong { color: var(--status-warning-fg); }
+.repo-opencode-workflow.is-inactive .workflow-status,
+.repo-opencode-workflow.is-inactive .workflow-notice { color: var(--status-warning-fg); }
+.agent-consequence { margin: var(--space-2) 0 0; font-size: var(--type-meta); color: var(--text-muted); }
+/* Conditional controls must stay absent even when component rules use grid or
+   flex display. The hidden attribute describes state, not just decoration. */
+.repo-primary-source [hidden], .repo-primary-source .opencode-selection-controls [hidden],
+.repo-opencode-workflow [hidden], .agent-editor [hidden] { display: none; }
 
 .timeline li { gap: var(--space-2); border-left: var(--border-strong) solid var(--divider); padding: var(--space-2) 0 var(--space-3) var(--space-5); margin-left: var(--space-2); }
 .timeline li::before { background: var(--divider-strong); box-shadow: 0 0 0 3px var(--surface-panel); }
@@ -773,12 +796,20 @@ details[open] > summary { color: var(--interactive); }
   .model-picker-meta, .model-picker-description, .model-picker-hint { grid-column: 1; }
 }
 @media (max-width: 420px) {
-  .shell { padding-inline: var(--space-3); }
+  .shell { padding-inline: var(--space-2); }
   h1, .page-title h1, .page-head h1, .job-title h1 { font-size: 1.5rem; }
   .page-head { padding: var(--space-4); }
   .actions, .job-links { align-items: stretch; flex-direction: column; }
   .actions > *, .job-links > * { max-width: 100%; }
   .stat-strip { grid-template-columns: 1fr; }
+  .repo-card, .lane, .job-row { padding-inline: var(--space-2); }
+  #repositories { padding: var(--space-2); }
+  .repo-card[data-presentation="quiet"] { padding-inline: var(--space-2); }
+  .repo-opencode-workflow, .repo-primary-source, .agent-editor, .agent-card { min-width: 0; padding: var(--space-2); }
+  .repo-opencode-workflow .workflow-actions { grid-row: 3; }
+  .workflow-actions > *, .opencode-selection-actions > *, .agent-actions > * { max-width: 100%; white-space: normal; }
+  .agent-review-row { grid-template-columns: minmax(0, 1fr); }
+  .job-row-main { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
@@ -1886,6 +1917,22 @@ export const clientScript = `
     const model = picker && picker.dataset && picker.dataset.savedModel ? picker.dataset.savedModel : '';
     return model || fallback || '';
   };
+  const openCodeWorkflowNodeOf = (container) => {
+    const card = container && typeof container.closest === 'function'
+      ? container.closest('[data-live-key^="repository-"]') : null;
+    return card && typeof card.querySelector === 'function'
+      ? card.querySelector('[data-opencode-workflow]') : null;
+  };
+  const openCodeWorkflowStateOf = (container) => {
+    const workflow = openCodeWorkflowNodeOf(container);
+    const state = workflow && workflow.dataset ? workflow.dataset.teamState : null;
+    return state || '';
+  };
+  const openCodeWorkflowSelectionRevisionOf = (container) => {
+    const workflow = openCodeWorkflowNodeOf(container);
+    const raw = workflow && workflow.dataset ? workflow.dataset.selectionRevision : '';
+    return raw === undefined || raw === '' ? null : Number(raw);
+  };
   const openCodeEditorHtml = (repoId, state) => {
     const revisionNote = state.revision > 0
       ? '<span class="chip">draft from revision ' + String(state.revision) + '</span>'
@@ -1895,25 +1942,52 @@ export const clientScript = `
       ? '<button type="button" data-agent-action="reset">Reset to default workflow</button>'
       : '';
     if (state.mode === 'review') {
+      // The review names the chosen operation and what it does to new jobs
+      // (save-only keeps the current source; save-and-activate commits this
+      // reviewed profile as managed). An active team only offers save, and its
+      // consequence is spelled out because saving changes what new jobs capture.
+      const consequence = state.activeSaved
+        ? 'Saving updates the active team this repository already uses. Newly created managed jobs capture the new revision, and existing jobs and retries keep the team recorded when they were created.'
+        : 'Save team persists the reviewed profile without changing what new jobs use, so the team stays inactive. Save and activate commits this same profile and makes it control new managed jobs.';
+      const busy = state.busy ? ' disabled' : '';
+      const locked = state.busy || state.needReload === true;
+      // A stale-baseline conflict keeps the draft and the operation intent and
+      // disables both submit paths until the operator explicitly reloads
+      // baselines, so a submission never auto-retries the stale pair.
+      const submitDisabled = locked ? ' disabled' : '';
+      const saveLabel = state.busy ? 'Working…' : 'Save team';
+      const activateButton = state.activeSaved
+        ? ''
+        : '<button type="button" class="primary" data-agent-action="save-and-activate"' + submitDisabled + '>' + (state.busy ? 'Working…' : 'Save and activate') + '</button>';
+      // Reload baselines fetches the newer stored state (coherent GET) and
+      // advances only the CAS baselines, never replacing the draft.
+      const reloadButton = state.needReload
+        ? '<button type="button" data-agent-action="reload-baselines"' + busy + '>Reload baselines</button>'
+        : '';
       return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
         '<div class="agent-editor-head"><h4>Review OpenCode agents</h4>' + revisionNote +
-        '<span class="actions"><button type="button" data-agent-action="back">Keep editing</button><button type="button" class="danger" data-agent-action="cancel">Cancel</button></span></div>' +
+        '<span class="actions"><button type="button" data-agent-action="back"' + busy + '>Keep editing</button><button type="button" class="danger" data-agent-action="cancel"' + busy + '>Cancel</button></span></div>' +
         (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
         openCodeReviewHtml(repoId, state) +
-        '<div class="agent-actions"><button type="button" class="primary" data-agent-action="save"' + (state.busy ? ' disabled' : '') + '>' + (state.busy ? 'Saving…' : 'Save agent team') + '</button></div></div>';
+        '<div class="agent-actions"><button type="button" data-agent-action="save"' + submitDisabled + '>' + saveLabel + '</button>' + activateButton + reloadButton + '</div>' +
+        '<p class="agent-consequence muted">' + openCodeEscapeHtml(consequence) + '</p></div>';
     }
+    // A busy save/reload cannot be interrupted mid-flight: discarding the
+    // draft through Cancel, or another Review-and-apply, would orphan the
+    // in-flight operation, so those controls stay disabled until it settles.
+    const editingLocked = state.busy ? ' disabled' : '';
     const children = state.draft.subagents.length === 0
       ? '<p class="muted">No subagents yet. Add one to let the primary delegate a focused task.</p>'
       : state.draft.subagents.map((child, index) => openCodeSubagentHtml(repoId, state, index, child)).join('');
     return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
       '<div class="agent-editor-head"><h4>Configure OpenCode agents</h4>' + revisionNote +
-      '<span class="actions">' + resetButton + '<button type="button" class="danger" data-agent-action="cancel">Cancel</button></span></div>' +
+      '<span class="actions">' + resetButton + '<button type="button" class="danger" data-agent-action="cancel"' + editingLocked + '>Cancel</button></span></div>' +
       '<p class="muted">Reset loads the shared starter workflow into this draft; nothing changes until you review and save. The primary runs the repository selected model; children inherit it unless they carry an explicit provider/model override. Children default to read-only; external-directory access and nested delegation are always denied. Changes apply to jobs created after the save.</p>' +
       (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
       openCodePrimaryHtml(repoId, state) +
-      '<section class="agent-card"><div class="agent-editor-head"><h5>Subagents</h5><span class="actions"><button type="button" data-agent-action="add">Add subagent</button></span></div>' +
+      '<section class="agent-card"><div class="agent-editor-head"><h5>Subagents</h5><span class="actions"><button type="button" data-agent-action="add"' + editingLocked + '>Add subagent</button></span></div>' +
       children + '</section>' +
-      '<div class="agent-actions"><button type="button" class="primary" data-agent-action="apply">Review and apply</button><button type="button" data-agent-action="cancel">Cancel</button></div></div>';
+      '<div class="agent-actions"><button type="button" class="primary" data-agent-action="apply"' + editingLocked + '>Review and apply</button><button type="button" data-agent-action="cancel"' + editingLocked + '>Cancel</button></div></div>';
   };
   const openCodeFocusSummary = (container) => {
     if (!container || typeof container.querySelector !== 'function') return;
@@ -1944,6 +2018,20 @@ export const clientScript = `
         ? document.querySelector('[data-opencode-agents][data-repo-id="' + String(repoId) + '"]') : container;
       if (!mounted) return;
       const model = openCodePrimaryModelOf(mounted, '');
+      // The editor GET carries safe selection context: the retained source,
+      // both revision counters and whether the saved team already controls new
+      // jobs. The selection baseline freezes at review time so save-and-activate
+      // submits exactly the pair the operator saw.
+      const workflowSelectionRevision = openCodeWorkflowSelectionRevisionOf(mounted);
+      const selectionRevision = typeof payload.selectionRevision === 'number'
+        ? payload.selectionRevision
+        : (workflowSelectionRevision === null ? 0 : workflowSelectionRevision);
+      // The editor GET's active flag is authoritative. Only a response that
+      // predates the field may fall back to the rendered workflow state, so a
+      // stale active-managed fragment can never override an explicit false.
+      const activeSaved = typeof payload.active === 'boolean'
+        ? payload.active
+        : openCodeWorkflowStateOf(mounted) === 'active-managed';
       const state = {
         mode: 'editing',
         revision: typeof payload.revision === 'number' ? payload.revision : 0,
@@ -1955,6 +2043,10 @@ export const clientScript = `
         busy: false,
         summaryHtml: mounted === container ? previousHtml : mounted.innerHTML,
         repoModel: model,
+        operation: 'save',
+        baseSelectionRevision: selectionRevision,
+        selectionRevision,
+        activeSaved,
         container: mounted,
       };
       state.modelProviders = openCodeModelProviders(state);
@@ -1966,7 +2058,7 @@ export const clientScript = `
   };
   const openCodeCancel = (repoId) => {
     const state = openCodeEditors.get(repoId);
-    if (!state) return;
+    if (!state || state.busy) return;
     const container = state.container;
     const summaryHtml = state.summaryHtml || '';
     openCodeEditors.delete(repoId);
@@ -1999,23 +2091,52 @@ export const clientScript = `
     if (typeof window !== 'undefined' && window.location) window.location.assign('/auth?reason=expired');
     return true;
   };
-  const openCodeSave = async (repoId) => {
+  const openCodeSave = async (repoId, operation) => {
     const state = openCodeEditors.get(repoId);
     if (!state || state.busy) return;
+    if (state.needReload === true) {
+      // The stale-baseline conflict is still unresolved: submissions stay
+      // disabled until the operator explicitly reloads baselines and re-reviews.
+      state.notice = 'Conflict unresolved. Reload baselines to review the newer stored state before saving again.';
+      state.errors = [];
+      openCodeRenderEditor(state.container, repoId);
+      openCodeFocusSummary(state.container);
+      return;
+    }
+    const mode = operation === 'save-and-activate' ? 'save-and-activate' : 'save';
     const currentContainer = () => state.container;
     const candidate = openCodeDraftToCandidate(state.draft);
     state.busy = true;
     state.errors = [];
     state.notice = null;
+    state.operation = mode;
     openCodeRenderEditor(currentContainer(), repoId);
-    openCodeSetFeedback(currentContainer(), 'Saving the agent team…', false);
+    openCodeSetFeedback(currentContainer(), mode === 'save-and-activate' ? 'Saving and activating the agent team…' : 'Saving the agent team…', false);
     try {
-      const response = await fetch('/repos/' + String(repoId) + '/opencode-profile', {
+      // Save-only validates and persists the reviewed candidate without
+      // touching the primary source. Save-and-activate commits the candidate
+      // and managed source as one checked operation ('profile' carries the
+      // reviewed candidate; both baseline revisions are submitted).
+      const endpoint = mode === 'save-and-activate'
+        ? '/repos/' + String(repoId) + '/opencode-team-activation'
+        : '/repos/' + String(repoId) + '/opencode-profile';
+      const body = mode === 'save-and-activate'
+        ? {
+            mode: 'save-and-activate',
+            expectedProfileRevision: state.revision,
+            expectedSelectionRevision: state.baseSelectionRevision,
+            profile: candidate,
+          }
+        : { expectedRevision: state.revision, candidate };
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ expectedRevision: state.revision, candidate }),
+        body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({}));
+      // Render settled refusals with usable recovery controls; clearing only
+      // in finally left Reload baselines disabled until another SSE arrived.
+      state.busy = false;
       if (openCodeSessionExpiry(response, payload)) return;
       if (!response.ok) {
         if (response.status === 400 && payload.error === 'validation' && Array.isArray(payload.issues)) {
@@ -2026,8 +2147,21 @@ export const clientScript = `
           return;
         }
         if (response.status === 409) {
-          const currentRevision = typeof payload.currentRevision === 'number' ? String(payload.currentRevision) : '?';
-          state.notice = 'The stored agent team changed in another session (now revision ' + currentRevision + '). Your draft was kept; saving again would overwrite that newer team, so review the stored team or cancel this draft.';
+          const current = mode === 'save-and-activate'
+            ? 'profile revision ' + String(payload.currentProfileRevision ?? '?') + ' and selection revision ' + String(payload.currentRevision ?? payload.currentSelectionRevision ?? '?')
+            : 'revision ' + String(payload.currentRevision ?? '?');
+          const newer = mode === 'save-and-activate'
+            ? 'The stored team or primary source changed in another session (now ' + current + '). Nothing was saved. Your draft, its operation intent and your reviewed baselines were kept. Reload baselines to re-review the newer stored state before submitting again.'
+            : 'The stored agent team changed in another session (now ' + current + '). Your draft was kept; saving again would overwrite that newer team. Reload baselines to review the newer stored state, or cancel this draft.';
+          state.notice = newer;
+          state.needReload = true;
+          state.errors = [];
+          openCodeRenderEditor(currentContainer(), repoId);
+          openCodeFocusSummary(currentContainer());
+          return;
+        }
+        if (mode === 'save-and-activate' && response.status === 422) {
+          state.notice = 'The stored team cannot be read; open the editor to repair it. Nothing was saved.';
           state.errors = [];
           openCodeRenderEditor(currentContainer(), repoId);
           openCodeFocusSummary(currentContainer());
@@ -2039,10 +2173,40 @@ export const clientScript = `
         return;
       }
       openCodeEditors.delete(repoId);
-      const savedRevision = typeof payload.revision === 'number' ? String(payload.revision) : String(state.revision + 1);
       const mounted = currentContainer();
-      if (mounted) mounted.innerHTML = '<p class="agent-saved-note" role="status">Agent team saved as revision ' + savedRevision + '. The dashboard summary refreshes automatically.</p>';
+      if (!mounted) return;
+      const savedRevision = typeof payload.profileRevision === 'number' ? String(payload.profileRevision)
+        : typeof payload.revision === 'number' ? String(payload.revision)
+          : String(state.revision + 1);
+      // The backend captures the resulting state in the same transaction; its
+      // 'active' boolean is authoritative. Never OR in a cached mount-time state
+      // (the source may have switched away while the operator edited).
+      const activeNow = payload.active === true;
+      const refreshFailed = payload.refreshError === 'notification-failed' || payload.notification === 'failed';
+      const refreshNote = refreshFailed
+        ? ' The change is committed, but the live settings refresh failed; reload the dashboard to confirm.'
+        : '';
+      if (mode === 'save-and-activate') {
+        mounted.innerHTML = activeNow
+          ? '<p class="agent-saved-note" tabindex="-1" role="status">Team active for new jobs as revision ' + savedRevision + '. Existing jobs and retries keep their recorded selection.' + refreshNote + '</p>'
+          : '<p class="agent-saved-note" tabindex="-1" role="status">The team was saved as revision ' + savedRevision + ', but it is not currently selected for new jobs (the source changed alongside this operation). Existing jobs and retries keep their recorded selection.' + refreshNote + '</p>';
+      } else {
+        mounted.innerHTML = activeNow
+          ? '<p class="agent-saved-note" tabindex="-1" role="status">Agent team saved as revision ' + savedRevision + '. Active team updated for new jobs — existing jobs and retries keep their recorded selection.' + refreshNote + '</p>'
+          : '<p class="agent-saved-note" tabindex="-1" role="status">Agent team saved as revision ' + savedRevision + '. It remains inactive; activate it from the workflow summary to control new jobs.' + refreshNote + '</p>';
+      }
+      // The in-place note can be replaced by the next SSE fragment; also issue
+      // durable scoped feedback so the reconciler keeps the meaningful outcome
+      // and can restore focus through the card's own feedback node.
+      if (typeof actionMessage === 'function') {
+        const outcome = mode === 'save-and-activate'
+          ? (activeNow ? 'Team active for new jobs. Existing jobs and retries keep their recorded selection.' : 'The team was saved but is not currently selected for new jobs.')
+          : (activeNow ? 'Active team updated for new jobs.' : 'Team saved. It remains inactive.');
+        actionMessage(mounted, outcome + refreshNote.trim(), false, 'opencode:' + String(repoId) + ':' + (mode === 'save-and-activate' ? 'activate' : 'save') + (activeNow ? ':active' : ':inactive'));
+      }
+      openCodeFocusSuccess(mounted, activeNow);
     } catch {
+      state.busy = false;
       state.errors = [{ path: '', message: 'The agent team could not be saved. Try again.' }];
       openCodeRenderEditor(currentContainer(), repoId);
       openCodeFocusSummary(currentContainer());
@@ -2050,9 +2214,85 @@ export const clientScript = `
       state.busy = false;
     }
   };
+  const openCodeFocusSuccess = (mounted, activeNow) => {
+    if (!mounted || typeof mounted.querySelector !== 'function') return;
+    const card = typeof mounted.closest === 'function'
+      ? mounted.closest('[data-live-key^="repository-"]') : null;
+    if (!activeNow) {
+      // Inactive outcome: "Activate this team" stays in the workflow summary
+      // and survives later SSE swaps, so it is the stable keyboard target.
+      const activate = card && typeof card.querySelector === 'function'
+        ? card.querySelector('[data-opencode-activate]') : null;
+      if (activate && typeof activate.focus === 'function') {
+        activate.focus({ preventScroll: true });
+        return;
+      }
+    } else {
+      // Active outcome: the "Edit active team" / configure action (or the
+      // Change agent link) is server-rendered, so a following SSE fragment
+      // cannot drop focus to the body the way the injected note would.
+      const configure = card && typeof card.querySelector === 'function'
+        ? card.querySelector('[data-repo-agents-configure]') : null;
+      if (configure && typeof configure.focus === 'function') {
+        configure.focus({ preventScroll: true });
+        return;
+      }
+      const change = card && typeof card.querySelector === 'function'
+        ? card.querySelector('[data-opencode-change-agent]') : null;
+      if (change && typeof change.focus === 'function') {
+        change.focus({ preventScroll: true });
+        return;
+      }
+    }
+    const note = mounted.querySelector('[data-opencode-agents] .agent-saved-note') || mounted.querySelector('.agent-saved-note');
+    if (note && typeof note.focus === 'function') note.focus({ preventScroll: true });
+  };
+  const openCodeReloadBaselines = async (repoId) => {
+    const state = openCodeEditors.get(repoId);
+    if (!state || state.busy) return;
+    const mountedAt = () => state.container;
+    state.busy = true;
+    state.errors = [];
+    openCodeSetFeedback(mountedAt(), 'Reloading stored revisions…', false);
+    try {
+      const response = await fetch('/repos/' + String(repoId) + '/opencode-profile', {
+        headers: { 'content-type': 'application/json' },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (openCodeSessionExpiry(response, payload)) return;
+      if (!response.ok) {
+        state.busy = false;
+        state.notice = 'The stored team could not be reloaded (status ' + String(response.status) + '). Your draft and its operation intent were kept; the conflict still requires review.';
+        openCodeRenderEditor(mountedAt(), repoId);
+        openCodeFocusSummary(mountedAt());
+        return;
+      }
+      const profileRevision = typeof payload.revision === 'number' ? payload.revision : state.revision;
+      const selectionRevision = typeof payload.selectionRevision === 'number' ? payload.selectionRevision : state.baseSelectionRevision;
+      const primaryId = payload.profile && payload.profile.primary ? String(payload.profile.primary.id || '?') : '?';
+      // The stored baselines advance to the newer committed revisions; the
+      // unsaved draft fields and the operation intent are deliberately kept so
+      // the operator re-reviews the same changes against the newer stored team.
+      state.revision = profileRevision;
+      state.baseSelectionRevision = selectionRevision;
+      state.selectionRevision = selectionRevision;
+      state.activeSaved = payload.active === true;
+      state.notice = 'Baselines reloaded from the stored team (profile revision ' + String(profileRevision) + ', selection revision ' + String(selectionRevision) + ', primary ' + primaryId + '). Your unsaved draft is intact; review it against the newer stored team, then save or activate deliberately.';
+      state.needReload = false;
+      state.busy = false;
+      openCodeSetFeedback(mountedAt(), 'Baselines reloaded. Review the stored team against your draft before saving.', false);
+      openCodeRenderEditor(mountedAt(), repoId);
+      openCodeFocusSummary(mountedAt());
+    } catch {
+      state.busy = false;
+      state.notice = 'The stored team could not be reloaded. Your draft and its operation intent were kept; the conflict still requires review.';
+      openCodeRenderEditor(mountedAt(), repoId);
+      openCodeFocusSummary(mountedAt());
+    }
+  };
   const openCodeApply = (repoId) => {
     const state = openCodeEditors.get(repoId);
-    if (!state) return;
+    if (!state || state.busy) return;
     state.errors = [];
     state.notice = null;
     state.mode = 'review';
@@ -2062,14 +2302,14 @@ export const clientScript = `
   };
   const openCodeBack = (repoId) => {
     const state = openCodeEditors.get(repoId);
-    if (!state) return;
+    if (!state || state.busy) return;
     state.notice = null;
     state.mode = 'editing';
     openCodeRenderEditor(state.container, repoId);
   };
   const openCodeResetToDefault = (repoId) => {
     const state = openCodeEditors.get(repoId);
-    if (!state || !state.defaultProfile) return;
+    if (!state || state.busy || !state.defaultProfile) return;
     if (typeof window !== 'undefined' && typeof window.confirm === 'function' &&
         !window.confirm('Replace this draft with the default workflow? Unsaved draft changes will be lost.')) return;
     state.draft = openCodeDraftFromProfile(state.defaultProfile);
@@ -2170,7 +2410,22 @@ export const clientScript = `
     notice: state.notice,
     busy: state.busy,
     repoModel: state.repoModel,
+    operation: state.operation,
+    baseSelectionRevision: state.baseSelectionRevision,
+    selectionRevision: state.selectionRevision,
+    activeSaved: state.activeSaved,
+    needReload: state.needReload === true,
   }));
+  const openCodeRepositoriesRoot = (root) => {
+    if (!root || typeof root.querySelector !== 'function') return false;
+    // A fragment that names the repositories panel or lists repository cards is
+    // authoritative for whether a repository still exists here. Health, job
+    // lanes, activity and ticker fragments never render repo cards, so a
+    // missing agents container there is not evidence that a draft's surface is
+    // gone.
+    return root.id === 'repositories'
+      || Boolean(root.querySelector('[data-live-key^="repository-"]'));
+  };
   const restoreOpenCodeEditors = (root, saved) => {
     if (!root || !Array.isArray(saved)) return;
     saved.forEach((entry) => {
@@ -2178,10 +2433,21 @@ export const clientScript = `
       const container = typeof root.querySelector === 'function'
         ? root.querySelector('[data-opencode-agents][data-repo-id="' + String(entry.repoId) + '"]') : null;
       if (!container) {
-        openCodeEditors.delete(entry.repoId);
+        // An unrelated partial region reconciling alone does not prove this
+        // repository disappeared; retaining the draft is safe because any
+        // later authoritative repositories fragment still re-checks it. Only
+        // that authoritative root may release the entry, and only for the repo
+        // whose surface/container is really gone. Other repos stay untouched.
+        if (openCodeRepositoriesRoot(root)) openCodeEditors.delete(entry.repoId);
         return;
       }
-      const state = {
+      // Preserve object identity so in-flight save/reload closures keep
+      // mutating the entry that the map owns: updating this same object
+      // redirects their response mutations to the freshly mounted container
+      // and keeps busy flags coherent instead of leaving a detached copy.
+      const prior = openCodeEditors.get(entry.repoId);
+      const state = prior || {};
+      Object.assign(state, {
         mode: entry.mode,
         revision: entry.revision,
         draft: entry.draft,
@@ -2191,9 +2457,20 @@ export const clientScript = `
         notice: entry.notice,
         busy: entry.busy,
         repoModel: entry.repoModel || '',
+        // The operation intent and both frozen baselines survive a live swap;
+        // an SSE refresh never silently rebinds a reviewed draft.
+        operation: entry.operation || 'save',
+        baseSelectionRevision: typeof entry.baseSelectionRevision === 'number'
+          ? entry.baseSelectionRevision
+          : (typeof entry.selectionRevision === 'number' ? entry.selectionRevision : 0),
+        selectionRevision: typeof entry.selectionRevision === 'number'
+          ? entry.selectionRevision
+          : (typeof entry.baseSelectionRevision === 'number' ? entry.baseSelectionRevision : 0),
+        activeSaved: entry.activeSaved === true,
+        needReload: entry.needReload === true,
         summaryHtml: container.innerHTML,
         container,
-      };
+      });
       openCodeEditors.set(entry.repoId, state);
       openCodeRenderEditor(container, entry.repoId);
     });
@@ -2231,7 +2508,9 @@ export const clientScript = `
     if (action === 'reset') { openCodeResetToDefault(repoId); return; }
     if (action === 'apply') { openCodeApply(repoId); return; }
     if (action === 'back') { openCodeBack(repoId); return; }
-    if (action === 'save') { void openCodeSave(repoId); return; }
+    if (action === 'save') { void openCodeSave(repoId, 'save'); return; }
+    if (action === 'save-and-activate') { void openCodeSave(repoId, 'save-and-activate'); return; }
+    if (action === 'reload-baselines') { void openCodeReloadBaselines(repoId); return; }
     if (action === 'cancel') { openCodeCancel(repoId); return; }
   });
   document.addEventListener('input', (event) => {
@@ -2279,6 +2558,9 @@ export const clientScript = `
       resetToDefault: openCodeResetToDefault,
       handleInput: openCodeHandleEditorInput,
       handleChange: openCodeHandleEditorChange,
+      reloadBaselines: openCodeReloadBaselines,
+      workflowStateOf: openCodeWorkflowStateOf,
+      workflowSelectionRevisionOf: openCodeWorkflowSelectionRevisionOf,
       capture: captureOpenCodeEditors,
       restore: restoreOpenCodeEditors,
     };
@@ -2320,6 +2602,7 @@ export const clientScript = `
       agents: null,
       discovering: false,
       unavailable: false,
+      conflict: false,
       feedback: '',
       feedbackError: false,
       busy: false,
@@ -2404,6 +2687,7 @@ export const clientScript = `
   };
   const selectionApplyDisabled = (state) => {
     if (state.busy) return true;
+    if (state.conflict === true) return true;
     if (state.source === 'native' && !state.nativeId) return true;
     return !selectionDirty(state);
   };
@@ -2457,6 +2741,11 @@ export const clientScript = `
     }
     if (cancelButton) cancelButton.disabled = !selectionDirty(state) || state.busy;
     if (refreshButton) refreshButton.disabled = state.discovering || state.busy;
+    const reloadButton = container.querySelector('[data-opencode-source-action="reload"]');
+    if (reloadButton) {
+      reloadButton.hidden = state.conflict !== true;
+      reloadButton.disabled = state.busy || state.discovering;
+    }
   };
   const selectionSessionExpiry = (response, payload) => {
     if (response.status !== 401 || (payload && payload.error) !== 'session-expired') return false;
@@ -2485,7 +2774,7 @@ export const clientScript = `
     return { container, state };
   };
   const selectionDiscover = async (container, state) => {
-    if (state.discovering) return;
+    if (state.discovering || state.busy) return;
     const url = container.dataset ? container.dataset.discoveryUrl : '';
     if (!url) return;
     state.discovering = true;
@@ -2531,7 +2820,15 @@ export const clientScript = `
     }
   };
   const selectionApply = async (container, state) => {
-    if (state.busy || selectionApplyDisabled(state)) return;
+    if (state.busy) return;
+    if (selectionApplyDisabled(state)) {
+      if (state.conflict === true) {
+        state.feedback = 'Conflict unresolved: reload baselines to review the newer stored state before applying again.';
+        state.feedbackError = true;
+        selectionRender(container, state);
+      }
+      return;
+    }
     const applyButton = container.querySelector('[data-opencode-source-action="apply"]');
     // Applying is a deliberate action activated from this control (including
     // keyboard Enter/Space). Keep it focusable throughout the async transition
@@ -2580,9 +2877,11 @@ export const clientScript = `
       state.busy = false;
       if (!response.ok || payload.ok === false) {
         if (response.status === 409 && payload.error === 'conflict') {
-          state.feedback = 'The saved primary source changed in another session (now revision ' + String(payload.currentRevision) + '). Your draft was kept; cancel or reconcile before applying again.';
+          state.feedback = 'The saved primary source changed in another session (now revision ' + String(payload.currentRevision) + '). Your draft was kept; reload baselines to review the newer stored state, then apply again deliberately.';
+          state.conflict = true;
         } else if (response.status === 409 && (payload.error === 'profile-conflict' || payload.error === 'no-profile')) {
-          state.feedback = 'The managed team changed or is no longer saved. Reload the editor before activating it.';
+          state.feedback = 'The managed team changed or is no longer saved. Reload baselines before activating it again.';
+          state.conflict = true;
         } else if (response.status === 400 && Array.isArray(payload.issues) && payload.issues.length > 0) {
           state.feedback = payload.issues[0].message || 'The selection was refused.';
         } else {
@@ -2593,6 +2892,7 @@ export const clientScript = `
         restoreFocus();
         return;
       }
+      state.conflict = false;
       state.savedSource = payload.selection && payload.selection.source ? payload.selection.source : state.source;
       state.savedNativeId = payload.selection && payload.selection.agentId ? payload.selection.agentId : (state.source === 'native' ? state.nativeId : '');
       state.savedRevision = typeof payload.revision === 'number' ? payload.revision : state.savedRevision + 1;
@@ -2606,6 +2906,10 @@ export const clientScript = `
       state.feedback = 'Primary source saved. New jobs will use it.';
       state.feedbackError = false;
       selectionRender(state.container || container, state);
+      // A committed source switch immediately marks a retained saved team
+      // inactive (or active, for a managed apply that matched both revisions);
+      // the next SSE fragment re-renders the authoritative workflow state.
+      selectionSyncWorkflow(container, state);
       restoreFocus();
     } catch {
       state.busy = false;
@@ -2616,14 +2920,87 @@ export const clientScript = `
     }
   };
   const selectionCancelDraft = (container, state) => {
+    if (state.busy) return;
     state.keepApplyFocusable = false;
     state.source = state.savedSource;
     state.nativeId = state.savedNativeId;
     state.baseRevision = state.savedRevision;
     state.baseProfileRevision = state.savedProfileRevision;
+    state.conflict = false;
     state.feedback = 'Draft discarded.';
     state.feedbackError = false;
     selectionRender(container, state);
+  };
+  // A discovery response carries the persisted selection baseline even when the
+  // advisory agent inventory failed or is still settling. Read that baseline
+  // when it is coherent; a response without it (for example a 404) cannot
+  // advance the compare-and-set revisions and must leave the conflict intact.
+  const selectionReloadedBaselines = (payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+    if (typeof payload.revision !== 'number') return null;
+    const selection = payload.selection;
+    if (!selection || typeof selection !== 'object') return null;
+    const source = selection.source;
+    if (source !== 'default' && source !== 'native' && source !== 'managed') return null;
+    return {
+      source,
+      agentId: source === 'native' && typeof selection.agentId === 'string' ? selection.agentId : null,
+      revision: payload.revision,
+      profileRevision: typeof payload.profileRevision === 'number' ? payload.profileRevision : null,
+    };
+  };
+  const selectionReloadBaselines = async (container, state) => {
+    if (state.busy || state.discovering) return;
+    const url = container.dataset ? container.dataset.discoveryUrl : '';
+    if (!url) return;
+    state.busy = true;
+    state.feedback = 'Reloading stored revisions…';
+    state.feedbackError = false;
+    selectionRender(container, state);
+    try {
+      const response = await fetch(url, { credentials: 'same-origin' });
+      const payload = await response.json().catch(() => ({}));
+      // Clear busy before every terminal render so a concurrent reload, apply
+      // or cancel on the same entry can never observe a stale in-flight flag.
+      state.busy = false;
+      if (selectionSessionExpiry(response, payload)) {
+        selectionRender(state.container || container, state);
+        return;
+      }
+      const baseline = selectionReloadedBaselines(payload);
+      if (!baseline) {
+        // No usable persisted baseline in the response: nothing reliable can
+        // advance the frozen revisions, so the conflict and draft are kept.
+        state.feedback = 'The stored revisions could not be reloaded. Your draft was kept; review it before applying again.';
+        state.feedbackError = true;
+        selectionRender(state.container || container, state);
+        return;
+      }
+      // The fresh persisted context advances only the compare-and-set baselines
+      // after this explicit reload; the operator's draft is preserved and Apply
+      // stays a deliberate action against the current revisions. A failed or
+      // pending inventory discovery still supplies the baseline, but the
+      // feedback never claims the agent list was refreshed.
+      state.savedSource = baseline.source;
+      state.savedNativeId = baseline.agentId === null ? state.savedNativeId : baseline.agentId;
+      state.savedRevision = baseline.revision;
+      state.savedProfileRevision = baseline.profileRevision;
+      state.baseRevision = state.savedRevision;
+      state.baseProfileRevision = state.savedProfileRevision;
+      state.conflict = false;
+      const label = selectionSourceLabels[state.savedSource] || state.savedSource;
+      const inventoryLoaded = response.ok === true && payload.ok === true;
+      state.feedback = inventoryLoaded
+        ? 'Baselines reloaded from the stored state (source ' + label + ', revision ' + String(state.savedRevision) + '). Apply again deliberately with the current revisions.'
+        : 'Stored revisions reloaded (source ' + label + ', revision ' + String(state.savedRevision) + '); existing-agent discovery did not complete, so the agent list is unchanged. Apply the current revisions deliberately.';
+      state.feedbackError = false;
+      selectionRender(state.container || container, state);
+    } catch {
+      state.busy = false;
+      state.feedback = 'The stored revisions could not be reloaded. Your draft was kept; review it before applying again.';
+      state.feedbackError = true;
+      selectionRender(state.container || container, state);
+    }
   };
   const captureSelectionEditors = () => [...selectionEditors.entries()].map(([repoId, state]) => ({
     repoId,
@@ -2638,6 +3015,7 @@ export const clientScript = `
     agents: state.agents,
     discovering: state.discovering,
     unavailable: state.unavailable,
+    conflict: state.conflict === true,
     feedback: state.feedback,
     feedbackError: state.feedbackError,
     busy: state.busy,
@@ -2654,7 +3032,13 @@ export const clientScript = `
       // focus state until a matching selection container is present again.
       if (!container) return;
       const fresh = selectionStateFrom(container);
-      const state = Object.assign({}, entry, {
+      // Preserve object identity: a pending apply/discovery/reload closure
+      // already holds this same object, so the fresh container, saved values
+      // and eventual busy/feedback mutations all land on the mounted entry
+      // instead of being stranded on a detached copy.
+      const prior = selectionEditors.get(entry.repoId);
+      const state = prior || {};
+      Object.assign(state, entry, {
         container,
         savedSource: fresh.savedSource,
         savedNativeId: fresh.savedNativeId,
@@ -2664,10 +3048,12 @@ export const clientScript = `
       if (state.baseProfileRevision === undefined) {
         state.baseProfileRevision = state.savedProfileRevision;
       }
-      // Only a clean state advances the frozen compare-and-set bases. A dirty
-      // draft keeps the revisions it began from, so a live update cannot
-      // silently rebind the draft to a newer selection or managed team.
-      if (!selectionDirty(state)) {
+      // Only an idle, conflict-free, deliberately reviewed snapshot advances
+      // the frozen compare-and-set bases. A busy apply/discovery/reload or an
+      // unresolved conflict keeps the revisions the draft began from, even when
+      // the SSE committed snapshot happens to match the draft: a live update
+      // must never silently rebind an in-flight or unreviewed operation.
+      if (!state.busy && state.conflict !== true && !selectionDirty(state)) {
         state.baseRevision = fresh.savedRevision;
         state.baseProfileRevision = fresh.savedProfileRevision;
       }
@@ -2689,6 +3075,7 @@ export const clientScript = `
     const action = button.dataset.opencodeSourceAction;
     if (action === 'refresh') { void selectionDiscover(found.container, found.state); return; }
     if (action === 'apply') { void selectionApply(found.container, found.state); return; }
+    if (action === 'reload') { void selectionReloadBaselines(found.container, found.state); return; }
     if (action === 'cancel') { selectionCancelDraft(found.container, found.state); return; }
   });
   document.addEventListener('focusout', (event) => {
@@ -2748,11 +3135,533 @@ export const clientScript = `
       apply: selectionApply,
       discover: selectionDiscover,
       cancel: selectionCancelDraft,
+      reloadBaselines: selectionReloadBaselines,
       capture: captureSelectionEditors,
       restore: restoreSelectionEditors,
     };
   }
   // END_OPENCODE_SELECTION
+  // BEGIN_OPENCODE_ACTIVATION
+  /* Explicit team activation from the repository Agent workflow summary (tasks
+     3.4-3.5). "Activate this team" posts mode 'activate-saved' with the two
+     baselines the operator reviewed, frozen at action begin so an SSE refresh
+     cannot rebind the request to a newer team. The operation intent, frozen
+     baselines and busy flag persist across region swaps; every response
+     mutation resolves the authoritative mounted workflow node first, and the
+     committed outcome (payload.active/selection, possibly reflecting a
+     concurrent source change) drives the summary, roster labels and scoped
+     feedback — never an assumed active. A conflict keeps the frozen baselines
+     and requires an explicit Reload baselines review before re-activating. */
+  const activationMap = new Map();
+  const activationStateShape = () => ({ busy: false, intent: 'activate-saved', frozen: null, conflict: false, container: null });
+  const activationFor = (node) => {
+    const container = node && typeof node.closest === 'function' ? node.closest('[data-opencode-workflow]') : null;
+    if (!container || !container.dataset) return null;
+    const repoId = Number(container.dataset.repoId);
+    if (!Number.isInteger(repoId)) return null;
+    let state = activationMap.get(repoId);
+    if (!state) { state = activationStateShape(); activationMap.set(repoId, state); }
+    state.container = container;
+    return { container, state, repoId };
+  };
+  const activationErrorMessage = (payload) => {
+    const known = payload && typeof payload.error === 'string' ? payload.error : '';
+    const messages = {
+      'invalid-request': 'The activation request was malformed; nothing changed.',
+      'repository-not-found': 'This repository is no longer available.',
+      'not-opencode': 'This repository does not run the OpenCode executor.',
+      'validation': 'The reviewed profile is not valid; nothing was saved.',
+      'no-profile': 'No managed team is saved for this repository yet.',
+      'opencode-profile-corrupt': 'The saved team cannot be read; open the editor to repair it.',
+    };
+    return messages[known] || 'The saved team could not be activated. Try again.';
+  };
+  const activationSourcePhrase = (source, nativeId, profileRevision, primaryId) => {
+    if (source === 'native') {
+      return nativeId ? 'Existing OpenCode agent <code>' + selectionEscape(nativeId) + '</code>' : 'Existing OpenCode agent (the retained id is missing)';
+    }
+    if (source === 'managed') {
+      const teamRef = primaryId
+        ? 'Gremlyn-managed team (primary <code>' + selectionEscape(primaryId) + '</code>)'
+        : 'Gremlyn-managed team';
+      return profileRevision === null || profileRevision === undefined
+        ? 'the ' + teamRef
+        : 'the ' + teamRef + ' at revision ' + String(profileRevision);
+    }
+    return 'OpenCode default';
+  };
+  const activationSourceSentence = (source, nativeId, profileRevision, primaryId) =>
+    'New jobs use: ' + activationSourcePhrase(source, nativeId, profileRevision, primaryId) + '.';
+  const activationActionRow = (repoId, dataset, presentation) => {
+    const editLabel = presentation.teamState === 'active-managed' ? 'Edit active team'
+      : presentation.teamState === 'unavailable-managed' ? 'Repair team'
+        : presentation.teamState === 'no-team' ? 'Configure team'
+          : 'Edit team';
+    let row = '';
+    if (presentation.teamState === 'inactive-team') {
+      if (presentation.profileRevision !== null && presentation.profileRevision !== undefined) {
+        row += '<button type="button" data-opencode-activate data-repo-id="' + repoId + '" data-activation-url="' + selectionEscape(dataset.activationUrl || '') + '" data-selection-revision="' + selectionEscape(String((presentation.selectionRevision ?? dataset.selectionRevision) || 0)) + '" data-profile-revision="' + selectionEscape(String(presentation.profileRevision)) + '">Activate this team</button> ';
+        row += '<button type="button" data-opencode-reload-baselines hidden data-repo-id="' + repoId + '">Reload baselines</button> ';
+      } else {
+        row += '<span class="muted">The saved team cannot run; edit it to repair the definition.</span> ';
+      }
+    }
+    row += '<a id="repo-workflow-edit-' + repoId + '" href="#repo-agents-' + repoId + '" data-repo-agents-configure data-repo-id="' + repoId + '" data-repo-agents-url="/repos/' + repoId + '/opencode-profile">' + editLabel + '</a> ';
+    row += '<a id="repo-workflow-change-' + repoId + '" href="#repo-primary-source-' + repoId + '" data-opencode-change-agent>Change agent</a>';
+    return row;
+  };
+  const workflowPresentation = (input) => {
+    const teamState = input.teamState;
+    const profileRevision = input.profileRevision === null || input.profileRevision === undefined ? null : input.profileRevision;
+    const selectionRevision = input.selectionRevision === null || input.selectionRevision === undefined ? null : input.selectionRevision;
+    const heading = teamState === 'active-managed' ? 'Team: ACTIVE FOR NEW JOBS'
+      : teamState === 'inactive-team' ? 'Saved team: INACTIVE'
+        : teamState === 'unavailable-managed' ? 'Selected team unavailable'
+          : 'No saved team';
+    const isInactive = teamState === 'inactive-team';
+    const visualState = teamState === 'inactive-team' ? 'warning'
+      : teamState === 'active-managed' ? 'success'
+        : 'neutral';
+    const notice = teamState === 'inactive-team'
+      ? 'Your orchestrator team is saved but is not selected; new jobs still use the selected source below. Activation makes its enabled children available to the primary, and the primary decides when to delegate.'
+      : teamState === 'unavailable-managed'
+        ? 'New jobs cannot safely use it until the saved definition is repaired or another agent is chosen.'
+        : teamState === 'no-team'
+          ? 'OpenCode runs with its normal project/global configuration until a managed team is saved and activated.'
+          : 'Existing jobs and retries keep the selection recorded when they were created; only new jobs use this team.';
+    return {
+      teamState,
+      source: input.source,
+      nativeId: input.nativeId === null || input.nativeId === undefined ? null : input.nativeId,
+      profileRevision,
+      selectionRevision,
+      primaryId: input.primaryId === null || input.primaryId === undefined ? null : input.primaryId,
+      heading,
+      isInactive,
+      visualState,
+      notice,
+      sourceSentence: activationSourceSentence(input.source, input.nativeId, profileRevision, input.primaryId),
+      actionsHtml: activationActionRow(String(input.repoId || ''), input.dataset || {}, { teamState, profileRevision, selectionRevision }),
+    };
+  };
+  const activationApplyRoster = (container, active) => {
+    const card = container && typeof container.closest === 'function'
+      ? container.closest('[data-live-key^="repository-"]') : null;
+    const agents = card && typeof card.querySelector === 'function'
+      ? card.querySelector('[data-opencode-agents]') : null;
+    if (agents && agents.dataset) agents.dataset.active = active ? '1' : '0';
+    if (!card || typeof card.querySelectorAll !== 'function') return;
+    [...card.querySelectorAll('[data-availability]')].forEach((chip) => {
+      const label = chip && chip.dataset ? String(chip.dataset.availability) : 'disabled';
+      chip.textContent = label === 'available' ? 'Available to orchestrator' : label === 'saved' ? 'Enabled in saved team' : 'Disabled';
+    });
+  };
+  const workflowApply = (container, presentation) => {
+    if (!container) return;
+    const dataset = container.dataset || {};
+    container.dataset.teamState = presentation.teamState;
+    if (presentation.source) container.dataset.source = presentation.source;
+    if (presentation.selectionRevision !== null) container.dataset.selectionRevision = String(presentation.selectionRevision);
+    container.dataset.profileRevision = presentation.profileRevision === null ? '' : String(presentation.profileRevision);
+    container.classList.toggle('is-inactive', presentation.isInactive === true);
+    const heading = container.querySelector('[data-workflow-heading]');
+    if (heading) heading.textContent = presentation.heading || '';
+    const status = container.querySelector('.workflow-status');
+    if (status && status.dataset) status.dataset.visualState = presentation.visualState || 'neutral';
+    const sentence = status && typeof status.querySelector === 'function' ? status.querySelector('.muted') : null;
+    if (sentence) sentence.innerHTML = presentation.sourceSentence || '';
+    const notice = container.querySelector('.workflow-notice');
+    if (notice) notice.textContent = presentation.notice || '';
+    const actions = container.querySelector('.workflow-actions');
+    if (actions) actions.innerHTML = presentation.actionsHtml || '';
+    if (presentation.rosterActive !== undefined) activationApplyRoster(container, presentation.rosterActive);
+  };
+  const activationPrimaryOf = (container) => {
+    const card = container && typeof container.closest === 'function'
+      ? container.closest('[data-live-key^="repository-"]') : null;
+    const agents = card && typeof card.querySelector === 'function' ? card.querySelector('[data-opencode-agents]') : null;
+    return agents && agents.dataset && agents.dataset.primaryId ? agents.dataset.primaryId : null;
+  };
+  const activationMarkActive = (container, override) => {
+    const dataset = container.dataset || {};
+    const primary = (override && override.primaryId) || activationPrimaryOf(container);
+    const profileRevision = override && typeof override.profileRevision === 'number'
+      ? override.profileRevision
+      : (dataset.profileRevision === '' || dataset.profileRevision === undefined ? null : Number(dataset.profileRevision));
+    const selectionRevision = override && typeof override.selectionRevision === 'number'
+      ? override.selectionRevision
+      : (dataset.selectionRevision === '' || dataset.selectionRevision === undefined ? 0 : Number(dataset.selectionRevision));
+    workflowApply(container, workflowPresentation({
+      repoId: String(dataset.repoId || ''),
+      teamState: 'active-managed',
+      source: 'managed',
+      nativeId: null,
+      profileRevision,
+      selectionRevision,
+      primaryId: primary,
+      dataset,
+      rosterActive: true,
+    }));
+  };
+  const activationMarkInactive = (container, override) => {
+    const dataset = container.dataset || {};
+    const before = dataset.teamState || '';
+    if (before === 'no-team' || before === 'unsupported-executor') return;
+    const source = override && override.source ? override.source : (dataset.source || 'default');
+    const selectionRevision = override && typeof override.selectionRevision === 'number'
+      ? override.selectionRevision
+      : (dataset.selectionRevision === '' || dataset.selectionRevision === undefined ? 0 : Number(dataset.selectionRevision));
+    const profileRevision = override && typeof override.profileRevision === 'number'
+      ? override.profileRevision
+      : (dataset.profileRevision === '' || dataset.profileRevision === undefined ? null : Number(dataset.profileRevision));
+    workflowApply(container, workflowPresentation({
+      repoId: String(dataset.repoId || ''),
+      teamState: 'inactive-team',
+      source,
+      nativeId: source === 'native' && override && override.nativeId ? override.nativeId : null,
+      profileRevision,
+      selectionRevision,
+      primaryId: null,
+      dataset,
+      rosterActive: false,
+    }));
+  };
+  const selectionSyncWorkflow = (container, state) => {
+    const card = container && typeof container.closest === 'function'
+      ? container.closest('[data-live-key^="repository-"]') : null;
+    const workflow = card && typeof card.querySelector === 'function'
+      ? card.querySelector('[data-opencode-workflow]') : null;
+    if (!workflow || !workflow.dataset) return;
+    const before = workflow.dataset.teamState || '';
+    // Switching sources never turns a missing team into an inactive one, and an
+    // unsupported executor has no workflow semantics at all.
+    if (before === 'no-team' || before === 'unsupported-executor') return;
+    const dataset = workflow.dataset;
+    if (before === 'unavailable-managed') {
+      // Switching away from a selected-but-unavailable team: a durable stored
+      // profile row remains as an inactive repair state; an absent row is no
+      // team at all.
+      const selectionNode = card && typeof card.querySelector === 'function'
+        ? card.querySelector('[data-opencode-selection]') : null;
+      const durable = selectionNode && selectionNode.dataset ? String(selectionNode.dataset.profileRevision || '') : '';
+      const durableRevision = durable === '' || durable === undefined ? null : Number(durable);
+      const teamState = durableRevision === null ? 'no-team' : 'inactive-team';
+      workflowApply(workflow, workflowPresentation({
+        repoId: String(dataset.repoId || ''),
+        teamState,
+        source: state.savedSource,
+        nativeId: state.savedSource === 'native' && state.savedNativeId ? state.savedNativeId : null,
+        profileRevision: durableRevision,
+        selectionRevision: state.savedRevision,
+        primaryId: null,
+        dataset,
+        rosterActive: false,
+      }));
+      return;
+    }
+    if (state.savedSource === 'managed') {
+      activationMarkActive(workflow, { profileRevision: state.savedProfileRevision, selectionRevision: state.savedRevision });
+    } else {
+      activationMarkInactive(workflow, {
+        source: state.savedSource,
+        nativeId: state.savedSource === 'native' && state.savedNativeId ? state.savedNativeId : null,
+        selectionRevision: state.savedRevision,
+        profileRevision: state.savedProfileRevision === null || state.savedProfileRevision === undefined
+          ? (dataset.profileRevision === '' || dataset.profileRevision === undefined ? null : Number(dataset.profileRevision))
+          : state.savedProfileRevision,
+      });
+    }
+  };
+  const activationMounted = (repoId, state) => {
+    if (typeof document !== 'undefined' && typeof document.querySelector === 'function') {
+      const node = document.querySelector('[data-opencode-workflow][data-repo-id="' + String(repoId) + '"]');
+      if (node) { state.container = node; return node; }
+    }
+    return state.container || null;
+  };
+  const activationRestoreButtons = (mounted, state) => {
+    if (!mounted || typeof mounted.querySelector !== 'function') return;
+    const button = mounted.querySelector('[data-opencode-activate]');
+    if (button) button.disabled = state.busy === true || state.conflict === true;
+  };
+  const activationToggleReload = (mounted, show) => {
+    if (!mounted || typeof mounted.querySelector !== 'function') return;
+    const button = mounted.querySelector('[data-opencode-reload-baselines]');
+    if (button) button.hidden = show !== true;
+  };
+  // After a settled activation the workflow actions row is re-rendered, which
+  // removes the focused "Activate this team" button. Move focus to a stable
+  // server-rendered control in the same row (Reload baselines on conflict, the
+  // Edit/Configure action, or the Change agent link) so a keyboard operator is
+  // not stranded on the body, and a following SSE swap keeps the target.
+  const activationFocusStable = (mounted, repoId) => {
+    if (!mounted || typeof mounted.querySelector !== 'function') return;
+    const card = typeof mounted.closest === 'function'
+      ? mounted.closest('[data-live-key^="repository-"]') : null;
+    const scope = card || mounted;
+    if (!scope || typeof scope.querySelector !== 'function') return;
+    const reload = scope.querySelector('[data-opencode-reload-baselines]');
+    if (reload && !reload.hidden && typeof reload.focus === 'function') {
+      reload.focus({ preventScroll: true });
+      return;
+    }
+    const configure = scope.querySelector('[data-repo-agents-configure]');
+    if (configure && typeof configure.focus === 'function') {
+      configure.focus({ preventScroll: true });
+      return;
+    }
+    const change = scope.querySelector('[data-opencode-change-agent]');
+    if (change && typeof change.focus === 'function') change.focus({ preventScroll: true });
+  };
+  const activationApply = async (container, state) => {
+    if (state.busy) return;
+    const dataset = container.dataset || {};
+    const repoId = Number(dataset.repoId);
+    const url = dataset.activationUrl;
+    const selectionRevision = dataset.selectionRevision === '' || dataset.selectionRevision === undefined ? null : Number(dataset.selectionRevision);
+    const profileRevision = dataset.profileRevision === '' || dataset.profileRevision === undefined ? null : Number(dataset.profileRevision);
+    if (!url || !Number.isInteger(repoId) || selectionRevision === null || profileRevision === null) {
+      actionMessage(container, 'Reload the dashboard before activating this team.', true, 'activation:' + String(repoId) + ':baseline-missing');
+      return;
+    }
+    if (state.conflict === true) {
+      // An unreviewed conflict must not retry against the mutable dataset; the
+      // frozen baselines stay unless the operator reloads baselines.
+      actionMessage(container, 'Conflict unresolved: reload baselines to review the newer stored state before activating again.', true, 'activation:' + String(repoId) + ':unresolved');
+      return;
+    }
+    // Freeze the reviewed baselines and the operation intent at action begin;
+    // a later SSE refresh of the mutable dataset must not rebind this request.
+    state.intent = 'activate-saved';
+    state.frozen = { expectedProfileRevision: profileRevision, expectedSelectionRevision: selectionRevision };
+    state.container = container;
+    state.busy = true;
+    state.conflict = false;
+    const button = typeof container.querySelector === 'function' ? container.querySelector('[data-opencode-activate]') : null;
+    if (button) button.disabled = true;
+    actionMessage(container, 'Activating the saved team…', false, 'activation:' + String(repoId) + ':activating');
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'activate-saved', expectedProfileRevision: state.frozen.expectedProfileRevision, expectedSelectionRevision: state.frozen.expectedSelectionRevision }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const mounted = activationMounted(repoId, state);
+      if (selectionSessionExpiry(response, payload)) {
+        state.busy = false;
+        activationRestoreButtons(mounted, state);
+        return;
+      }
+      state.busy = false;
+      if (!response.ok) {
+        const conflict = response.status === 409 && payload && (payload.error === 'conflict' || payload.error === 'profile-conflict');
+        if (conflict) {
+          state.conflict = true;
+          activationRestoreButtons(mounted, state);
+          activationToggleReload(mounted, true);
+          actionMessage(mounted || container, 'The saved team or primary source changed in another session (profile revision ' + String(payload.currentProfileRevision ?? '?') + '). Nothing was changed; reload baselines to review the newer stored state, then activate again deliberately.', true, 'activation:' + String(repoId) + ':conflict');
+          activationFocusStable(mounted || container, repoId);
+          return;
+        }
+        activationRestoreButtons(mounted, state);
+        actionMessage(mounted || container, activationErrorMessage(payload), true, 'activation:' + String(repoId) + ':refused:' + String((payload && payload.error) || response.status));
+        activationFocusStable(mounted || container, repoId);
+        return;
+      }
+      // Authoritative committed outcome: active/selection reflect any source
+      // change that interleaved, so the summary is never assumed active.
+      const active = payload.active === true;
+      const selection = payload.selection && typeof payload.selection === 'object' ? payload.selection : {};
+      const selectionSource = selection.source && selection.source !== 'managed' ? selection.source : 'managed';
+      const selectionRevisionCommitted = typeof payload.selectionRevision === 'number' ? payload.selectionRevision
+        : typeof selection.revision === 'number' ? selection.revision
+          : state.frozen.expectedSelectionRevision + 1;
+      const profileRevisionCommitted = typeof payload.profileRevision === 'number' ? payload.profileRevision
+        : typeof selection.profileRevision === 'number' ? selection.profileRevision
+          : (typeof payload.revision === 'number' ? payload.revision : state.frozen.expectedProfileRevision);
+      const primaryId = typeof payload.primaryId === 'string' && payload.primaryId.length > 0
+        ? payload.primaryId
+        : activationPrimaryOf(mounted || container);
+      const refreshFailed = payload.refreshError === 'notification-failed' || payload.notification === 'failed';
+      const target = mounted || container;
+      if (active) {
+        activationMarkActive(target, { profileRevision: profileRevisionCommitted, selectionRevision: selectionRevisionCommitted, primaryId });
+      } else {
+        activationMarkInactive(target, {
+          source: selectionSource,
+          selectionRevision: selectionRevisionCommitted,
+          profileRevision: profileRevisionCommitted,
+        });
+      }
+      if (refreshFailed) {
+        actionMessage(target, active
+          ? 'The team activated, but the live settings refresh failed. The change is committed; reload the dashboard to confirm.'
+          : 'The change was committed, but the live settings refresh failed; reload the dashboard to confirm the current source.', false, 'activation:' + String(repoId) + ':refresh-failed');
+      } else {
+        actionMessage(target, active
+          ? 'Team active for new jobs. Existing jobs and retries keep their recorded selection.'
+          : 'The change was committed, but the team is not currently selected for new jobs (the source changed alongside activation). Existing jobs and retries keep their recorded selection.', false, 'activation:' + String(repoId) + ':' + (active ? 'activated' : 'switched'));
+      }
+      // The actions row was just replaced, so a keyboard-activated operator is
+      // not stranded on the body; the mounted workflow keeps a stable target.
+      activationFocusStable(target, repoId);
+    } catch {
+      const mounted = activationMounted(repoId, state);
+      state.busy = false;
+      activationRestoreButtons(mounted, state);
+      actionMessage(mounted || container, 'The saved team could not be activated. Try again.', true, 'activation:' + String(repoId) + ':failed');
+      activationFocusStable(mounted || container, repoId);
+    }
+  };
+  const activationReloadBaselines = async (container, state) => {
+    if (state.busy) return;
+    const mounted = activationMounted(Number(container && container.dataset ? container.dataset.repoId : 0), state);
+    const target = mounted || container;
+    const dataset = (target && target.dataset) || {};
+    const repoId = Number(dataset.repoId);
+    if (!Number.isInteger(repoId)) {
+      actionMessage(target, 'Reload the dashboard, then review the saved team before activating again.', true, 'activation:' + String(repoId) + ':baseline-missing');
+      return;
+    }
+    state.container = target;
+    state.busy = true;
+    activationRestoreButtons(target, state);
+    actionMessage(target, 'Reloading the stored revisions…', false, 'activation:' + String(repoId) + ':reloading');
+    try {
+      // Read the authoritative revisions from the existing editor GET, which
+      // returns the profile and the selection from one coherent snapshot. The
+      // saved activation review (state.intent and the team choice) and any open
+      // editor draft in a different map are never touched.
+      const response = await fetch('/repos/' + String(repoId) + '/opencode-profile');
+      const payload = await response.json().catch(() => ({}));
+      const after = activationMounted(repoId, state) || target;
+      if (selectionSessionExpiry(response, payload)) {
+        state.busy = false;
+        activationRestoreButtons(after, state);
+        return;
+      }
+      state.busy = false;
+      const profileRevision = typeof payload.profileRevision === 'number' ? payload.profileRevision
+        : (typeof payload.revision === 'number' ? payload.revision : null);
+      const selectionRevision = typeof payload.selectionRevision === 'number' ? payload.selectionRevision : null;
+      const selection = payload.selection && typeof payload.selection === 'object' ? payload.selection : null;
+      const source = selection && (selection.source === 'default' || selection.source === 'native' || selection.source === 'managed')
+        ? selection.source : null;
+      const nativeId = selection && typeof selection.nativeAgentId === 'string' ? selection.nativeAgentId : null;
+      const primaryId = payload.profile && typeof payload.profile === 'object' && payload.profile.primary && typeof payload.profile.primary.id === 'string'
+        ? payload.profile.primary.id : null;
+      if (!response.ok || payload.ok === false || profileRevision === null || selectionRevision === null) {
+        // A read that did not yield both revisions resolves nothing: keep the
+        // frozen baselines and the conflict so a stale pair is never retried
+        // without the deliberate review the conflict gate requires.
+        state.conflict = true;
+        activationRestoreButtons(after, state);
+        activationToggleReload(after, true);
+        actionMessage(after, 'The stored revisions could not be reloaded (status ' + String(response.status) + '). Nothing changed; reload baselines again before activating.', true, 'activation:' + String(repoId) + ':reload-failed');
+        activationFocusStable(after, repoId);
+        return;
+      }
+      if (primaryId === null) {
+        // The authoritative read shows no readable saved team to activate; a
+        // revision pair alone must never be presented as an activatable team.
+        state.conflict = true;
+        activationRestoreButtons(after, state);
+        activationToggleReload(after, true);
+        actionMessage(after, 'No readable saved team is available to activate; refresh the dashboard workflow summary before activating. Nothing changed.', true, 'activation:' + String(repoId) + ':no-profile');
+        activationFocusStable(after, repoId);
+        return;
+      }
+      // Advance the reviewed baselines to the authoritative stored pair and
+      // mirror them onto the mounted node, so the next explicit activation
+      // submits exactly the refreshed revisions.
+      state.frozen = { expectedProfileRevision: profileRevision, expectedSelectionRevision: selectionRevision };
+      state.conflict = false;
+      if (after.dataset) {
+        after.dataset.selectionRevision = String(selectionRevision);
+        after.dataset.profileRevision = String(profileRevision);
+      }
+      activationRestoreButtons(after, state);
+      activationToggleReload(after, false);
+      // Name the newly stored team and the current source so the operator
+      // reviews what was actually loaded, without trusting a stale summary or
+      // waiting for the next SSE fragment.
+      const sourceLabel = source === 'native'
+        ? (nativeId === null ? 'Existing OpenCode agent (the retained id is missing)' : 'Existing OpenCode agent ' + nativeId)
+        : source === 'managed' ? 'the Gremlyn-managed team' : 'OpenCode default';
+      actionMessage(after, 'Baselines reloaded. Saved team primary ' + primaryId + '; new jobs use ' + sourceLabel + ' (profile revision ' + String(profileRevision) + ', selection revision ' + String(selectionRevision) + '). Review the saved team, then activate again deliberately.', false, 'activation:' + String(repoId) + ':baselines-reloaded');
+      activationFocusStable(after, repoId);
+    } catch {
+      const after = activationMounted(repoId, state) || target;
+      state.busy = false;
+      state.conflict = true;
+      activationRestoreButtons(after, state);
+      activationToggleReload(after, true);
+      actionMessage(after, 'The stored revisions could not be reloaded. Nothing changed; reload baselines again before activating.', true, 'activation:' + String(repoId) + ':reload-failed');
+      activationFocusStable(after, repoId);
+    }
+  };
+  registerSurface('opencode-activation', {
+    capture: () => [...activationMap.entries()].map(([repoId, state]) => ({
+      repoId,
+      busy: state.busy,
+      conflict: state.conflict === true,
+      intent: state.intent || 'activate-saved',
+      frozen: state.frozen ? { expectedProfileRevision: state.frozen.expectedProfileRevision, expectedSelectionRevision: state.frozen.expectedSelectionRevision } : null,
+    })),
+    restore: (root, saved) => {
+      if (!root || !Array.isArray(saved) || typeof root.querySelector !== 'function') return;
+      saved.forEach((entry) => {
+        if (!entry || !Number.isInteger(entry.repoId)) return;
+        const container = root.querySelector('[data-opencode-workflow][data-repo-id="' + String(entry.repoId) + '"]');
+        if (!container) return;
+        const state = activationMap.get(entry.repoId) || activationStateShape();
+        state.busy = entry.busy === true;
+        state.conflict = entry.conflict === true;
+        state.intent = entry.intent || 'activate-saved';
+        state.frozen = entry.frozen
+          ? { expectedProfileRevision: entry.frozen.expectedProfileRevision, expectedSelectionRevision: entry.frozen.expectedSelectionRevision }
+          : null;
+        state.container = container;
+        activationMap.set(entry.repoId, state);
+        const button = typeof container.querySelector === 'function' ? container.querySelector('[data-opencode-activate]') : null;
+        if (button && entry.busy === true) button.disabled = true;
+        activationToggleReload(container, state.conflict);
+      });
+    },
+  });
+  document.addEventListener('click', (event) => {
+    const target = event && event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    const activateButton = target.closest('[data-opencode-activate]');
+    if (activateButton && activateButton.dataset) {
+      const found = activationFor(activateButton);
+      if (!found) return;
+      event.preventDefault();
+      void activationApply(found.container, found.state);
+      return;
+    }
+    const reloadButton = target.closest('[data-opencode-reload-baselines]');
+    if (!reloadButton || !reloadButton.dataset) return;
+    const found = activationFor(reloadButton);
+    if (!found) return;
+    event.preventDefault();
+    void activationReloadBaselines(found.container, found.state);
+  });
+  if (typeof window !== 'undefined' && window && window.gremlynConsole) {
+    window.gremlynConsole.opencodeActivation = {
+      for: activationFor,
+      apply: activationApply,
+      reloadBaselines: activationReloadBaselines,
+      markActive: activationMarkActive,
+      markInactive: activationMarkInactive,
+      syncWorkflow: selectionSyncWorkflow,
+      errorMessage: activationErrorMessage,
+      state: activationMap,
+      presentation: workflowPresentation,
+    };
+  }
+  // END_OPENCODE_ACTIVATION
   // The log arrives server-rendered and is refreshed by the stream swap above;
   // /jobs/:id/log remains available as a JSON endpoint for callers outside the UI.
   const initialStream = document.querySelector('[data-log-items]');

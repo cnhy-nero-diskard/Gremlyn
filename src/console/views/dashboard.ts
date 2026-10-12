@@ -3,7 +3,9 @@ import type {
   DelegationSummary,
   JobSummary,
   OpenCodeSelectionSummary,
+  RepositoryLastLaunchSummary,
   RepositorySummary,
+  RepositoryWorkflowState,
 } from "../queries.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../types.js";
 import { KINDS_REQUIRING_PROVIDER, type AgentDefinition } from "../../config/loader.js";
@@ -92,6 +94,126 @@ function stepLimitChip(limit: number | null): string {
 }
 
 /**
+ * The prominent repository agent-workflow state, resolved once from the query
+ * projection (`RepositorySummary.agentWorkflow`) and mirrored from the
+ * authoritative selection/profile projections when that field is absent (older
+ * view reads and literal test rows). Both paths produce the same vocabulary so
+ * the initial server render and every live SSE fragment stay consistent.
+ */
+function workflowStateOf(repo: RepositorySummary): RepositoryWorkflowState {
+  if (repo.agentWorkflow) return repo.agentWorkflow.state;
+  const selection = repo.opencodeSelection ?? DEFAULT_OPENCODE_SELECTION;
+  const profile = repo.opencodeProfile ?? null;
+  if (selection.source === "managed") {
+    return profile ? "active-managed" : "unavailable-managed";
+  }
+  return profile ? "inactive-team" : "no-team";
+}
+
+/** One readable sentence naming the current saved team's header state. */
+function workflowStateHeading(repo: RepositorySummary): string {
+  switch (workflowStateOf(repo)) {
+    case "active-managed":
+      return "Team: ACTIVE FOR NEW JOBS";
+    case "inactive-team":
+      return "Saved team: INACTIVE";
+    case "unavailable-managed":
+      return "Selected team unavailable";
+    default:
+      return "No saved team";
+  }
+}
+
+/** What new jobs use today, as a plain-language sentence fragment. */
+function workflowSourcePhrase(repo: RepositorySummary): string {
+  const selection = repo.opencodeSelection ?? DEFAULT_OPENCODE_SELECTION;
+  if (selection.source === "native") {
+    return selection.nativeAgentId
+      ? `Existing OpenCode agent <code>${escapeHtml(selection.nativeAgentId)}</code>`
+      : "Existing OpenCode agent (the retained id is missing)";
+  }
+  if (selection.source === "managed") {
+    const revision = workflowProfileRevision(repo);
+    // The selected primary is named alongside the revision so the prominent
+    // active summary stands alone without the subordinate roster.
+    const primary = repo.agentWorkflow?.team?.primaryId ?? repo.opencodeProfile?.primaryId;
+    const teamRef = primary
+      ? `Gremlyn-managed team (primary <code>${escapeHtml(primary)}</code>)`
+      : "Gremlyn-managed team";
+    return revision === null ? `the ${teamRef}` : `the ${teamRef} at revision ${String(revision)}`;
+  }
+  return "OpenCode default";
+}
+
+/** The saved managed profile revision the activation baseline must match. */
+function workflowProfileRevision(repo: RepositorySummary): number | null {
+  // With the authoritative projection present, only a readable saved team has a
+  // baseline: a corrupt dormant team has no team summary, so it offers repair
+  // rather than a bogus activation. Older literal rows without the projection
+  // fall back to the selection/profile revisions the query would have used.
+  if (repo.agentWorkflow) return repo.agentWorkflow.team?.revision ?? null;
+  return repo.opencodeSelection?.profileRevision ?? repo.opencodeProfile?.revision ?? null;
+}
+
+/** The historical line: latest launched invocation or an honest empty state. */
+function workflowLaunchLine(launch: RepositoryLastLaunchSummary | null): string {
+  if (launch === null) {
+    return 'Most recent launch: <span class="muted">No recorded launch.</span>';
+  }
+  const actual = launch.actualPrimaryAgent
+    ? `<code>${escapeHtml(launch.actualPrimaryAgent)}</code>`
+    : '<span class="muted">Not observed</span>';
+  return `Most recent launch: <a href="${escapeHtml(launch.jobHref)}">Job #${String(launch.jobId)}</a> · ${relativeTimeElement(launch.launchedAt)} · ran as ${actual}`;
+}
+
+/**
+ * The one prominent Agent workflow summary atop an OpenCode repository card
+ * (design D1/D4). It states what new jobs use, whether a saved team is active,
+ * and the actual primary of the most recent launched invocation, with a direct
+ * activation/edit/change action row — visible without expanding any of the
+ * detailed pickers. A saved team under default/native source is a prominent
+ * amber "inactive" notice, never an error; the default source is described as
+ * OpenCode's default-resolution policy without predicting a future primary.
+ */
+function opencodeWorkflowSection(repo: RepositorySummary, agents: AgentDefinitions): string {
+  if (executorKindOf(repo, agents) !== OPENCODE_EXECUTOR) return "";
+  const selection = repo.opencodeSelection ?? DEFAULT_OPENCODE_SELECTION;
+  const state = workflowStateOf(repo);
+  const timeline = repo.agentWorkflow?.lastLaunch ?? null;
+  const profileRevision = workflowProfileRevision(repo);
+  const inactive = state === "inactive-team";
+  const editLabel =
+    state === "active-managed"
+      ? "Edit active team"
+      : state === "unavailable-managed"
+        ? "Repair team"
+        : state === "no-team"
+          ? "Configure team"
+          : "Edit team";
+  const configure = `<a id="repo-workflow-edit-${String(repo.id)}" href="#repo-agents-${String(repo.id)}" data-repo-agents-configure data-repo-id="${String(repo.id)}" data-repo-agents-url="/repos/${String(repo.id)}/opencode-profile">${editLabel}</a>`;
+  const change = `<a id="repo-workflow-change-${String(repo.id)}" href="#repo-primary-source-${String(repo.id)}" data-opencode-change-agent>Change agent</a>`;
+  const activate =
+    inactive && profileRevision !== null
+      ? `<button type="button" data-opencode-activate data-repo-id="${String(repo.id)}" data-activation-url="/repos/${String(repo.id)}/opencode-team-activation" data-selection-revision="${String(selection.revision)}" data-profile-revision="${String(profileRevision)}">Activate this team</button> <button type="button" data-opencode-reload-baselines hidden data-repo-id="${String(repo.id)}">Reload baselines</button> `
+      : inactive
+        ? `<span class="muted">The saved team cannot run; edit it to repair the definition.</span> `
+        : "";
+  let notice: string;
+  if (state === "inactive-team") {
+    notice =
+      "Your orchestrator team is saved but is not selected; new jobs still use the selected source below. " +
+      "Activation makes its enabled children available to the primary, and the primary decides when to delegate.";
+  } else if (state === "unavailable-managed") {
+    notice = "New jobs cannot safely use it until the saved definition is repaired or another agent is chosen.";
+  } else if (state === "no-team") {
+    notice = "OpenCode runs with its normal project/global configuration until a managed team is saved and activated.";
+  } else {
+    notice = "Existing jobs and retries keep the selection recorded when they were created; only new jobs use this team.";
+  }
+  return `<section class="repo-opencode-workflow${inactive ? " is-inactive" : ""}" data-opencode-workflow data-repo-id="${String(repo.id)}" data-team-state="${state}" data-source="${selection.source}" data-selection-revision="${String(selection.revision)}" data-profile-revision="${profileRevision === null ? "" : String(profileRevision)}" data-activation-url="/repos/${String(repo.id)}/opencode-team-activation"><h4>Agent workflow</h4><p class="workflow-status" data-visual-state="${inactive ? "warning" : state === "active-managed" ? "success" : "neutral"}"><strong data-workflow-heading>${escapeHtml(workflowStateHeading(repo))}</strong> <span class="muted">New jobs use: ${workflowSourcePhrase(repo)}.</span></p>${notice === "" ? "" : `<p class="workflow-notice muted">${notice}</p>`}<p class="workflow-detail" data-workflow-launch>${workflowLaunchLine(timeline)}</p><div class="workflow-actions">${activate}${configure} ${change}</div></section>`;
+}
+
+/**
  * The dashboard-managed OpenCode agent team as a readable repository summary:
  * the active primary, each subagent and whether the primary may call it, the
  * model each child runs with (an explicit override or inherited from the
@@ -117,19 +239,34 @@ function opencodeAgentsSection(repo: RepositorySummary, agents: AgentDefinitions
   }
   const primaryModel =
     repo.model && repo.model.length > 0 ? repo.model : "the repository's selected model";
+  const active = workflowStateOf(repo) === "active-managed";
   const primary = `<li><span class="chip">primary <code>${escapeHtml(profile.primaryId)}</code></span><span class="chip">tools: ${escapeHtml(permissionPreset(profile.primaryPermissions))}</span>${stepLimitChip(profile.primaryStepLimit)}<small class="muted">${escapeHtml(profile.primaryDescription)}</small></li>`;
+  const enabledCount = profile.subagents.filter((subagent) => subagent.enabled).length;
   const children =
     profile.subagents.length === 0
-      ? '<li><span class="chip">no subagents</span><small class="muted">The primary cannot call a child until one is added and enabled.</small></li>'
+      ? `<li data-no-enabled-children><span class="chip">no subagents</span><small class="muted">This saved team has no subagents; add and enable one before its primary can delegate to a child. The current runner may still delegate through its own configuration.</small></li>`
       : profile.subagents
           .map((subagent) => {
-            const callable = subagent.enabled ? "callable" : "disabled";
-            const model = subagent.model === null ? `inherits ${primaryModel}` : subagent.model;
-            return `<li><span class="chip"><code>${escapeHtml(subagent.id)}</code></span><span class="chip">${callable}</span><span class="chip">model: ${escapeHtml(model)}</span><span class="chip">tools: ${escapeHtml(permissionPreset(subagent.permissions))}</span>${stepLimitChip(subagent.stepLimit)}<small class="muted">${escapeHtml(subagent.description)}</small></li>`;
+            // A saved/available child is an enabled *definition*; it never claims
+            // runtime preflight or observed execution. Inactive teams label
+            // enabled children "in saved team" so the roster cannot mislead.
+            const available = subagent.enabled
+              ? active
+                ? "Available to orchestrator"
+                : "Enabled in saved team"
+              : "Disabled";
+            const model =
+              subagent.model === null
+                ? `inherits ${primaryModel}`
+                : subagent.model;
+            return `<li><span class="chip"><code>${escapeHtml(subagent.id)}</code></span><span class="chip" data-availability="${subagent.enabled ? (active ? "available" : "saved") : "disabled"}">${available}</span><span class="chip">model: ${escapeHtml(model)}</span><span class="chip">tools: ${escapeHtml(permissionPreset(subagent.permissions))}</span>${stepLimitChip(subagent.stepLimit)}<small class="muted">${escapeHtml(subagent.description)}</small></li>`;
           })
           .join("");
-  const foot = `<p class="panel-foot"><span class="chip" data-revision-value>revision ${String(profile.revision)}</span><span class="muted"> Only enabled children are callable. External-directory access and nested delegation are always denied for managed agents.</span></p>`;
-  return `<div class="repo-opencode-agents" id="${anchor}" data-opencode-agents data-repo-id="${String(repo.id)}" data-has-profile="1" data-revision="${String(profile.revision)}">${heading}<ul class="cmd-list">${primary}${children}</ul>${foot}</div>`;
+  const noEnabled = active && enabledCount === 0
+    ? '<li data-no-enabled-children><span class="chip">No enabled children</span><small class="muted">This active team has no enabled children, so the primary has no managed child to delegate to.</small></li>'
+    : "";
+  const foot = `<p class="panel-foot"><span class="chip" data-revision-value>revision ${String(profile.revision)}</span><span class="muted"> Only enabled children are callable by the primary, and then only as definitions: activation makes them available and the primary decides when to delegate, so a saved or active roster is never evidence that a child ran. A default or native runner can still delegate through its own configuration. External-directory access and nested delegation are always denied for managed agents.</span></p>`;
+  return `<div class="repo-opencode-agents" id="${anchor}" data-opencode-agents data-repo-id="${String(repo.id)}" data-has-profile="1" data-revision="${String(profile.revision)}" data-active="${active ? "1" : "0"}" data-primary-id="${escapeHtml(profile.primaryId)}">${heading}<ul class="cmd-list">${primary}${children}${noEnabled}</ul>${foot}</div>`;
 }
 
 /** Readable labels for the three mutually exclusive OpenCode primary sources. */
@@ -204,7 +341,7 @@ function opencodeSelectionSection(repo: RepositorySummary, agents: AgentDefiniti
       ? `<span class="chip" data-opencode-managed-profile>managed team${selection.profileRevision === null ? "" : ` revision ${String(selection.profileRevision)}`}</span> `
       : "";
   const edit = `<a href="#repo-agents-${String(repo.id)}" data-repo-agents-configure data-repo-id="${String(repo.id)}" data-repo-agents-url="/repos/${String(repo.id)}/opencode-profile">Edit managed team</a>`;
-  const control = `<div class="repo-primary-source" id="repo-primary-source-${String(repo.id)}" data-opencode-selection data-repo-id="${String(repo.id)}" data-saved-source="${selection.source}" data-saved-native-id="${escapeHtml(selection.nativeAgentId ?? "")}" data-selection-revision="${String(selection.revision)}" data-profile-revision="${selection.profileRevision === null ? "" : String(selection.profileRevision)}" data-discovery-url="/repos/${String(repo.id)}/opencode-agents" data-update-url="/repos/${String(repo.id)}/opencode-selection"><h4>Run with agent</h4><p class="muted">OpenCode primary source for new jobs: default, an eligible existing agent, or the Gremlyn-managed team. Separate from executor, model, effort and timeout; saved choices apply to jobs created afterward.</p><div class="opencode-selection-controls"><label>Primary source <select data-opencode-source-select>${sourceOptions(selection)}</select></label><label data-opencode-native-field${nativeHidden}>Existing agent <select data-opencode-native-select>${nativeOptions}</select></label><small class="opencode-selection-description" data-opencode-native-description${nativeHidden}></small><span class="opencode-selection-managed" data-opencode-managed-note>${managedChip}${edit}</span></div><p class="muted opencode-selection-saved" data-opencode-selection-status role="status" aria-live="polite">${escapeHtml(savedSourceSentence(selection))}</p><div class="opencode-selection-actions"><button type="button" data-opencode-source-action="refresh">Refresh agents</button><button type="button" class="primary" data-opencode-source-action="apply" disabled>Apply</button><button type="button" data-opencode-source-action="cancel" disabled>Cancel</button></div><p class="action-feedback" data-opencode-selection-feedback role="status" aria-live="polite" aria-atomic="true"></p></div>`;
+  const control = `<div class="repo-primary-source" id="repo-primary-source-${String(repo.id)}" data-opencode-selection data-repo-id="${String(repo.id)}" data-saved-source="${selection.source}" data-saved-native-id="${escapeHtml(selection.nativeAgentId ?? "")}" data-selection-revision="${String(selection.revision)}" data-profile-revision="${selection.profileRevision === null ? "" : String(selection.profileRevision)}" data-discovery-url="/repos/${String(repo.id)}/opencode-agents" data-update-url="/repos/${String(repo.id)}/opencode-selection"><h4>Change agent</h4><p class="muted">The OpenCode primary source for new jobs: default, an eligible existing agent, or the Gremlyn-managed team. Selecting managed uses the saved team; switching away retains its definition. Changes affect new jobs only.</p><div class="opencode-selection-controls"><label>Primary source <select data-opencode-source-select>${sourceOptions(selection)}</select></label><label data-opencode-native-field${nativeHidden}>Existing agent <select data-opencode-native-select>${nativeOptions}</select></label><small class="opencode-selection-description" data-opencode-native-description${nativeHidden}></small><span class="opencode-selection-managed" data-opencode-managed-note>${managedChip}${edit}</span></div><p class="muted opencode-selection-saved" data-opencode-selection-status role="status" aria-live="polite">${escapeHtml(savedSourceSentence(selection))}</p><div class="opencode-selection-actions"><button type="button" data-opencode-source-action="refresh">Refresh agents</button><button type="button" class="primary" data-opencode-source-action="apply" disabled>Apply</button><button type="button" data-opencode-source-action="reload" hidden>Reload baselines</button><button type="button" data-opencode-source-action="cancel" disabled>Cancel</button></div><p class="action-feedback" data-opencode-selection-feedback role="status" aria-live="polite" aria-atomic="true"></p></div>`;
   return control;
 }
 
@@ -388,10 +525,11 @@ function repositoryCard(
       ? primarySourceChip(repo.opencodeSelection ?? DEFAULT_OPENCODE_SELECTION)
       : "";
   const chips = `<p class="repo-chips"><span class="chip">executor <code>${escapeHtml(repo.agent ?? "unknown")}</code></span>${primaryChip}<span class="chip">effort <code>${escapeHtml(repo.effort ?? "unknown")}</code></span></p>`;
+  const workflow = opencodeWorkflowSection(repo, agents);
   const validation = `<div class="repo-validation"><h4>Validation commands</h4>${validationLabel(repo)}</div>`;
   const selection = opencodeSelectionSection(repo, agents);
   const opencode = opencodeAgentsSection(repo, agents);
-  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${selection}${opencode}${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
+  return `<article class="card repo-card" data-presentation="quiet" data-action-scope="repository-${String(repo.id)}" data-live-key="repository-${String(repo.id)}">${head}${chips}${workflow}<div class="repo-defaults">${modelProviderControl(repo, catalog, agents)}</div>${selection}${opencode}${validation}<p class="action-feedback" data-action-feedback data-action-announcement role="status" aria-live="polite" aria-atomic="true"></p></article>`;
 }
 
 /** Job statuses whose delegation summary is worth its one subdued line. */
