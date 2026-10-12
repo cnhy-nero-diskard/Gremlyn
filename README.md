@@ -444,6 +444,96 @@ Stop with `Ctrl+C`. Gremlyn marks jobs left in transient states as interrupted o
 
 If a previous run was interrupted by a reboot or power loss, Gremlyn reclaims its abandoned data-directory claim at startup, even when the old process ID has been reused. A claim from a running instance still prevents a second instance from starting. If a claim cannot be reclaimed automatically, run `npm run setup -- unlock .gremlyn` from the Gremlyn directory after checking the reported owner.
 
+### Terminal operation and browser-independent logs
+
+The browser is optional for observation: in supported interactive CMD,
+PowerShell and Windows Terminal hosts, `npm start` automatically uses a compact
+stderr dashboard. It shows startup readiness, **observed** connection health,
+enabled/configured repositories, latest successful poll and freshness, active
+and queued counts, and bounded active/queued/recent job rows. Job rows identify
+repository, PR, stage, elapsed seconds and the latest recorded attempt outcome.
+Overflow is summarized instead of dumping the backlog. Repository labels use
+an ASCII fallback, and colors never replace textual states.
+
+Keep the existing config-path launch, adding options after npm's `--` separator:
+
+```powershell
+npm start -- .\gremlyn.yaml --presentation auto
+npm start -- .\gremlyn.yaml --presentation plain
+npm start -- .\gremlyn.yaml --presentation json --no-interaction
+npm start -- .\gremlyn.yaml --presentation terminal --no-color
+```
+
+`--presentation` accepts `auto`, `terminal`, `plain` or `json`; command-line
+flags override the optional `terminal:` configuration block. With no positional
+path, `GREMLYN_CONFIG` is used, then `gremlyn.yaml`. Unknown options fail with
+safe usage diagnostics. Auto uses JSON when stderr is redirected, CI is detected,
+interaction is disabled or cursor handling is unsupported. Explicit terminal
+mode cannot override those safety conditions: it explains once and uses plain
+output without cursor/color codes. `NO_COLOR` (a non-empty value) and `--no-color`
+disable styling independently of interactivity. `--no-interaction` also disables
+the sound-control key. These options do **not** bypass npm's pinned `prestart`
+checks or daemon authentication, ownership and version preflight.
+
+Routine structured records do not compete with the dashboard. Redacted detail
+logs still persist to SQLite at `log_level`; JSON mode retains the legacy
+machine-readable stderr record format. Plain mode emits meaningful lifecycle
+and diagnostic lines while suppressing unchanged poll/sweep noise. Inspect
+details in a second terminal, without a browser:
+
+```powershell
+npm run logs -- --data-dir .gremlyn --tail 100
+npm run logs -- --data-dir .gremlyn --tail 100 --follow --format plain
+npm run logs -- --data-dir .gremlyn --tail 100 --format json
+```
+
+The inspector defaults to `.gremlyn`, 100 records and plain format. **Supply
+`--data-dir` explicitly when your daemon uses a custom directory.** It opens an
+existing `gremlyn.db` read-only: no migration, creation, daemon ownership claim
+or GitHub authentication. Missing/busy stores report a safe error. Stop a
+follow session with Ctrl+C. Machine consumers can run the entrypoint directly
+(`node --import tsx src/log/tail.ts ...`) to avoid npm's script headers on stdout.
+
+### Optional outcome sound
+
+Sound is **disabled by default**, independently of presentation mode. Opt in:
+
+```powershell
+npm start -- .\gremlyn.yaml --sound
+npm start -- .\gremlyn.yaml --sound --mute
+```
+
+On supported interactive stdin, press **m** to enable sound, then toggle mute.
+The display confirms disabled/enabled/muted textually. Raw input mode is restored
+on shutdown; Ctrl+C retains the existing stop and repeated-stop escalation.
+Non-interactive/JSON/plain launches have no interactive key, but an explicit
+`--sound` or `terminal.sound: true` still opts into playback. `--mute` or
+`terminal.mute: true` suppresses pending and future cues without affecting jobs.
+
+Windows uses a fixed, no-profile PowerShell `System.Media.SoundPlayer` helper
+with two packaged WAV cues: ascending success and descending failure, each less
+than one second. Other platforms use a silent no-op. Only newly observed,
+**committed job** `succeeded`/`failed` status events request cues. An agent exit
+or successful agent followed by failed validation is not success: only the job
+failure cues. Internal invocation retries, cancellation and interruption are
+silent; an explicit operator retry can produce its own new terminal-transition
+cue. Recovery/history at startup is baselined, and muted/disabled observations
+are consumed without replay after enable/unmute or restart.
+
+Delivery is **best-effort, at-most-once playback requests**, not guaranteed
+audibility or an exactly-once audio outbox. One helper may run at once, with at
+most 16 pending cues, ten-second pending expiry and a three-second timeout.
+Unavailable helpers, overload or playback failure yield safe rate-limited
+warnings; stale cues are dropped rather than retried. Hardware/device mute and
+audio routing can prevent hearing a cue even when the helper exits successfully.
+Gremlyn never changes device mute, plays a startup probe or falls back to BEL.
+
+For presentation rollback, select `--presentation json` and leave sound disabled
+(`terminal.sound: false`, with no `--sound`). No data conversion is needed;
+rendering, logs and audio never change validation, job results or publication
+authorization. Manual acceptance steps and their verification limits are recorded
+in the change's `verification.md`.
+
 ### Keeping the agent CLI pins current
 
 Both agent CLIs are pinned to one release (`EXPECTED_CLINE_VERSION`,
