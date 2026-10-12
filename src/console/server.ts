@@ -34,6 +34,11 @@ import {
 } from "../store/opencode-profiles.js";
 import { readOpenCodeSelection, saveOpenCodeSelection } from "../store/opencode-selections.js";
 import {
+  activateOpenCodeTeam,
+  readOpenCodeActivationContext,
+  type ActivateOpenCodeTeamResult,
+} from "../store/opencode-activation.js";
+import {
   discoverNativeAgents as defaultDiscoverNativeAgents,
   nativeAgentDiscoveryCache,
   type NativeAgentDiscoveryCache,
@@ -845,6 +850,103 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
       return reply.code(500).send({ error: "save-failed" });
     },
   );
+  // Authenticated repository-local explicit team activation (design D2, tasks
+  // 2.1-2.3). One strict discriminated body names either the already-reviewed
+  // saved team (`activate-saved`, no profile) or a reviewed candidate (`profile`)
+  // to be committed together with managed source (`save-and-activate`). The
+  // store rechecks repository existence, the resolved executor kind (including
+  // aliases) and both optimistic revisions inside one transaction, so a stale
+  // baseline, invalid candidate or persistence failure changes neither the
+  // profile nor the selection. A state-changing commit issues at most one
+  // runtime notification; a notification failure is reported as a scoped
+  // refresh problem with the reconciled committed state, never as a rollback.
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/repos/:id/opencode-team-activation",
+    async (request, reply) => {
+      const id = repositoryIdParam(request.params.id);
+      if (id === undefined) return reply.code(404).send({ error: "repository-not-found" });
+      const repo = readRepositoryRow(id);
+      if (!repo) return reply.code(404).send({ error: "repository-not-found" });
+      const kind = resolvedExecutorKind(options.db, id, options.agents);
+      if (kind !== OPENCODE_EXECUTOR_ID) return reply.code(404).send({ error: "not-opencode" });
+      const parsed = parseActivationBody(request.body);
+      if (!parsed.ok)
+        return reply.code(400).send({ error: "invalid-request", issues: parsed.issues });
+      const resolveKind = (agentId: string): string => options.agents?.[agentId]?.kind ?? agentId;
+      let result: ActivateOpenCodeTeamResult;
+      try {
+        result =
+          parsed.request.mode === "activate-saved"
+            ? activateOpenCodeTeam(options.db, {
+                repoId: id,
+                resolveExecutorKind: resolveKind,
+                mode: "activate-saved",
+                expectedProfileRevision: parsed.request.expectedProfileRevision,
+                expectedSelectionRevision: parsed.request.expectedSelectionRevision,
+              })
+            : activateOpenCodeTeam(options.db, {
+                repoId: id,
+                resolveExecutorKind: resolveKind,
+                mode: "save-and-activate",
+                expectedProfileRevision: parsed.request.expectedProfileRevision,
+                expectedSelectionRevision: parsed.request.expectedSelectionRevision,
+                candidate: parsed.request.profile,
+              });
+      } catch {
+        // A persistence or audit failure rolls the whole transaction back.
+        // Never echo the database error and issue no notification: nothing was
+        // committed, so there is no runtime refresh to perform.
+        return reply.code(500).send({ error: "activation-failed", repoId: id });
+      }
+      if (!result.ok) return sendActivationRefusal(reply, id, result);
+      // Persistence is already committed. Notification follows commit and is
+      // issued at most once for a state-changing activation; failure must not
+      // masquerade as a rolled-back save or force a blind resubmission.
+      const notifier = options.actions?.repositorySettingsChanged;
+      let notification: "delivered" | "skipped" | "failed";
+      if (!result.changed || !notifier) {
+        notification = "skipped";
+      } else {
+        try {
+          await notifier(id);
+          notification = "delivered";
+        } catch {
+          notification = "failed";
+        }
+      }
+      const context = safeReadActivationContext(options.db, id);
+      const selection = activationSelectionSummary(context, result);
+      const profileRevision = context?.profileRevision ?? result.profileRevision;
+      const active = context?.active ?? true;
+      return reply.send({
+        ok: true,
+        repoId: id,
+        operation: result.operation,
+        changed: result.changed,
+        alreadyActive: !result.changed,
+        active,
+        // Both names expose the profile revision after commit so a client that
+        // reviewed `revision` and one that reads `profileRevision` agree.
+        revision: profileRevision,
+        profileRevision,
+        selectionRevision: selection.revision,
+        selection,
+        workflow: {
+          operation: result.operation,
+          active,
+          changed: result.changed,
+          selectionRevision: selection.revision,
+          profileRevision,
+          primaryId: context?.primaryId ?? result.primaryId,
+          subagentIds: context?.subagentIds ?? result.subagentIds,
+        },
+        primaryId: context?.primaryId ?? result.primaryId,
+        subagentIds: context?.subagentIds ?? result.subagentIds,
+        notification,
+        ...(notification === "failed" ? { refreshError: "notification-failed" } : {}),
+      });
+    },
+  );
   // Authenticated editor access to the full OpenCode agent profile. The full
   // document — including the operators' private instruction text — is never
   // projected in ordinary dashboard HTML or live SSE fragments; it is read
@@ -857,23 +959,47 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
     if (executorKind !== OPENCODE_EXECUTOR_ID)
       return reply.code(404).send({ error: "not-opencode" });
     // A stored payload that no longer parses is a scoped corruption error, not
-    // a server crash and not a silent fallback to the default workflow.
-    let record: ReturnType<typeof readOpenCodeProfile>;
+    // a server crash and not a silent fallback to the default workflow. The
+    // profile document and the selection/revision baselines are read from one
+    // consistent snapshot so the editor reviews a coherent pair of counters.
+    let snapshot: {
+      record: ReturnType<typeof readOpenCodeProfile>;
+      selection: ReturnType<typeof readOpenCodeSelection>;
+    };
     try {
-      record = readOpenCodeProfile(options.db, id);
+      snapshot = options.db.transaction(() => ({
+        record: readOpenCodeProfile(options.db, id),
+        selection: readOpenCodeSelection(options.db, id),
+      }))();
     } catch {
       return reply
         .header("cache-control", "no-store")
         .code(422)
         .send({ error: "opencode-profile-corrupt", repoId: id });
     }
+    const { record, selection } = snapshot;
     if (!record) return reply.code(404).send({ error: "repository-not-found" });
+    const selectionView = selection?.selection ?? { source: "default" as const };
+    const selectionSummary: ActivationSelectionSummary = {
+      source: selectionView.source,
+      nativeAgentId: selectionView.source === "native" ? selectionView.agentId : null,
+      revision: selection?.revision ?? 0,
+      profileRevision: record.profile !== null ? record.revision : null,
+    };
     return reply.header("cache-control", "no-store").send({
       ok: true,
       repoId: id,
+      // The profile document plus its revision (the `revision` baseline).
       revision: record.revision,
+      profileRevision: record.revision,
       profile: record.profile,
       defaultProfile: defaultOpenCodeAgentProfile(),
+      // The selection baseline: source, retained native id, selection revision
+      // and the controlling managed-profile revision. Coherent with `revision`.
+      selection: selectionSummary,
+      selectionRevision: selectionSummary.revision,
+      selectionExplicit: selection?.explicit ?? false,
+      active: record.profile !== null && selectionSummary.source === "managed",
     });
   });
   // Compare-and-set save for one whole agent profile. `expectedRevision` is the
@@ -915,17 +1041,36 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
           issues: [{ path: "candidate", message: "candidate must be an object" }],
         });
       }
-      const result = saveOpenCodeAgentProfile(options.db, {
-        repoId: id,
-        expectedRevision,
-        candidate,
-        executorKind,
-      });
+      // The save and the authoritative selection context commit in one
+      // transaction, so the save-only feedback reflects the source exactly at
+      // the transaction's outcome (design D3): a concurrent source switch is
+      // never hidden behind a cached editor value. The response stays additive —
+      // `revision` and the audit semantics are unchanged for save-only.
+      const committed = options.db.transaction(() => {
+        const result = saveOpenCodeAgentProfile(options.db, {
+          repoId: id,
+          expectedRevision,
+          candidate,
+          executorKind,
+        });
+        const context = readOpenCodeActivationContext(options.db, id);
+        return { result, context };
+      })();
+      const result = committed.result;
       if (result.ok) {
+        const selection = activationSelectionSummary(committed.context, {
+          selectionRevision: committed.context?.selectionRevision ?? 0,
+          profileRevision: result.revision,
+        });
         return reply.send({
           ok: true,
           repoId: id,
           revision: result.revision,
+          // Authoritative save-only outcome: whether the saved team is active
+          // for new jobs and the current source/revision context.
+          active: committed.context?.active ?? false,
+          selection,
+          selectionRevision: selection.revision,
         });
       }
       switch (result.reason) {
@@ -1060,6 +1205,158 @@ function savedProfileRevision(
   profile: { profile: unknown; revision: number } | undefined,
 ): number | null {
   return profile?.profile != null ? profile.revision : null;
+}
+/** One field-scoped activation-body issue. */
+type ActivationFieldIssue = { path: string; message: string };
+/** The strict request body, without the server-derived repository scope. */
+type ActivationRequestBody =
+  | {
+      mode: "activate-saved";
+      expectedProfileRevision: number;
+      expectedSelectionRevision: number;
+    }
+  | {
+      mode: "save-and-activate";
+      expectedProfileRevision: number;
+      expectedSelectionRevision: number;
+      /** The reviewed whole profile candidate named `profile` on the wire. */
+      profile: unknown;
+    };
+type ParsedActivationBody =
+  { ok: true; request: ActivationRequestBody } | { ok: false; issues: ActivationFieldIssue[] };
+/**
+ * Strictly parse the discriminated activation body. `activate-saved` accepts
+ * exactly the two baselines and no profile; `save-and-activate` additionally
+ * requires an object `profile` candidate. Unknown fields and wrong types are
+ * rejected so a client cannot smuggle an activation mode the operator did not
+ * choose.
+ */
+function parseActivationBody(body: unknown): ParsedActivationBody {
+  if (!isRecord(body))
+    return { ok: false, issues: [{ path: "body", message: "body must be an object" }] };
+  const mode = body.mode;
+  if (mode !== "activate-saved" && mode !== "save-and-activate") {
+    return {
+      ok: false,
+      issues: [{ path: "mode", message: 'mode must be "activate-saved" or "save-and-activate"' }],
+    };
+  }
+  const issues: ActivationFieldIssue[] = [];
+  const expectedProfileRevision = body.expectedProfileRevision;
+  if (!Number.isInteger(expectedProfileRevision) || (expectedProfileRevision as number) < 0) {
+    issues.push({
+      path: "expectedProfileRevision",
+      message: "expectedProfileRevision must be a non-negative integer",
+    });
+  }
+  const expectedSelectionRevision = body.expectedSelectionRevision;
+  if (!Number.isInteger(expectedSelectionRevision) || (expectedSelectionRevision as number) < 0) {
+    issues.push({
+      path: "expectedSelectionRevision",
+      message: "expectedSelectionRevision must be a non-negative integer",
+    });
+  }
+  const allowed = new Set([
+    "mode",
+    "expectedProfileRevision",
+    "expectedSelectionRevision",
+    "profile",
+  ]);
+  for (const key of Object.keys(body)) {
+    if (!allowed.has(key)) issues.push({ path: key, message: `unknown field "${key}"` });
+  }
+  if (mode === "activate-saved" && "profile" in body) {
+    issues.push({ path: "profile", message: "profile is not accepted for activate-saved" });
+  }
+  if (mode === "save-and-activate" && !isRecord(body.profile)) {
+    issues.push({
+      path: "profile",
+      message: "profile must be an object for save-and-activate",
+    });
+  }
+  if (issues.length > 0) return { ok: false, issues };
+  const base = {
+    expectedProfileRevision: expectedProfileRevision as number,
+    expectedSelectionRevision: expectedSelectionRevision as number,
+  };
+  return mode === "activate-saved"
+    ? { ok: true, request: { ...base, mode } }
+    : { ok: true, request: { ...base, mode, profile: body.profile } };
+}
+/** Map a store activation refusal to a scoped, actionable HTTP response. */
+function sendActivationRefusal(
+  reply: FastifyReply,
+  repoId: number,
+  result: Exclude<ActivateOpenCodeTeamResult, { ok: true }>,
+): FastifyReply {
+  const revisions = {
+    currentRevision: result.reason === "not-found" ? 0 : result.currentSelectionRevision,
+    currentProfileRevision: result.reason === "not-found" ? 0 : result.currentProfileRevision,
+  };
+  switch (result.reason) {
+    case "not-found":
+      return reply.code(404).send({ error: "repository-not-found" });
+    case "not-opencode":
+      return reply.code(404).send({ error: "not-opencode" });
+    case "validation":
+      return reply.code(400).send({
+        error: "validation",
+        currentRevision: result.currentSelectionRevision,
+        currentProfileRevision: result.currentProfileRevision,
+        issues: result.issues,
+      });
+    case "conflict":
+      return reply.code(409).send({ error: "conflict", ...revisions });
+    case "profile-conflict":
+      return reply.code(409).send({ error: "profile-conflict", ...revisions });
+    case "no-profile":
+      return reply.code(409).send({ error: "no-profile", ...revisions });
+    case "corrupt-profile":
+      return reply.code(422).send({ error: "opencode-profile-corrupt", repoId, ...revisions });
+  }
+  return reply.code(500).send({ error: "activation-failed" });
+}
+/** Read the committed activation context without letting corruption throw. */
+function safeReadActivationContext(
+  db: Database.Database,
+  repoId: number,
+): ReturnType<typeof readOpenCodeActivationContext> {
+  try {
+    return readOpenCodeActivationContext(db, repoId);
+  } catch {
+    return undefined;
+  }
+}
+/**
+ * The safe selection summary returned by the editor read and the activation
+ * route: source, retained native id, selection revision and controlling
+ * managed-profile revision. Mirrors the console projection shape and never
+ * carries instruction text.
+ */
+interface ActivationSelectionSummary {
+  source: "default" | "native" | "managed";
+  nativeAgentId: string | null;
+  revision: number;
+  profileRevision: number | null;
+}
+function activationSelectionSummary(
+  context: ReturnType<typeof readOpenCodeActivationContext>,
+  fallback: { selectionRevision: number; profileRevision: number },
+): ActivationSelectionSummary {
+  if (context === undefined) {
+    return {
+      source: "managed",
+      nativeAgentId: null,
+      revision: fallback.selectionRevision,
+      profileRevision: fallback.profileRevision,
+    };
+  }
+  return {
+    source: context.selection.source,
+    nativeAgentId: context.selection.source === "native" ? context.selection.agentId : null,
+    revision: context.selectionRevision,
+    profileRevision: context.hasProfile && !context.profileCorrupt ? context.profileRevision : null,
+  };
 }
 /**
  * Read a stored OpenCode profile without letting a corrupt payload throw out of
