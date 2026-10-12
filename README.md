@@ -302,45 +302,69 @@ also carries an enabled flag and an optional model override.
 
 ##### Configuring agents in the dashboard
 
-Each OpenCode repository card shows an **OpenCode agents** section: the active
-primary, every configured subagent with its callable state, the model a child
-runs with (its explicit override, or that it inherits the repository's selected
-model), its tool preset, and the profile revision. The section's **Configure
-agents** link opens the repository-local editor over the authenticated profile
+Each OpenCode repository card shows an **Agent workflow** summary without
+requiring configuration details to be expanded. It names the source for new
+jobs, whether the saved team is **Inactive**, **Active for new jobs**, or
+unavailable, and the actual primary from the most recent recorded launch with
+a link to that job. **No recorded launch** and **Not observed** are distinct;
+OpenCode default is a resolution policy, not a prediction that `build` will run.
+Configure/edit opens the repository-local editor over the authenticated profile
 route (`/repos/<id>/opencode-profile`). A repository using another executor
 (for example Cline) shows no OpenCode controls at all, even when a dormant
 profile is stored.
 
 In the editor you can change the primary; add, edit, enable, disable, or remove
 subagents; and enter purposes, instructions, model overrides, step limits, and
-permission checkboxes (including **Callable by the primary**). **Review and
-apply** shows the whole changed team — names, models, and permissions — for
-confirmation; **Save agent team** applies it; **Cancel** discards only the
-draft; **Keep editing** returns to the form. Invalid names, missing purposes,
+permission checkboxes. Review shows the whole changed team — names, models,
+and permissions — and the chosen operation before confirmation:
+
+- **Save team** saves the definition without changing the selected source.
+  Under default or native source, the saved team remains inactive. Updating an
+  already-active team affects newly created managed jobs only.
+- **Save and activate** saves the reviewed candidate and selects managed source
+  atomically, checking both reviewed profile and selection revisions.
+- **Activate this team** selects the reviewed saved revision without editing
+  its definition. It does not submit or discard an existing unsaved draft; use
+  Save and activate in the editor to activate that draft instead.
+
+**Cancel** discards only the draft; **Keep editing** returns to the form. A new
+starter template is not saved or active until an explicit operation succeeds.
+Invalid names, missing purposes,
 malformed model ids, non-positive step limits, and unsupported permissions are
 reported beside the relevant control, and the save is refused as a whole,
-leaving the previously saved profile active. A successful save is atomic
+leaving the previous profile and source unchanged. A successful save is atomic
 (compare-and-set against the profile revision), records exactly one **Audit**
 entry naming the primary, the subagent ids, and the new revision — never the
 private instruction text — and updates the persisted dashboard summary.
 
-If another session changes the profile while you are editing, the save reports a
-conflict with the newer revision, keeps your draft, and never overwrites the
-newer team. Live dashboard updates refresh the persisted summary without
-disturbing a draft in progress.
+If another session changes a reviewed baseline, the operation reports a scoped
+conflict, keeps your draft and operation intent, and never overwrites newer
+settings. Combined activation checks both baselines. Reload and deliberately
+review again before retrying; live dashboard updates must not silently rebind
+your draft. A runtime refresh failure after activation is a refresh problem,
+not a rollback: reconcile the committed state rather than blindly resubmitting.
 
-Applied profiles govern only jobs created after the save: each job captures its
-profile — primary and subagents plus the exact revision — in the same
-transaction that creates it, so queued jobs and their retries keep the team they
-were created with even after you save a different profile. An OpenCode job's
-detail page shows the captured team as `agent <primary> · revision <n>` beside
-the triggering command and a **Managed OpenCode agent** panel listing the parent
-session, each delegated child session with its terminal outcome, and any
-specific configuration or quiescence failure.
+Enabled children read **Enabled in saved team** when inactive and **Available
+to orchestrator** when active; disabled children read **Disabled**. Activation
+makes definitions available, not proof that a child ran. The primary decides
+when to delegate. A native primary can delegate through its own configuration
+even while the Gremlyn-managed team is inactive.
+
+Source changes and active-profile updates govern only jobs created afterward:
+each job captures its source and, for managed source, its profile and exact
+revision in the transaction that creates it. Queued/running jobs and retries
+keep that capture across changes and restarts. Job detail distinguishes captured
+workflow from the current attempt's actual primary near the title: **Not
+started** before launch and **Not observed** when launched identity is unknown.
+Earlier invocation identities remain in history. Default/native captures do
+not snapshot external instruction files. Observed delegation is separate from
+team availability; partial or unavailable observation is not evidence of zero
+children. Expand the existing attempt/session trees for attributed child
+execution and configuration or quiescence failures.
 
 ##### How a managed team runs and is cleaned up
 
-For a job with a saved profile, Gremlyn writes pinned OpenCode V2 Markdown agent
+For a job with a captured managed profile, Gremlyn writes pinned OpenCode V2 Markdown agent
 definitions (`mode: primary` and `mode: subagent`) beneath an attempt-owned
 directory inside the disposable PR worktree (`.opencode/agents/<namespace>/…`)
 — never in your source checkout — and selects the generated primary with
@@ -436,7 +460,7 @@ npm start -- .\gremlyn.yaml
 
 Startup validates the configuration, the GitHub bot identity, every configured agent's CLI version, data-directory exclusivity, and console bind. A successful start logs `orchestrator started` and begins polling.
 
-Open `http://127.0.0.1:4780/auth`, enter `GREMLYN_CONSOLE_TOKEN`, and sign in. The redesigned dashboard shows a health strip with the latest poll, freshness/staleness, queue depth, and active-versus-configured concurrency, followed by repository cards (agent, model, effort, timeout, validation commands, and an enable/disable control; an OpenCode repository also carries an **OpenCode agents** section with a **Configure agents** link) and running, queued, and recent job lanes. Leave timeout blank for no limit, or enter seconds for that repository; the setting is live and persisted in SQLite. Each job has a structured detail page with a timeline, attempt diagnostics, validation output, status-specific actions, pull-request/comment links, a managed OpenCode agent-team panel when the job captured a profile, and a separately confirmed danger zone for workspace reset. The **Commands** view explains every observed command, including authorization refusals and their reasons; the **Audit** view lists manual actions and their effects. Console wall-clock values use the host timezone by default; set `console.timezone` to an IANA timezone such as `Asia/Taipei` when the operator is remote. Stored instants remain UTC and are retained on each time element.
+Open `http://127.0.0.1:4780/auth`, enter `GREMLYN_CONSOLE_TOKEN`, and sign in. The dashboard shows a health strip with the latest poll, freshness/staleness, queue depth, and active-versus-configured concurrency, followed by repository cards (agent, model, effort, timeout, validation commands, and an enable/disable control; an OpenCode repository also carries a visible **Agent workflow** summary with team configuration, activation, and source-switch actions) and running, queued, and recent job lanes. Leave timeout blank for no limit, or enter seconds for that repository; the setting is live and persisted in SQLite. Each job has a structured detail page with captured workflow and actual primary identity near the title, a timeline, attempt diagnostics, validation output, status-specific actions, pull-request/comment links, observed delegation details, and a separately confirmed danger zone for workspace reset. The **Commands** view explains every observed command, including authorization refusals and their reasons; the **Audit** view lists manual actions and their effects. Console wall-clock values use the host timezone by default; set `console.timezone` to an IANA timezone such as `Asia/Taipei` when the operator is remote. Stored instants remain UTC and are retained on each time element.
 
 Then add `!RESOLVE` as a reply in an inline PR review thread authored by an allowlisted login. The console should show the job progressing through queued, preparing, running, validating, publishing, reporting, and a terminal state without requiring a page reload; live updates replace only the affected dashboard or job regions, preserving expanded sections and typed confirmation text. Use the retry/cancel controls when their current-state rules allow them, and use the repository toggle when ingestion should be paused.
 
