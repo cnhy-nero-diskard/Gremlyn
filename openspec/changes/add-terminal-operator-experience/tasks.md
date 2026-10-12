@@ -12,7 +12,7 @@
 
 ## 3. Compact terminal surface
 
-- [ ] 3.1 Build safe read-only startup/health/repository/job projections with observed poll freshness and bounded active/queued/recent rows; verify unknown/stale connections, disabled repositories, accurate counts/stages/durations and overflow fixtures.
+- [x] 3.1 Build safe read-only startup/health/repository/job projections with observed poll freshness and bounded active/queued/recent rows; verify unknown/stale connections, disabled repositories, accurate counts/stages/durations and overflow fixtures.
 - [ ] 3.2 Implement the anchored line renderer with dimension-aware layout, sanitization, optional color and bounded change-only refreshes; verify injected-clock/stream snapshots cover narrow/resized terminals, malicious escapes, ASCII fallback and no alternate-screen/full-clear loops.
 - [ ] 3.3 Route diagnostics through the renderer and degrade write/capability failures to plain output; verify concurrent diagnostics cannot corrupt the region and renderer errors cannot change job processing or outcomes.
 
