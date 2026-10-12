@@ -80,6 +80,8 @@ export interface TerminalSnapshotOptions {
   secrets: readonly string[];
   /** Maximum number of job rows to project. Defaults to {@link DEFAULT_TERMINAL_ROW_LIMIT}. */
   rowLimit?: number;
+  /** Runtime configuration ids; omit only when projecting the entire durable registry. */
+  configuredRepositoryIds?: readonly number[];
 }
 
 /** Default bound applied to a single projected label. */
@@ -289,11 +291,20 @@ export function readTerminalSnapshot(
   const rowLimit = boundedRowLimit(options.rowLimit);
   const redact: Redactor = createRedactor(options.secrets);
 
+  const repositoryFilter =
+    options.configuredRepositoryIds === undefined
+      ? ""
+      : " WHERE id IN (SELECT value FROM json_each(?))";
   const repositoryCounts = db
     .prepare(
-      "SELECT COUNT(*) AS configured, COALESCE(SUM(enabled), 0) AS enabled FROM repositories",
+      "SELECT COUNT(*) AS configured, COALESCE(SUM(enabled), 0) AS enabled FROM repositories" +
+        repositoryFilter,
     )
-    .get() as { configured: number; enabled: number };
+    .get(
+      ...(options.configuredRepositoryIds === undefined
+        ? []
+        : [JSON.stringify(options.configuredRepositoryIds)]),
+    ) as { configured: number; enabled: number };
   const jobCounts = db
     .prepare(
       `SELECT

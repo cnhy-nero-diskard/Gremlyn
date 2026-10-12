@@ -207,6 +207,20 @@ test("counts cover every configured repository including disabled ones", () => {
     const snapshot = readTerminalSnapshot(store.db, options());
     assert.equal(snapshot.configured, 2);
     assert.equal(snapshot.enabled, 1);
+    const runtime = readTerminalSnapshot(
+      store.db,
+      options({ configuredRepositoryIds: [enabledRepo] }),
+    );
+    assert.equal(
+      runtime.configured,
+      1,
+      "retained historical repository rows are not current configuration",
+    );
+    assert.equal(runtime.enabled, 1);
+    assert.equal(
+      readTerminalSnapshot(store.db, options({ configuredRepositoryIds: [] })).configured,
+      0,
+    );
     // A disabled repository's queued job stays visible rather than vanishing.
     assert.equal(snapshot.queuedCount, 1);
     assert.equal(snapshot.rows.length, 1);

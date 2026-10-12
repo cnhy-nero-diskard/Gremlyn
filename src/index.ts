@@ -34,6 +34,15 @@ import { reportRepositoryProviderMismatches, syncRepositories } from "./runtime/
 import { resetWorkspace } from "./workspace/reset.js";
 import { reclaimWorkspaces } from "./workspace/reclamation.js";
 import { retainArtifacts } from "./artifact-retention.js";
+import { TerminalPresentation } from "./terminal/controller.js";
+import {
+  diagnosticOverrides,
+  environmentSecrets,
+  type StartupStage,
+} from "./terminal/diagnostics.js";
+import { parseTerminalArguments, resolveTerminalOptions } from "./terminal/options.js";
+import { AudioQueue, OutcomeObserver } from "./terminal/audio.js";
+import { installSoundInput } from "./terminal/input.js";
 
 const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const;
 
@@ -93,12 +102,48 @@ export function createShutdownHandler(options: ShutdownHandlerOptions): () => Pr
 }
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
-  const configPath = argv[0] ?? process.env.GREMLYN_CONFIG ?? "gremlyn.yaml";
-  const config = loadConfig(configPath);
-  const lock = DataDirectoryLock.acquire(config.dataDir);
-  const lockHandlers = installLockSafetyHandlers(lock);
+  const secrets = environmentSecrets(process.env);
+  let presentation = new TerminalPresentation(
+    resolveTerminalOptions(undefined, diagnosticOverrides(argv)),
+    process.stderr,
+    process.env,
+    secrets,
+  );
+  let stage: StartupStage = "arguments";
+  let lock: DataDirectoryLock | undefined;
+  let lockHandlers: { remove: () => void } | undefined;
+  let audio: AudioQueue | undefined;
+  let disposeInput: () => void = () => undefined;
+  let disposeOrchestratorObservation: () => void = () => undefined;
+  let closeConsole: () => Promise<void> = async () => undefined;
   let closeStore: () => void = () => undefined;
   try {
+    const args = parseTerminalArguments(argv);
+    presentation.dispose();
+    presentation = new TerminalPresentation(
+      resolveTerminalOptions(undefined, args.overrides),
+      process.stderr,
+      process.env,
+      secrets,
+    );
+    stage = "configuration";
+    const config = loadConfig(args.configPath ?? "gremlyn.yaml");
+    const options = resolveTerminalOptions(config.terminal, args.overrides);
+    secrets.push(config.githubToken, config.consoleToken);
+    presentation.dispose();
+    presentation = new TerminalPresentation(options, process.stderr, process.env, secrets);
+    presentation.setSoundControlAvailable(
+      process.stdin.isTTY === true && typeof process.stdin.setRawMode === "function",
+    );
+    presentation.setReadiness("preflight");
+    stage = "ownership";
+    lock = DataDirectoryLock.acquire(config.dataDir, (event, fields) =>
+      presentation.sink({ at: new Date().toISOString(), level: "warn", event, fields }),
+    );
+    lockHandlers = installLockSafetyHandlers(lock, (kind, value) =>
+      presentation.diagnostic(value, kind),
+    );
+    stage = "store";
     const store = new Store({ dataDir: config.dataDir });
     let storeClosed = false;
     closeStore = (): void => {
@@ -107,6 +152,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       store.close();
     };
     const interrupted = new JobStore(store.db).interruptIncompleteJobs();
+    stage = "credentials";
     for (const definition of Object.values(config.agents)) {
       verifyCredentialSource(
         definition.id,
@@ -118,6 +164,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       level: config.logLevel,
       secrets: [config.githubToken, config.consoleToken],
       db: store.db,
+      sink: presentation.sink,
     });
     // Observational history never supplies a recovery/quiescence verdict.
     // Import only attributable legacy evidence and retract unresolved live
@@ -128,6 +175,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       logger.warn("delegation observation startup unavailable", { reason: "storage" });
     }
     const github = new OctokitGitHubClient(config.githubToken);
+    stage = "github";
     const authenticatedLogin = await github.getAuthenticatedLogin();
     if (authenticatedLogin.toLowerCase() !== config.orchestratorLogin.toLowerCase()) {
       throw new Error(
@@ -136,6 +184,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     }
 
     const executors = new Map<string, AgentExecutor>();
+    stage = "version";
     for (const definition of Object.values(config.agents)) {
       const factory = EXECUTOR_FACTORIES[definition.kind];
       if (!factory) {
@@ -159,6 +208,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     // dedicated recovery below. Before a legacy dir is removed, rotated
     // credentials are written back — the crash skipped the runtime path that
     // normally rescues them.
+    stage = "recovery";
     cleanupStaleAttemptDirs(config.dataDir, store.db, interrupted, {
       resolveExecutorKind: (agent) =>
         config.agents[agent]?.kind ?? executors.get(agent)?.id ?? agent,
@@ -269,6 +319,19 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     };
     if (config.workspaceReclamation.enabled) await sweepWorkspaces("startup");
     if (config.artifactRetention.enabled) await sweepArtifacts("startup");
+    // Baseline is established after all recovery and before accepting new work.
+    stage = "startup";
+    let soundEnabled = options.sound;
+    let soundMuted = options.mute;
+    audio = new AudioQueue({ warn: (message) => logger.warn(message) });
+    audio.setMuted(soundMuted || !soundEnabled);
+    const outcomes = new OutcomeObserver(store.db, (cue) => audio?.request(cue));
+    presentation.attach(
+      store.db,
+      config.pollIntervalSec,
+      () => outcomes.scan(soundEnabled, soundMuted),
+      repositories.map((repository) => repository.id),
+    );
     const registry = createDefaultCommandRegistry();
     const orchestrator = new ResolutionOrchestrator({
       db: store.db,
@@ -294,6 +357,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       commitAuthor: config.commitAuthor,
       operatorActions,
     });
+    disposeOrchestratorObservation = () => orchestrator.disposeDelegationObservation();
     for (const repository of repositories) orchestrator.registerRepository(repository);
     const eventSource = new PollingEventSource(github, store.db);
     const consoleServer = buildConsoleServer({
@@ -370,10 +434,19 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       },
     });
 
+    let consoleClosed = false;
+    closeConsole = async (): Promise<void> => {
+      if (consoleClosed) return;
+      consoleClosed = true;
+      consoleServer.endLiveUpdateStreams();
+      await consoleServer.close();
+    };
     let polling = false;
     const poll = async (): Promise<void> => {
       if (polling) return;
       polling = true;
+      let pollSucceeded = true;
+      let polledRepositories = 0;
       try {
         for (const repository of repositories.filter((entry) => {
           const row = store.db
@@ -381,6 +454,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
             .get(entry.id) as { enabled: number } | undefined;
           return row?.enabled === 1;
         })) {
+          polledRepositories++;
           // handleEvent returns once each command is queued, so this tick stays
           // short no matter how long the queued jobs run. One repository's
           // transport failure must not skip the repositories after it.
@@ -392,6 +466,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
             });
             await Promise.all(events.map((event) => orchestrator.handleEvent(repository, event)));
           } catch (error) {
+            pollSucceeded = false;
             logger.error("poll failed", {
               repository: repository.id,
               error: error instanceof Error ? error.message : String(error),
@@ -399,10 +474,12 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
           }
         }
       } catch (error) {
+        pollSucceeded = false;
         logger.error("poll failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      if (polledRepositories > 0) presentation.recordPoll(pollSucceeded);
       if (config.workspaceReclamation.enabled) {
         try {
           await sweepWorkspaces("poll");
@@ -432,6 +509,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       port: config.consolePort,
       repositories: repositories.length,
     });
+    presentation.setReadiness("ready");
     let inFlightPoll: Promise<void> = poll();
     await inFlightPoll;
     const timer = setInterval(() => {
@@ -446,11 +524,25 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     });
     const stop = createShutdownHandler({
       clearTimer: () => clearInterval(timer),
-      stopObservation: () => orchestrator.disposeDelegationObservation(),
+      stopObservation: () => {
+        // Every disposer runs even if another observational adapter fails.
+        for (const dispose of [
+          disposeInput,
+          () => audio?.dispose(),
+          () => presentation.dispose(),
+          () => orchestrator.disposeDelegationObservation(),
+        ]) {
+          try {
+            dispose();
+          } catch {
+            /* Execution shutdown remains authoritative. */
+          }
+        }
+      },
       endStreams: () => consoleServer.endLiveUpdateStreams(),
-      closeConsole: () => consoleServer.close(),
+      closeConsole,
       closeStore,
-      release: () => lock.release(),
+      release: () => lock?.release(),
       awaitInFlightPoll: () => inFlightPoll,
       onComplete: resolveStopped,
       onError: rejectStopped,
@@ -458,6 +550,21 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const onSignal = (): void => {
       void stop().catch(() => undefined);
     };
+    disposeInput = installSoundInput({
+      input: process.stdin,
+      enabled: soundEnabled,
+      muted: soundMuted,
+      interactive: presentation.interactive,
+      onChange: (enabled, muted) => {
+        // Consume observations under the old state before enabling/unmuting.
+        outcomes.scan(soundEnabled, soundMuted);
+        soundEnabled = enabled;
+        soundMuted = muted;
+        audio?.setMuted(muted || !enabled);
+        presentation.setSound(enabled, muted);
+      },
+      onStop: onSignal,
+    });
     const installedSignals: (typeof TERMINATION_SIGNALS)[number][] = [];
     for (const signal of TERMINATION_SIGNALS) {
       try {
@@ -472,24 +579,55 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     } finally {
       for (const signal of installedSignals) process.removeListener(signal, onSignal);
     }
+  } catch (error) {
+    presentation.diagnostic(error, stage);
+    throw error;
   } finally {
-    closeStore();
-    lockHandlers.remove();
-    lock.release();
+    for (const dispose of [
+      disposeInput,
+      () => audio?.dispose(),
+      () => presentation.dispose(),
+      disposeOrchestratorObservation,
+    ]) {
+      try {
+        dispose();
+      } catch {
+        /* Continue closing store and ownership. */
+      }
+    }
+    try {
+      await closeConsole();
+    } finally {
+      try {
+        closeStore();
+      } finally {
+        lockHandlers?.remove();
+        lock?.release();
+      }
+    }
   }
 }
 
-export function installLockSafetyHandlers(lock: DataDirectoryLock): { remove: () => void } {
+export function installLockSafetyHandlers(
+  lock: DataDirectoryLock,
+  report?: (stage: StartupStage, error: unknown) => void,
+): { remove: () => void } {
   const onExit = (): void => lock.release();
   const onFatal = (kind: string, value: unknown): void => {
-    process.stderr.write(
-      `${JSON.stringify({
-        at: new Date().toISOString(),
-        level: "error",
-        event: kind,
-        error: value instanceof Error ? value.message : String(value),
-      })}\n`,
-    );
+    try {
+      if (report) report("startup", value);
+      else
+        process.stderr.write(
+          `${JSON.stringify({
+            at: new Date().toISOString(),
+            level: "error",
+            event: kind,
+            error: value instanceof Error ? value.message : String(value),
+          })}\n`,
+        );
+    } catch {
+      /* A failed diagnostic must not suppress fatal ownership cleanup. */
+    }
     try {
       lock.release();
     } finally {
@@ -630,8 +768,7 @@ export function cleanupStaleAttemptDirs(
 
 const entry = process.argv[1];
 if (entry && import.meta.url === pathToFileURL(entry).href) {
-  main().catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  main().catch(() => {
     process.exitCode = 1;
   });
 }

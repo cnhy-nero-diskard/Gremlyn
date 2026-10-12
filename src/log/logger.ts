@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { createRedactor, type Redactor } from "./redact.js";
+import { createRedactor, redactStructuredFields, type Redactor } from "./redact.js";
 
 /**
  * Structured logging (operator-console spec: structured operational log;
@@ -95,7 +95,12 @@ export class Logger {
   /** Build the one redacted record shared by every consumer. */
   private buildRecord(level: LogLevel, event: string, fields: LogFields): LogRecord {
     const { jobId, attemptId, ...rest } = fields;
-    const sanitized = JSON.parse(this.redact(JSON.stringify(rest))) as Record<string, unknown>;
+    let sanitized: Record<string, unknown>;
+    try {
+      sanitized = redactStructuredFields(rest, this.redact);
+    } catch {
+      sanitized = { diagnostic: "log fields unavailable" };
+    }
     return {
       at: new Date().toISOString(),
       level,

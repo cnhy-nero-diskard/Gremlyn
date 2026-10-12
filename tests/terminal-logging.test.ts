@@ -740,3 +740,31 @@ test("one-shot tail keeps its error listener through the final buffered output f
   assert.equal(code, 1);
   assert.equal(fakeStream.removed, 1);
 });
+
+test("known credentials with JSON escapes redact in nested fields without damaging record syntax", () => {
+  const db = new Store({ dataDir: ".", file: ":memory:" }).db;
+  const records: LogRecord[] = [];
+  const secret = 'fixture-only-"quoted\\token\nvalue';
+  const logger = new Logger({
+    level: "info",
+    secrets: [secret],
+    db,
+    sink: (record) => {
+      records.push(record);
+    },
+  });
+  try {
+    logger.info("credential fixture", { nested: [secret, { [secret]: secret }] });
+    assert.deepEqual(records[0]!.fields, {
+      nested: ["[redacted]", { "[redacted]": "[redacted]" }],
+    });
+    const row = db.prepare("SELECT fields FROM log_entries").get() as { fields: string };
+    assert.deepEqual(JSON.parse(row.fields), records[0]!.fields);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    assert.doesNotThrow(() => logger.warn("unserializable fixture", circular));
+    assert.deepEqual(records[1]!.fields, { diagnostic: "log fields unavailable" });
+  } finally {
+    db.close();
+  }
+});

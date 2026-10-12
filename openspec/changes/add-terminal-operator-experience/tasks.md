@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add optional presentation/sound configuration and parse presentation, no-color, no-interaction, sound and mute flags alongside the existing config path; verify configuration/argument tests preserve positional and environment fallback behavior and reject unknown options safely.
 - [x] 1.2 Implement mode resolution against the actual presentation stream, CI, terminal capability and interaction settings; verify fake-stream tests cover interactive CMD/PowerShell, redirected stderr, explicit JSON/plain, unsafe forced terminal and NO_COLOR without emitting control codes in non-interactive modes.
-- [ ] 1.3 Add an early selected-mode diagnostic reporter with bounded redacted causes and next actions; verify configuration, credentials, ownership, GitHub and version-preflight failures retain nonzero exits and do not leave terminal/lock resources acquired.
+- [x] 1.3 Add an early selected-mode diagnostic reporter with bounded redacted causes and next actions; verify configuration, credentials, ownership, GitHub and version-preflight failures retain nonzero exits and do not leave terminal/lock resources acquired.
 
 ## 2. Structured logging and detail inspection
 
@@ -13,8 +13,8 @@
 ## 3. Compact terminal surface
 
 - [x] 3.1 Build safe read-only startup/health/repository/job projections with observed poll freshness and bounded active/queued/recent rows; verify unknown/stale connections, disabled repositories, accurate counts/stages/durations and overflow fixtures.
-- [ ] 3.2 Implement the anchored line renderer with dimension-aware layout, sanitization, optional color and bounded change-only refreshes; verify injected-clock/stream snapshots cover narrow/resized terminals, malicious escapes, ASCII fallback and no alternate-screen/full-clear loops.
-- [ ] 3.3 Route diagnostics through the renderer and degrade write/capability failures to plain output; verify concurrent diagnostics cannot corrupt the region and renderer errors cannot change job processing or outcomes.
+- [x] 3.2 Implement the anchored line renderer with dimension-aware layout, sanitization, optional color and bounded change-only refreshes; verify injected-clock/stream snapshots cover narrow/resized terminals, malicious escapes, ASCII fallback and no alternate-screen/full-clear loops.
+- [x] 3.3 Route diagnostics through the renderer and degrade write/capability failures to plain output; verify concurrent diagnostics cannot corrupt the region and renderer errors cannot change job processing or outcomes.
 
 ## 4. Committed outcome dispatch and Windows audio
 
@@ -26,8 +26,8 @@
 
 ## 5. Lifecycle integration and acceptance
 
-- [ ] 5.1 Attach presentation to bootstrap/store readiness and dispose timers, resize/input listeners, log handles and audio helpers idempotently before store closure; verify startup exceptions, renderer/disposer errors and repeated stop requests still release ownership and close the store.
-- [ ] 5.2 Add a fixture daemon integration spanning queued/running/validating/succeeded/failed/retried/interrupted work with no browser; verify terminal counts, detail logs, exact cue requests and unchanged execution/publication behavior.
+- [x] 5.1 Attach presentation to bootstrap/store readiness and dispose timers, resize/input listeners, log handles and audio helpers idempotently before store closure; verify startup exceptions, renderer/disposer errors and repeated stop requests still release ownership and close the store.
+- [x] 5.2 Add a fixture daemon integration spanning queued/running/validating/succeeded/failed/retried/interrupted work with no browser; verify terminal counts, detail logs, exact cue requests and unchanged execution/publication behavior.
 - [ ] 5.3 Run a manual Windows matrix for npm-start forwarding, CMD/PowerShell/Windows Terminal resizing, redirected/CI/NO_COLOR launches and opt-in audible cue distinction; record results including muted-device/helper limitations without claiming audibility from helper exit alone.
 - [ ] 5.4 Run full tests, build, lint and changed-file format checks; verify configuration, logging/redaction, startup ownership, shutdown and publication regressions remain green without real audio in the automated suite.
 - [ ] 5.5 Document presentation overrides, browser-independent logs, sound opt-in/mute, at-most-once best-effort cue semantics and JSON rollback; verify examples preserve the existing config-path launch and pinned prestart safety.
