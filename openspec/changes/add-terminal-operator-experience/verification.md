@@ -138,6 +138,14 @@ streams, not an attached interactive desktop console or a hearing observer.
 Fake TTY/process tests and successful helper returns cannot prove these cases.
 Task 5.3 remains unchecked; do not archive the change as accepted yet.
 
+The review-resolution automated checks additionally cover `write(false)` followed
+by `drain`, coalesced dashboard refreshes, a narrow-width status/key layout,
+plain/no-color styling, help and graceful-quit key dispatch, control-handler
+setup failure, input during a pending initial-poll fixture, bounded follow output,
+cursor advancement per accepted record, EPIPE and follow shutdown. They do not
+substitute for attached PowerShell/CMD rendering, resize/ANSI behavior or hearing
+the success/failure cues. Those manual cases remain open in this workspace.
+
 An operator with a Windows desktop/audio output should run the following with
 no browser open and a safe fixture/test repository (never a production PR for
 acceptance-only work):
@@ -163,9 +171,12 @@ acceptance-only work):
    make the helper unavailable in a disposable installation (not this checkout)
    and verify safe rate-limited warnings without changed job results. Record
    helper/process evidence separately from what was actually heard.
-7. Press Ctrl+C during refresh/playback, and repeat during shutdown. Confirm
-   raw mode restored, helpers/timers disposed, store closed and ownership
-   released, with the existing repeated-stop escalation intact.
+7. Press `?`/`h` for help, `m` for sound control and `q` for graceful shutdown;
+   confirm the detail command is in help and no job-mutating shortcut is
+   exposed. Repeat with a deliberately delayed initial poll. Press Ctrl+C during
+   refresh/playback, and repeat during shutdown. Confirm raw mode restored,
+   helpers/timers disposed, store closed and ownership released, with the
+   existing repeated-stop escalation intact.
 
 Record host/terminal, observed rendering, each cue heard/not heard, device
 mute/routing state and helper limitations. **Do not infer audibility from exit

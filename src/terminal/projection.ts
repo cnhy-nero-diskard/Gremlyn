@@ -37,6 +37,8 @@ export interface TerminalJobRow {
   stage: string;
   /** Whole seconds since the row's start reference; always a non-negative integer. */
   elapsedSec: number;
+  /** Whole seconds since a terminal job finished, or null for current work. */
+  completionAgeSec: number | null;
   /** The latest attempt's recorded outcome, or null when none is recorded. */
   outcome: string | null;
   /** Which lane the row was drawn from. */
@@ -208,7 +210,9 @@ function deriveConnection(
       : 0;
   const ageMs = Math.max(0, nowMs - lastSuccess);
   return {
-    connection: ageMs <= intervalSec * 1000 ? "healthy" : "stale",
+    // Leave room for the next normally scheduled request to complete. A poll
+    // that is merely a few seconds late is not evidence of a lost connection.
+    connection: ageMs <= intervalSec * 2_000 ? "healthy" : "stale",
     lastPollAt,
     pollAgeSec,
   };
@@ -355,12 +359,17 @@ function toTerminalRow(
   lane: TerminalLane,
   nowMs: number,
 ): TerminalJobRow {
+  const finishedMs = parseTimestamp(row.finished_at);
   return {
     id: row.id,
     repository,
     pr: row.pr_number,
     stage: sanitizeTerminalText(redact(row.stage)),
     elapsedSec: elapsedSeconds(row, nowMs),
+    completionAgeSec:
+      lane === "recent" && finishedMs !== null
+        ? Math.max(0, Math.floor((nowMs - finishedMs) / 1000))
+        : null,
     outcome:
       row.attempt_outcome === null ? null : sanitizeTerminalText(redact(row.attempt_outcome)),
     lane,

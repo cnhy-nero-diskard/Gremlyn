@@ -249,20 +249,22 @@ export function readRecordsAfter(
   db: Database.Database,
   afterId: number,
   limit = FOLLOW_BATCH_LIMIT,
-): { records: LogRecord[]; lastId: number } {
+): { records: LogRecord[]; recordIds: number[]; lastId: number } {
   const batches = clampLimit(limit, FOLLOW_BATCH_LIMIT, FOLLOW_BATCH_LIMIT);
   const after = Number.isFinite(afterId) ? Math.max(0, Math.trunc(afterId)) : 0;
   let lastId = after;
-  if (batches === 0) return { records: [], lastId };
+  if (batches === 0) return { records: [], recordIds: [], lastId };
   const rows = db
     .prepare(`SELECT ${SELECT_COLUMNS} FROM log_entries WHERE id > ? ORDER BY id ASC LIMIT ?`)
     .all(after, batches) as LogRow[];
   const records: LogRecord[] = [];
+  const recordIds: number[] = [];
   for (const row of rows) {
     records.push(rowToLogRecord(row));
+    recordIds.push(row.id);
     if (row.id > lastId) lastId = row.id;
   }
-  return { records, lastId };
+  return { records, recordIds, lastId };
 }
 
 export interface FollowDependencies {
@@ -273,6 +275,8 @@ export interface FollowDependencies {
   schedule?: (tick: () => void, ms: number) => unknown;
   cancelSchedule?: (handle: unknown) => void;
   batchLimit?: number;
+  /** Subscribe to output drain and return a listener disposer when available. */
+  onDrain?: (listener: () => void) => (() => void) | void;
   /** Bounded rate-limited feedback for read/output failures. */
   onError?: (message: string) => void;
 }
@@ -280,6 +284,12 @@ export interface FollowDependencies {
 export interface LogFollowSession {
   /** Read any records appended since the last read; exposed for tests. */
   poll(): void;
+  /** Resume a paused consumer manually when no stream drain event is available. */
+  resume(): void;
+  /** Last record whose formatted line was accepted by the output sink. */
+  readonly lastEnqueuedId: number;
+  /** At most one bounded query batch can wait behind stream backpressure. */
+  readonly pendingCount: number;
   /** Idempotent: cancels the polling timer exactly once. */
   dispose(): void;
 }
@@ -292,7 +302,7 @@ export interface LogFollowSession {
 export function followLogRecords(
   db: Database.Database,
   format: LogFormat,
-  out: (line: string) => void,
+  out: (line: string) => void | boolean,
   dependencies: FollowDependencies = {},
 ): LogFollowSession {
   let lastId =
@@ -306,6 +316,10 @@ export function followLogRecords(
 
   let lastErrorText = "";
   let lastErrorAt = -Infinity;
+  let blocked = false;
+  let pumping = false;
+  let pending: { id: number; record: LogRecord }[] = [];
+  let removeDrain: (() => void) | undefined;
   const reportError = (message: string): void => {
     if (dependencies.onError === undefined) return;
     const now = Date.now();
@@ -319,9 +333,71 @@ export function followLogRecords(
     }
   };
 
+  const resume = (): void => {
+    if (disposed) return;
+    const remove = removeDrain;
+    removeDrain = undefined;
+    try {
+      remove?.();
+    } catch {
+      /* Stream listener cleanup is best effort. */
+    }
+    blocked = false;
+    pump();
+  };
+
+  const waitForDrain = (): void => {
+    blocked = true;
+    if (dependencies.onDrain === undefined) {
+      reportError("logs: output is backpressured but no drain handler is available");
+      return;
+    }
+    try {
+      const remove = dependencies.onDrain(resume);
+      removeDrain = typeof remove === "function" ? remove : undefined;
+    } catch {
+      reportError("logs: could not subscribe to output drain");
+    }
+  };
+
+  const pump = (): void => {
+    if (disposed || blocked || pumping) return;
+    pumping = true;
+    try {
+      while (pending.length > 0) {
+        const next = pending[0];
+        if (next === undefined) return;
+        let writable: void | boolean;
+        try {
+          writable = out(`${formatTailRecord(next.record, format)}\n`);
+        } catch {
+          // Keep this row at the head of the bounded batch. A later poll retries
+          // it from the same cursor rather than silently dropping the record.
+          reportError("logs: follow output failed");
+          return;
+        }
+        pending.shift();
+        lastId = next.id;
+        if (writable === false) {
+          // false means the line was accepted, but the stream must drain before
+          // another line is enqueued. The remaining rows stay in one bounded
+          // batch and are resumed without rereading or duplicating the accepted row.
+          waitForDrain();
+          return;
+        }
+      }
+    } finally {
+      pumping = false;
+    }
+  };
+
   const poll = (): void => {
     if (disposed) return;
-    let result: { records: LogRecord[]; lastId: number };
+    if (pending.length > 0) {
+      pump();
+      return;
+    }
+    let result: ReturnType<typeof readRecordsAfter>;
     try {
       result = readRecordsAfter(db, lastId, dependencies.batchLimit ?? FOLLOW_BATCH_LIMIT);
     } catch (error) {
@@ -330,24 +406,41 @@ export function followLogRecords(
       );
       return;
     }
-    lastId = result.lastId;
-    for (const record of result.records) {
-      try {
-        out(`${formatTailRecord(record, format)}\n`);
-      } catch {
-        reportError("logs: follow output failed");
-      }
-    }
+    pending = result.records.map((record, index) => ({
+      id: result.recordIds[index] ?? lastId,
+      record,
+    }));
+    pump();
   };
 
   const handle = schedule(poll, dependencies.intervalMs ?? DEFAULT_FOLLOW_INTERVAL_MS);
 
   return {
     poll,
+    resume,
+    get lastEnqueuedId() {
+      return lastId;
+    },
+    get pendingCount() {
+      return pending.length;
+    },
     dispose: (): void => {
       if (disposed) return;
       disposed = true;
       cancel(handle);
+      const remove = removeDrain;
+      removeDrain = undefined;
+      try {
+        remove?.();
+      } catch {
+        /* Stream listener cleanup is best effort. */
+      }
+      if (pending.length > 0) {
+        reportError(
+          `logs: follow stopped with ${pending.length} record(s) not enqueued; records remain in the store`,
+        );
+        pending = [];
+      }
     },
   };
 }
@@ -358,12 +451,16 @@ export interface ErrorStreamLike {
 }
 
 export interface TailIo {
-  out: (chunk: string) => void;
+  out: (chunk: string) => void | boolean;
   err: (chunk: string) => void;
   /** Stream watched for asynchronous `error` (e.g. stdout EPIPE). */
   outputStream?: ErrorStreamLike;
   /** Wait for buffered output/errors before removing the stream listener. */
   flush?: () => Promise<void>;
+  /** Await one accepted-but-backpressured write in initial tail output. */
+  waitForDrain?: () => Promise<void>;
+  /** Subscribe to drain for bounded follow output. */
+  onDrain?: FollowDependencies["onDrain"];
   /** Test seam: resolves when the caller wants a follow session to stop. */
   waitForStop?: () => Promise<void>;
   /** Follow scheduling seams for tests. */
@@ -377,6 +474,27 @@ const defaultIo: TailIo = {
   out: (chunk) => process.stdout.write(chunk),
   err: (chunk) => process.stderr.write(chunk),
   outputStream: process.stdout,
+  waitForDrain: () =>
+    new Promise<void>((resolve, reject) => {
+      const cleanup = (): void => {
+        process.stdout.removeListener("drain", onDrain);
+        process.stdout.removeListener("error", onError);
+      };
+      const onDrain = (): void => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
+      process.stdout.once("drain", onDrain);
+      process.stdout.once("error", onError);
+    }),
+  onDrain: (listener) => {
+    process.stdout.once("drain", listener);
+    return () => process.stdout.removeListener("drain", listener);
+  },
   flush: () =>
     new Promise<void>((resolve, reject) =>
       process.stdout.write("", (error) => (error ? reject(error) : resolve())),
@@ -455,6 +573,13 @@ export async function runTail(argv: readonly string[], io: TailIo = defaultIo): 
     resolveStop();
   };
 
+  let signalSession: ReturnType<typeof signalStop> | undefined;
+  if (options.follow && io.waitForStop === undefined) {
+    signalSession = signalStop();
+    disposeSignals = signalSession.dispose;
+    void signalSession.promise.then(stop);
+  }
+
   const outputStream = io.outputStream;
   const onOutputError = (error: Error): void => {
     outputFailed = true;
@@ -494,9 +619,43 @@ export async function runTail(argv: readonly string[], io: TailIo = defaultIo): 
     }
   };
 
-  const writeInitial = (records: LogRecord[]): void => {
-    for (const record of records) {
-      io.out(`${formatTailRecord(record, options.format)}\n`);
+  const writeInitial = async (records: LogRecord[]): Promise<void> => {
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index];
+      if (record === undefined) continue;
+      let writable: void | boolean;
+      try {
+        writable = io.out(`${formatTailRecord(record, options.format)}\n`);
+      } catch (error) {
+        outputFailed = true;
+        throw error;
+      }
+      if (writable === false) {
+        if (io.waitForDrain === undefined) {
+          outputFailed = true;
+          throw new Error("output backpressure without a drain handler");
+        }
+        try {
+          await Promise.race([io.waitForDrain(), stopPromise]);
+        } catch (error) {
+          outputFailed = true;
+          throw error;
+        }
+        if (outputFailed) return;
+        if (stoppedResolved) {
+          const notWritten = records.length - index - 1;
+          if (notWritten > 0) {
+            try {
+              io.err(
+                `logs: initial tail stopped with ${notWritten} record(s) not written; records remain in the store\n`,
+              );
+            } catch {
+              /* A broken error stream cannot keep shutdown alive. */
+            }
+          }
+          return;
+        }
+      }
     }
   };
 
@@ -505,7 +664,9 @@ export async function runTail(argv: readonly string[], io: TailIo = defaultIo): 
       // Consistent snapshot: baseline first, tail only ids <= baseline, then
       // resume follow from that same baseline.
       const baseline = highWatermark(db);
-      writeInitial(readTailRecords(db, options.tail, baseline));
+      await writeInitial(readTailRecords(db, options.tail, baseline));
+      if (outputFailed) return 1;
+      if (stoppedResolved) return 0;
       const followDependencies: FollowDependencies = {
         initialBaseline: baseline,
         onError: (message) => io.err(`${capErrorText(message)}\n`),
@@ -516,18 +677,31 @@ export async function runTail(argv: readonly string[], io: TailIo = defaultIo): 
       if (io.followCancelSchedule !== undefined) {
         followDependencies.cancelSchedule = io.followCancelSchedule;
       }
-      session = followLogRecords(db, options.format, io.out, followDependencies);
+      if (io.onDrain !== undefined) followDependencies.onDrain = io.onDrain;
+      session = followLogRecords(
+        db,
+        options.format,
+        (line) => {
+          try {
+            const writable = io.out(line);
+            if (outputFailed) throw new Error("output stream failed during write");
+            return writable;
+          } catch (error) {
+            outputFailed = true;
+            stop();
+            throw error;
+          }
+        },
+        followDependencies,
+      );
       let wait: Promise<void>;
       if (io.waitForStop) wait = io.waitForStop();
-      else {
-        const signals = signalStop();
-        disposeSignals = signals.dispose;
-        wait = signals.promise;
-      }
+      else wait = signalSession?.promise ?? Promise.resolve();
       await Promise.race([wait, stopPromise]);
       return outputFailed ? 1 : 0;
     }
-    writeInitial(readTailRecords(db, options.tail));
+    await writeInitial(readTailRecords(db, options.tail));
+    if (outputFailed) return 1;
     await io.flush?.();
     return outputFailed ? 1 : 0;
   } catch (error) {

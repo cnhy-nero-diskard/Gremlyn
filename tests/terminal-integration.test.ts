@@ -410,7 +410,7 @@ test("daemon fixture spans queued, running, validating and succeeded with accura
     assert.equal(runningSnapshot.activeCount, 1);
     assert.equal(runningSnapshot.queuedCount, 0);
     assert.equal(runningSnapshot.rows[0]?.stage, "running");
-    assert.match(snapshotLines(runningSnapshot, "enabled [m: mute]", 10)[1]!, /Active: 1/);
+    assert.ok(snapshotLines(runningSnapshot, "enabled", 10).some((line) => /1 active/.test(line)));
 
     const eventB: NormalizedEvent = {
       ...fixture.event,
@@ -426,9 +426,10 @@ test("daemon fixture spans queued, running, validating and succeeded with accura
       [queuedSnapshot.rows[0]?.stage, queuedSnapshot.rows[1]?.stage],
       ["running", "queued"],
     );
-    assert.match(
-      snapshotLines(queuedSnapshot, "enabled [m: mute]", 10)[1]!,
-      /Active: 1 \| Queued: 1/,
+    assert.ok(
+      snapshotLines(queuedSnapshot, "enabled", 10).some((line) =>
+        /1 active \| 1 queued/.test(line),
+      ),
     );
 
     // The queued lane is genuinely committed work: cancel it exactly like an
@@ -510,7 +511,7 @@ test("daemon fixture spans queued, running, validating and succeeded with accura
     );
     const terminal = fixture.stream.output.join("");
     assert.match(terminal, /Gremlyn/);
-    assert.match(terminal, /Active: 0 \| Queued: 0/);
+    assert.match(terminal, /Work: 0 active \| 0 queued/);
     assert.doesNotMatch(terminal, /"level"|"event"/);
     assert.doesNotMatch(terminal, /\x1b\[2J|\x1b\[\?1049|\u0007/);
   } finally {

@@ -9,10 +9,28 @@ export interface PresentationStream {
   removeListener?(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
+function colorForLine(index: number, line: string): string | undefined {
+  if (index === 0) return "\x1b[1m";
+  if (line.startsWith("Health: ")) {
+    const state = line.slice("Health: ".length).toLowerCase();
+    if (state === "healthy") return "\x1b[32m";
+    if (state === "failed") return "\x1b[31m";
+    if (state === "stale" || state === "unknown") return "\x1b[33m";
+  }
+  if (line.startsWith("Latest outcome:")) {
+    if (/\|\s*succeeded(?:\s|\||\()/i.test(line)) return "\x1b[32m";
+    if (/\|\s*failed(?:\s|\||\()/i.test(line)) return "\x1b[31m";
+    if (/\|\s*(?:cancelled|interrupted)(?:\s|\||\()/i.test(line)) return "\x1b[33m";
+  }
+  return undefined;
+}
+
 /** Owns a small region above an empty anchor line, never the alternate screen. */
 export class AnchoredRenderer {
   private lines: string[] = [];
   private stopped = false;
+  private waitingForDrain = false;
+  private pendingRender: { content: readonly string[]; color: boolean } | undefined;
   private lastWrite = -Infinity;
   private force = false;
   private readonly resize = (): void => {
@@ -20,6 +38,16 @@ export class AnchoredRenderer {
   };
   private readonly error = (): void => {
     this.fail();
+  };
+  private readonly drain = (): void => {
+    if (this.stopped) return;
+    this.waitingForDrain = false;
+    const pending = this.pendingRender;
+    this.pendingRender = undefined;
+    if (pending !== undefined) {
+      this.force = true;
+      this.render(pending.content, pending.color);
+    }
   };
 
   constructor(
@@ -29,6 +57,7 @@ export class AnchoredRenderer {
   ) {
     stream.on?.("resize", this.resize);
     stream.on?.("error", this.error);
+    stream.on?.("drain", this.drain);
   }
 
   get dimensions(): { columns: number; rows: number } {
@@ -39,7 +68,15 @@ export class AnchoredRenderer {
   }
 
   render(content: readonly string[], color = false): void {
-    if (this.stopped || this.now() - this.lastWrite < 250) return;
+    if (this.stopped) return;
+    if (this.waitingForDrain) {
+      // Writable.write(false) accepted its chunk. Coalesce only later refreshes
+      // until the accepted bytes have drained; never turn backpressure into a
+      // terminal failure or queue every intermediate dashboard snapshot.
+      this.pendingRender = { content: [...content], color };
+      return;
+    }
+    if (this.now() - this.lastWrite < 250) return;
     if (!this.stream.isTTY || (this.stream.columns ?? 80) < 2) {
       this.fail();
       return;
@@ -52,7 +89,8 @@ export class AnchoredRenderer {
         clean.length > width && width > 3
           ? clean.slice(0, width - 3) + "..."
           : clean.slice(0, width);
-      return color && index === 0 ? `\x1b[1m${safe}\x1b[0m` : safe;
+      const style = color ? colorForLine(index, safe) : undefined;
+      return style === undefined ? safe : `${style}${safe}\x1b[0m`;
     });
     if (!this.force && JSON.stringify(next) === JSON.stringify(this.lines)) return;
     this.force = false;
@@ -105,10 +143,9 @@ export class AnchoredRenderer {
 
   private write(output: string): boolean {
     try {
-      if (!this.stream.write(output)) {
-        this.fail();
-        return false;
-      }
+      // Writable.write(false) still enqueues this chunk. Wait for drain before
+      // issuing another dashboard refresh, and keep rendering after it fires.
+      if (!this.stream.write(output)) this.waitingForDrain = true;
       return true;
     } catch {
       this.fail();
@@ -126,6 +163,7 @@ export class AnchoredRenderer {
       /* Unwritable stream. */
     }
     this.detach();
+    this.pendingRender = undefined;
     this.lines = [];
     try {
       this.onFailure();
@@ -137,5 +175,6 @@ export class AnchoredRenderer {
   private detach(): void {
     this.stream.removeListener?.("resize", this.resize);
     this.stream.removeListener?.("error", this.error);
+    this.stream.removeListener?.("drain", this.drain);
   }
 }

@@ -161,6 +161,13 @@ test("connection health is derived only from explicit polling observations", () 
     assert.equal(fresh.lastPollAt, iso(NOW - 10_000));
     assert.equal(fresh.pollAgeSec, 10);
 
+    const slowButHealthy = readTerminalSnapshot(
+      store.db,
+      options({ pollObservation: { lastSuccessAt: NOW - 65_000, failed: false } }),
+    );
+    assert.equal(slowButHealthy.connection, "healthy", "normal API latency gets missed-poll grace");
+    assert.equal(slowButHealthy.pollAgeSec, 65);
+
     const stale = readTerminalSnapshot(
       store.db,
       options({ pollObservation: { lastSuccessAt: NOW - 180_000, failed: false } }),
@@ -346,6 +353,7 @@ test("durations use the latest attempt, then requeue time, then created_at", () 
     assert.ok(snapshot.latestCompletion);
     assert.equal(snapshot.latestCompletion?.id, done);
     assert.equal(snapshot.latestCompletion?.elapsedSec, 20);
+    assert.equal(snapshot.latestCompletion?.completionAgeSec, 15);
     assert.equal(snapshot.latestCompletion?.outcome, "succeeded");
     assert.equal(rowById(snapshot.rows, waiting).elapsedSec, 10);
     assert.equal(rowById(snapshot.rows, retried).elapsedSec, 6);

@@ -12,6 +12,7 @@ class FakeInput implements SoundInput {
   isRaw = false;
   readableFlowing: boolean | null = false;
   throwOnResume = false;
+  throwOnRawMode = false;
   throwOnOff = false;
   throwOnRemoveListener = false;
   throwOnOn = false;
@@ -21,6 +22,7 @@ class FakeInput implements SoundInput {
   private readonly listeners = new Set<(chunk: Buffer | string) => void>();
 
   setRawMode(mode: boolean): void {
+    if (this.throwOnRawMode) throw new Error("raw mode failed");
     this.isRaw = mode;
     this.rawModeChanges.push(mode);
   }
@@ -115,6 +117,25 @@ test("a stream without raw-mode support is a no-op", () => {
   assert.equal(input.rawModeChanges.length, 0);
 });
 
+test("failed raw-mode setup reports controls unavailable rather than advertising dead keys", () => {
+  const input = new FakeInput();
+  input.throwOnRawMode = true;
+  const availability: boolean[] = [];
+  const dispose = installSoundInput({
+    input,
+    enabled: false,
+    muted: false,
+    onChange: () => undefined,
+    onStop: () => undefined,
+    onAvailability: (available) => availability.push(available),
+    interactive: true,
+  });
+  dispose();
+  assert.deepEqual(availability, [false]);
+  assert.equal(input.listenerCount, 0);
+  assert.deepEqual(input.rawModeChanges, []);
+});
+
 test("m opts into sound and then toggles mute with textual feedback", () => {
   const input = new FakeInput();
   const output = new Capture();
@@ -147,7 +168,7 @@ test("m opts into sound and then toggles mute with textual feedback", () => {
   dispose();
 });
 
-test("Ctrl+C routes to the existing stop handler on every press and ignores other keys", () => {
+test("Ctrl+C and q route to graceful stop; other unknown keys are ignored", () => {
   const input = new FakeInput();
   const changes: [boolean, boolean][] = [];
   let stops = 0;
@@ -166,9 +187,58 @@ test("Ctrl+C routes to the existing stop handler on every press and ignores othe
   input.press("\u0003");
   input.press("q");
   input.press("\u0003");
-  assert.equal(stops, 2, "each Ctrl+C reaches the stop handler");
+  assert.equal(stops, 3, "each Ctrl+C and q reaches the existing stop handler");
   assert.deepEqual(changes, [], "control keys do not change sound state");
   dispose();
+});
+
+test("help and sound shortcuts are discoverable and available while an initial poll is pending", async () => {
+  const input = new FakeInput();
+  const changes: [boolean, boolean][] = [];
+  let helps = 0;
+  let stops = 0;
+  const availability: boolean[] = [];
+  const dispose = installSoundInput({
+    input,
+    enabled: false,
+    muted: false,
+    onChange: (enabled, muted) => changes.push([enabled, muted]),
+    onStop: () => stops++,
+    onHelp: () => helps++,
+    onAvailability: (available) => availability.push(available),
+    interactive: true,
+  });
+
+  let pollStarted = false;
+  let resolvePoll!: () => void;
+  const startInitialPoll = (): Promise<void> => {
+    pollStarted = true;
+    return new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+  };
+  // Main installs the controls before invoking the first potentially slow poll.
+  const initialPoll = startInitialPoll();
+  assert.equal(pollStarted, true);
+  input.press("?");
+  input.press("h");
+  input.press("m");
+  input.press("q");
+  input.press("\u0003\u0003");
+  assert.equal(helps, 2);
+  assert.equal(stops, 3, "q and repeated Ctrl+C remain active during the poll");
+  assert.deepEqual(changes, [[true, false]]);
+  assert.deepEqual(availability, [true]);
+  let pollFinished = false;
+  void initialPoll.then(() => {
+    pollFinished = true;
+  });
+  await Promise.resolve();
+  assert.equal(pollFinished, false, "input handling does not wait for the network poll");
+  resolvePoll();
+  await initialPoll;
+  dispose();
+  assert.deepEqual(availability, [true, false]);
 });
 
 test("dispose restores raw mode and pauses only when reads were not flowing", () => {

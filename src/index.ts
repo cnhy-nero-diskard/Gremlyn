@@ -132,9 +132,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     secrets.push(config.githubToken, config.consoleToken);
     presentation.dispose();
     presentation = new TerminalPresentation(options, process.stderr, process.env, secrets);
-    presentation.setSoundControlAvailable(
-      process.stdin.isTTY === true && typeof process.stdin.setRawMode === "function",
-    );
     presentation.setReadiness("preflight");
     stage = "ownership";
     lock = DataDirectoryLock.acquire(config.dataDir, (event, fields) =>
@@ -510,11 +507,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       repositories: repositories.length,
     });
     presentation.setReadiness("ready");
-    let inFlightPoll: Promise<void> = poll();
-    await inFlightPoll;
-    const timer = setInterval(() => {
-      inFlightPoll = poll();
-    }, config.pollIntervalSec * 1_000);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let inFlightPoll: Promise<void> = Promise.resolve();
+    let shutdownRequested = false;
 
     let resolveStopped!: () => void;
     let rejectStopped!: (error: unknown) => void;
@@ -523,7 +518,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       rejectStopped = reject;
     });
     const stop = createShutdownHandler({
-      clearTimer: () => clearInterval(timer),
+      clearTimer: () => {
+        if (timer !== undefined) clearInterval(timer);
+      },
       stopObservation: () => {
         // Every disposer runs even if another observational adapter fails.
         for (const dispose of [
@@ -548,8 +545,18 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       onError: rejectStopped,
     });
     const onSignal = (): void => {
+      shutdownRequested = true;
       void stop().catch(() => undefined);
     };
+    const installedSignals: (typeof TERMINATION_SIGNALS)[number][] = [];
+    for (const signal of TERMINATION_SIGNALS) {
+      try {
+        process.on(signal, onSignal);
+        installedSignals.push(signal);
+      } catch {
+        // Some signals are platform-specific (SIGBREAK on POSIX).
+      }
+    }
     disposeInput = installSoundInput({
       input: process.stdin,
       enabled: soundEnabled,
@@ -564,15 +571,18 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         presentation.setSound(enabled, muted);
       },
       onStop: onSignal,
+      onHelp: () => presentation.toggleHelp(),
+      onAvailability: (available) => presentation.setSoundControlAvailable(available),
     });
-    const installedSignals: (typeof TERMINATION_SIGNALS)[number][] = [];
-    for (const signal of TERMINATION_SIGNALS) {
-      try {
-        process.on(signal, onSignal);
-        installedSignals.push(signal);
-      } catch {
-        // Some signals are platform-specific (SIGBREAK on POSIX).
-      }
+
+    // Install controls before the first network poll: operators can inspect the
+    // help view or request graceful shutdown even if GitHub is slow to respond.
+    inFlightPoll = poll();
+    await inFlightPoll;
+    if (!shutdownRequested) {
+      timer = setInterval(() => {
+        inFlightPoll = poll();
+      }, config.pollIntervalSec * 1_000);
     }
     try {
       await stopped;

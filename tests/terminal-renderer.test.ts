@@ -91,14 +91,13 @@ test("diagnostics use the same anchor owner and cannot inject controls", () => {
 });
 
 test("write and capability failure degrade exactly once without throwing", () => {
-  for (const failure of ["throw", "backpressure", "capability", "async"] as const) {
+  for (const failure of ["throw", "capability", "async"] as const) {
     const stream = new FakeStream();
     let failures = 0;
     const renderer = new AnchoredRenderer(stream, () => {
       failures++;
     });
     if (failure === "throw") stream.throws = true;
-    if (failure === "backpressure") stream.blocked = true;
     if (failure === "capability") stream.isTTY = false;
     if (failure === "async") stream.emit("error", new Error("fixture"));
     assert.doesNotThrow(() => renderer.render(["Gremlyn"]));
@@ -106,6 +105,62 @@ test("write and capability failure degrade exactly once without throwing", () =>
     renderer.dispose();
     assert.equal(failures, 1);
   }
+});
+
+test("write backpressure preserves the accepted render and coalesces until drain", () => {
+  const stream = new FakeStream();
+  let failures = 0;
+  let now = 0;
+  const renderer = new AnchoredRenderer(
+    stream,
+    () => failures++,
+    () => now,
+  );
+  stream.blocked = true;
+  renderer.render(["Gremlyn", "Health: HEALTHY"]);
+  assert.deepEqual(stream.output, ["Gremlyn\nHealth: HEALTHY\n"]);
+  assert.equal(failures, 0, "false means accepted but backpressured");
+
+  now = 250;
+  renderer.render(["Gremlyn", "Health: STALE"]);
+  now = 500;
+  renderer.render(["Gremlyn", "Health: FAILED"]);
+  assert.equal(stream.output.length, 1, "intermediate dashboard states are coalesced");
+
+  stream.blocked = false;
+  stream.emit("drain");
+  assert.equal(stream.output.length, 2);
+  assert.match(stream.output[1]!, /Health: FAILED/);
+  assert.equal(failures, 0);
+
+  now = 750;
+  renderer.render(["Gremlyn", "Health: HEALTHY"]);
+  assert.equal(stream.output.length, 3, "normal refresh resumes after drain");
+  renderer.dispose();
+});
+
+test("meaningful health and latest-outcome colors are optional and retain their text labels", () => {
+  const stream = new FakeStream();
+  const renderer = new AnchoredRenderer(stream, () => assert.fail());
+  renderer.render(
+    [
+      "Gremlyn | ready",
+      "Health: HEALTHY",
+      "Latest outcome: widgets PR #1 | failed | job 2s | completed 1m ago",
+    ],
+    true,
+  );
+  const colored = stream.output.join("");
+  assert.match(colored, /\x1b\[1mGremlyn/);
+  assert.match(colored, /\x1b\[32mHealth: HEALTHY\x1b\[0m/);
+  assert.match(colored, /\x1b\[31mLatest outcome: widgets PR #1 \| failed/);
+  renderer.dispose();
+
+  const plainStream = new FakeStream();
+  const plainRenderer = new AnchoredRenderer(plainStream, () => assert.fail());
+  plainRenderer.render(["Gremlyn | ready", "Health: HEALTHY"], false);
+  assert.doesNotMatch(plainStream.output.join(""), /\x1b/);
+  plainRenderer.dispose();
 });
 
 test("single terminal owner suppresses routine JSON, preserves diagnostics, and falls back to plain", () => {
@@ -188,6 +243,7 @@ function snapshotRow(
     pr: id,
     stage: lane === "recent" ? "succeeded" : lane === "active" ? "running" : "queued",
     elapsedSec: id,
+    completionAgeSec: lane === "recent" ? 30 : null,
     outcome: null,
     lane,
     ...overrides,
@@ -227,21 +283,25 @@ test("terminal layout prioritizes current work, labels overflow and shows one co
     latestCompletion: snapshotRow(4, "recent", { stage: "succeeded", outcome: "succeeded" }),
     overflow: 49,
   });
-  const lines = snapshotLines(snapshot, "disabled", 12);
-  assert.match(lines[0]!, /connection: stale/);
-  assert.match(lines[1]!, /Active: 2 \| Queued: 50/);
-  assert.match(lines[2]!, /Poll: not observed/);
-  assert.match(lines[2]!, /Sound: disabled/);
-  assert.match(lines[3]!, /^Active \(2\)$/);
+  const lines = snapshotLines(snapshot, "disabled", 14);
+  assert.match(lines[0]!, /^Gremlyn \| ready$/);
+  assert.match(lines[1]!, /^Health: STALE$/);
+  assert.match(lines[3]!, /2 active \| 50 queued/);
+  assert.match(lines[4]!, /Poll: not observed/);
+  assert.match(lines[5]!, /Sound: disabled/);
+  assert.match(lines[7]!, /^Active \(2\)$/);
   // A distinct recorded outcome is shown once, next to its stage.
-  assert.match(lines[4]!, /widgets PR #1 \| validating \(agent-succeeded\) \| 1s/);
-  assert.match(lines[5]!, /widgets PR #2 \| running \| 2s/);
-  assert.match(lines[6]!, /^Queued \(50\)$/);
-  assert.match(lines[7]!, /widgets PR #3 \| queued \| 3s/);
-  assert.match(lines[8]!, /^\.\.\. 49 more active\/queued$/);
+  assert.match(lines[8]!, /widgets PR #1 \| validating \(agent-succeeded\) \| 1s elapsed/);
+  assert.match(lines[9]!, /widgets PR #2 \| running \| 2s elapsed/);
+  assert.match(lines[10]!, /^Queued \(50\)$/);
+  assert.match(lines[11]!, /widgets PR #3 \| queued \| 3s elapsed/);
+  assert.match(lines[12]!, /^\.\.\. 49 more active\/queued$/);
   // The stage-identical outcome is never repeated on the completion line.
-  assert.match(lines[9]!, /^Latest: widgets PR #4 \| succeeded \| 4s$/);
-  assert.equal(lines.length, 10);
+  assert.match(
+    lines[13]!,
+    /^Latest outcome: widgets PR #4 \| succeeded \| job 4s \| completed 30s ago$/,
+  );
+  assert.equal(lines.length, 14);
 });
 
 test("idle layout waits and shows at most one latest completion, never history", () => {
@@ -254,17 +314,78 @@ test("idle layout waits and shows at most one latest completion, never history",
     }),
   });
   const lines = snapshotLines(snapshot, "enabled", 20);
-  assert.equal(lines.length, 5);
-  assert.match(lines[1]!, /Active: 0 \| Queued: 0/);
-  assert.match(lines[3]!, /^Idle\. Waiting for authorized review commands\.$/);
-  assert.match(lines[4]!, /^Latest: widgets PR #7 \| failed \| 4s$/);
+  assert.equal(lines.length, 9);
+  assert.match(lines[3]!, /Work: 0 active \| 0 queued/);
+  assert.match(lines[7]!, /^Idle\. Waiting for authorized review commands\.$/);
+  assert.match(
+    lines[8]!,
+    /^Latest outcome: widgets PR #7 \| failed \| job 4s \| completed 30s ago$/,
+  );
   assert.doesNotMatch(lines.join("\n"), /412|more/);
 });
 
 test("idle layout without any completion shows only the waiting line", () => {
   const lines = snapshotLines(terminalSnapshot(), "disabled", 20);
-  assert.equal(lines.length, 4);
-  assert.match(lines[3]!, /^Idle\. Waiting for authorized review commands\.$/);
+  assert.equal(lines.length, 8);
+  assert.match(lines[7]!, /^Idle\. Waiting for authorized review commands\.$/);
+});
+
+test("status groups and keyboard hints adapt to narrow widths without hiding health or controls", () => {
+  const snapshot = terminalSnapshot({
+    pollAgeSec: 1_192,
+    latestCompletion: snapshotRow(1234, "recent", {
+      stage: "succeeded",
+      elapsedSec: 3_661,
+      completionAgeSec: 1_192,
+    }),
+  });
+  const wide = snapshotLines(snapshot, "enabled", 22, 80, true);
+  assert.match(wide[0]!, /^Gremlyn \| ready$/);
+  assert.match(wide[1]!, /^Health: HEALTHY$/);
+  assert.match(wide[2]!, /Repositories: 1 enabled \/ 2 configured/);
+  assert.match(wide[3]!, /Work: 0 active \| 0 queued/);
+  assert.match(wide[4]!, /Poll: 19m 52s ago/);
+  assert.match(wide[6]!, /\? help {2}m sound {2}q quit/);
+  assert.match(wide.join("\n"), /job 1h 01m \| completed 19m 52s ago/);
+  assert.doesNotMatch(wide.join("\n"), /npm run logs/);
+
+  const narrow = snapshotLines(snapshot, "enabled", 22, 20, true);
+  assert.match(narrow[1]!, /^Health: HEALTHY$/);
+  assert.ok(narrow.includes("? help"));
+  assert.ok(narrow.includes("m sound / q quit"));
+  assert.ok(
+    narrow.slice(0, 8).every((line) => line.length <= 19),
+    "the compact status and all keys fit a 20-column terminal",
+  );
+});
+
+test("help view puts the long read-only detail command on demand and no-color remains plain", () => {
+  const stream = new FakeStream();
+  const store = new Store({ dataDir: "unused", file: ":memory:" });
+  let now = 0;
+  const presentation = new TerminalPresentation(
+    { ...DEFAULT_TERMINAL_OPTIONS, presentation: "terminal", noColor: true },
+    stream,
+    { TERM: "xterm" },
+    [],
+    () => now,
+  );
+  try {
+    presentation.attach(store.db, 60);
+    presentation.setSoundControlAvailable(true);
+    now = 250;
+    presentation.toggleHelp();
+    const help = stream.output.join("");
+    assert.match(help, /npm run logs -- --data-dir <directory>/);
+    assert.match(help, /Read-only display/);
+    assert.doesNotMatch(help, /\x1b\[(?:1|31|32|33)m/);
+    now = 500;
+    presentation.toggleHelp();
+    assert.match(stream.output.at(-1)!, /Health: UNKNOWN/);
+  } finally {
+    presentation.dispose();
+    store.close();
+  }
 });
 
 test("a narrow row budget truncates current work but still labels the backlog exactly", () => {
@@ -279,12 +400,12 @@ test("a narrow row budget truncates current work but still labels the backlog ex
     ],
     overflow: 19,
   });
-  // available = 5 - 3 = 2, which cannot hold a label, a row and the summary,
-  // so the surface reports the full 3 + 20 backlog instead of an off-by-one.
-  const lines = snapshotLines(snapshot, "disabled", 5);
-  assert.equal(lines.length, 4);
-  assert.doesNotMatch(lines[3]!, /^Active \(3\)$/);
-  assert.match(lines[3]!, /^\.\.\. 23 more active\/queued$/);
+  // One body line cannot hold a label, a row and the summary, so the surface
+  // reports the full 3 + 20 backlog instead of an off-by-one.
+  const lines = snapshotLines(snapshot, "disabled", 8);
+  assert.equal(lines.length, 8);
+  assert.doesNotMatch(lines[7]!, /^Active \(3\)$/);
+  assert.match(lines[7]!, /^\.\.\. 23 more active\/queued$/);
   assert.doesNotMatch(lines.join("\n"), /recent/);
 });
 
@@ -295,13 +416,13 @@ test("an extremely tight budget shows the exact summary and never an orphan head
     rows: [snapshotRow(1, "active"), snapshotRow(2, "active"), snapshotRow(3, "active")],
     latestCompletion: snapshotRow(9, "recent", { stage: "succeeded", outcome: "succeeded" }),
   });
-  // available = 4 - 3 = 1: only the summary fits, so the "Active (3)" heading
+  // available = 8 - 7 = 1: only the summary fits, so the "Active (3)" heading
   // must not be shown without its rows, and the count is exact (3 active).
-  const lines = snapshotLines(snapshot, "disabled", 4);
-  assert.equal(lines.length, 4);
-  assert.doesNotMatch(lines[3]!, /^Active \(3\)$/);
-  assert.match(lines[3]!, /^\.\.\. 3 more active\/queued$/);
-  assert.doesNotMatch(lines.join("\n"), /Latest:/);
+  const lines = snapshotLines(snapshot, "disabled", 8);
+  assert.equal(lines.length, 8);
+  assert.doesNotMatch(lines[7]!, /^Active \(3\)$/);
+  assert.match(lines[7]!, /^\.\.\. 3 more active\/queued$/);
+  assert.doesNotMatch(lines.join("\n"), /Latest outcome:/);
 });
 
 test("a tight budget keeps exact per-lane counts when multiple lanes are truncated", () => {
@@ -311,14 +432,14 @@ test("a tight budget keeps exact per-lane counts when multiple lanes are truncat
     rows: [snapshotRow(1, "active"), snapshotRow(2, "queued"), snapshotRow(3, "queued")],
     latestCompletion: snapshotRow(9, "recent", { stage: "succeeded", outcome: "succeeded" }),
   });
-  // available = 7 - 3 = 4: one active row, the block summary for the two queued
+  // available = 11 - 7 = 4: one active row, the block summary for the two queued
   // rows that cannot fit beside it, and the completion all fit exactly.
-  const lines = snapshotLines(snapshot, "disabled", 7);
-  assert.equal(lines.length, 7);
-  assert.match(lines[3]!, /^Active \(1\)$/);
-  assert.match(lines[4]!, /widgets PR #1 \| running \| 1s/);
-  assert.match(lines[5]!, /^\.\.\. 2 more active\/queued$/);
-  assert.match(lines[6]!, /^Latest: /);
+  const lines = snapshotLines(snapshot, "disabled", 11);
+  assert.equal(lines.length, 11);
+  assert.match(lines[7]!, /^Active \(1\)$/);
+  assert.match(lines[8]!, /widgets PR #1 \| running \| 1s elapsed/);
+  assert.match(lines[9]!, /^\.\.\. 2 more active\/queued$/);
+  assert.match(lines[10]!, /^Latest outcome: /);
   assert.equal(
     lines.join("\n").match(/more active\/queued/g)?.length,
     1,
@@ -326,7 +447,7 @@ test("a tight budget keeps exact per-lane counts when multiple lanes are truncat
   );
 });
 
-test("the sound hint offers enable while disabled and mute once enabled", () => {
+test("the installed sound key is hinted and its action gets textual feedback", () => {
   const stream = new FakeStream();
   const presentation = new TerminalPresentation(
     { ...DEFAULT_TERMINAL_OPTIONS, presentation: "terminal", noColor: true },
@@ -337,12 +458,12 @@ test("the sound hint offers enable while disabled and mute once enabled", () => 
     presentation.setSoundControlAvailable(true);
     presentation.setReadiness("ready");
     const before = stream.output.join("");
-    assert.match(before, /Sound: disabled \[m: enable\]/);
-    assert.doesNotMatch(before, /\[m: mute\]/);
+    assert.match(before, /Sound: disabled/);
+    assert.match(before, /Keys: \? help m sound q quit/);
 
     presentation.setSound(true, false);
     const after = stream.output.join("");
-    assert.match(after, /\[m: mute\]/);
+    assert.match(after, /INFO sound enabled/);
     assert.doesNotMatch(after, /disabled \[m: mute\]/);
   } finally {
     presentation.dispose();

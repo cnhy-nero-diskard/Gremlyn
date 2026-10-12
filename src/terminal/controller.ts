@@ -16,6 +16,16 @@ import { formatStartupDiagnostic, type StartupStage } from "./diagnostics.js";
 /** Idle indicator shown while no active or queued work exists. */
 const IDLE_LINE = "Idle. Waiting for authorized review commands.";
 
+/** Human-readable durations keep the status useful without growing without bound. */
+function formatDuration(seconds: number): string {
+  const duration = Math.max(0, Math.trunc(seconds));
+  if (duration < 60) return `${duration}s`;
+  const minutes = Math.floor(duration / 60);
+  const remainder = duration % 60;
+  if (minutes < 60) return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
 /**
  * One display token for a job state. The recorded attempt outcome is appended
  * only when it differs from the lifecycle stage, so a `succeeded`/`failed` row
@@ -29,31 +39,108 @@ function stateLabel(job: TerminalJobRow): string {
 
 /** A current-work row, indented under its lane label. No internal ids. */
 function workLine(job: TerminalJobRow): string {
-  return `  ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${job.elapsedSec}s`;
+  return `  ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${formatDuration(job.elapsedSec)} elapsed`;
+}
+
+function fitText(text: string, width: number): string {
+  if (text.length <= width) return text;
+  if (width <= 3) return text.slice(0, width);
+  return `${text.slice(0, width - 3)}...`;
 }
 
 /** The single most recent completion. */
-function completionLine(job: TerminalJobRow): string {
-  return `Latest: ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${job.elapsedSec}s`;
+function completionLine(job: TerminalJobRow, columns: number): string {
+  const completionAge =
+    job.completionAgeSec === null ? "" : ` | completed ${formatDuration(job.completionAgeSec)} ago`;
+  const prefix = "Latest outcome: ";
+  const suffix = ` PR #${job.pr} | ${stateLabel(job)} | job ${formatDuration(job.elapsedSec)}${completionAge}`;
+  const repositoryWidth = Math.max(1, columns - 1 - prefix.length - suffix.length);
+  return `${prefix}${fitText(job.repository, repositoryWidth)}${suffix}`;
 }
 
-/** Compact fixed status header: readiness, observed health, repos, poll, sound. */
-function headerLines(snapshot: TerminalSnapshot, sound: string): string[] {
-  const poll = snapshot.pollAgeSec === null ? "not observed" : `${snapshot.pollAgeSec}s ago`;
+/** Word-wrap fixed help text so the long detail command is never header-truncated. */
+function wrapText(text: string, width: number): string[] {
+  const safeWidth = Math.max(1, width);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/)) {
+    if (word.length > safeWidth) {
+      if (line) lines.push(line);
+      line = "";
+      for (let offset = 0; offset < word.length; offset += safeWidth) {
+        const part = word.slice(offset, offset + safeWidth);
+        if (part.length === safeWidth) lines.push(part);
+        else line = part;
+      }
+    } else if (!line) line = word;
+    else if (line.length + word.length + 1 <= safeWidth) line += ` ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function helpLines(columns: number): string[] {
+  const width = Math.max(1, columns - 1);
   return [
-    `Gremlyn | ${snapshot.readiness} | connection: ${snapshot.connection}`,
-    `Repos: ${snapshot.enabled}/${snapshot.configured} enabled | Active: ${snapshot.activeCount} | Queued: ${snapshot.queuedCount}`,
-    `Poll: ${poll} | Sound: ${sound} | Details: npm run logs -- --data-dir <directory>`,
+    "Gremlyn | Help",
+    ...wrapText("Read-only display; no job actions are available here.", width),
+    ...wrapText("? / h  Return to dashboard", width),
+    ...wrapText("m      Enable sound or toggle mute", width),
+    ...wrapText("q      Graceful shutdown", width),
+    ...wrapText("Ctrl+C Stop; repeat requests retain escalation", width),
+    ...wrapText("Details: npm run logs -- --data-dir <directory>", width),
   ];
+}
+
+/** Scan-friendly status groups; compact labels keep health and keys visible when narrow. */
+function headerLines(
+  snapshot: TerminalSnapshot,
+  sound: string,
+  columns: number,
+  controlsAvailable: boolean,
+  controlsReady: boolean,
+): string[] {
+  const poll =
+    snapshot.pollAgeSec === null ? "not observed" : `${formatDuration(snapshot.pollAgeSec)} ago`;
+  const wide = columns >= 52;
+  const keys = controlsAvailable ? "Keys: ? help  m sound  q quit" : "Ctrl+C to stop";
+  const lines = [
+    `Gremlyn | ${snapshot.readiness}`,
+    `Health: ${snapshot.connection.toUpperCase()}`,
+    ...(wide
+      ? [
+          `Repositories: ${snapshot.enabled} enabled / ${snapshot.configured} configured`,
+          `Work: ${snapshot.activeCount} active | ${snapshot.queuedCount} queued`,
+        ]
+      : [
+          `Repos ${snapshot.enabled}/${snapshot.configured}`,
+          `A:${snapshot.activeCount} Q:${snapshot.queuedCount}`,
+        ]),
+    `Poll: ${poll}`,
+    `Sound: ${sound}`,
+  ];
+  if (controlsReady) {
+    if (controlsAvailable && columns < 28) lines.push("? help", "m sound / q quit");
+    else if (controlsAvailable && columns < 38) lines.push("? help  m sound  q quit");
+    else lines.push(keys);
+  }
+  return lines;
 }
 
 export function snapshotLines(
   snapshot: TerminalSnapshot,
   sound: string,
   rowBudget: number,
+  columns = 80,
+  controlsAvailable = false,
+  controlsReady = true,
 ): string[] {
   const budget = Math.max(0, Math.trunc(rowBudget));
-  const header = headerLines(snapshot, sound);
+  const header = headerLines(snapshot, sound, columns, controlsAvailable, controlsReady);
   if (budget <= header.length) return header.slice(0, budget);
 
   const available = budget - header.length;
@@ -107,7 +194,8 @@ export function snapshotLines(
   }
 
   // At most one latest completion, and only when the row budget allows it.
-  if (completion !== null && body.length < available) body.push(completionLine(completion));
+  if (completion !== null && body.length < available)
+    body.push(completionLine(completion, columns));
 
   return [...header, ...body];
 }
@@ -129,8 +217,11 @@ export class TerminalPresentation {
   private enabled: boolean;
   private muted: boolean;
   private soundControlAvailable = false;
+  private inputSetupComplete = false;
+  private helpVisible = false;
   private pendingReason: string | undefined;
   private observe: (() => void) | undefined;
+  private refresh: (() => void) | undefined;
   private readonly streamError = (): void => {
     this.degrade();
   };
@@ -178,15 +269,29 @@ export class TerminalPresentation {
     if (!this.timer)
       this.renderer?.render(
         [
-          `Gremlyn | ${readiness} | connection: unknown`,
-          `Active: 0 | Queued: 0 | Sound: ${this.soundLabel()}`,
+          `Gremlyn | ${readiness}`,
+          "Health: UNKNOWN",
+          `Sound: ${this.soundLabel()}`,
+          ...(this.inputSetupComplete
+            ? [this.soundControlAvailable ? "Keys: ? help  m sound  q quit" : "Ctrl+C to stop"]
+            : []),
         ],
         this.color,
       );
   }
 
   setSoundControlAvailable(available: boolean): void {
-    this.soundControlAvailable = available && this.interactive;
+    const supported = available && this.interactive;
+    if (this.inputSetupComplete && this.soundControlAvailable === supported) return;
+    this.inputSetupComplete = true;
+    this.soundControlAvailable = supported;
+    this.refresh?.();
+  }
+
+  toggleHelp(): void {
+    if (!this.soundControlAvailable || this.stopped) return;
+    this.helpVisible = !this.helpVisible;
+    this.refresh?.();
   }
 
   recordPoll(success: boolean): void {
@@ -231,14 +336,23 @@ export class TerminalPresentation {
           rowLimit: DEFAULT_TERMINAL_ROW_LIMIT,
           ...(configuredRepositoryIds === undefined ? {} : { configuredRepositoryIds }),
         });
-        this.renderer?.render(
-          snapshotLines(snapshot, this.soundLabel(), (this.renderer?.dimensions.rows ?? 24) - 2),
-          this.color,
-        );
+        const { columns, rows } = this.renderer?.dimensions ?? { columns: 80, rows: 24 };
+        const lines = this.helpVisible
+          ? helpLines(columns)
+          : snapshotLines(
+              snapshot,
+              this.soundLabel(),
+              rows - 2,
+              columns,
+              this.soundControlAvailable,
+              this.inputSetupComplete,
+            );
+        this.renderer?.render(lines, this.color);
       } catch {
         this.degrade();
       }
     };
+    this.refresh = refresh;
     this.timer = setInterval(refresh, 250);
     refresh();
   }
@@ -249,6 +363,7 @@ export class TerminalPresentation {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.observe = undefined;
+    this.refresh = undefined;
     try {
       this.renderer?.dispose();
     } finally {
@@ -257,13 +372,7 @@ export class TerminalPresentation {
   }
 
   private soundLabel(): string {
-    const state = !this.enabled ? "disabled" : this.muted ? "muted" : "enabled";
-    return (
-      state +
-      (this.soundControlAvailable
-        ? ` [m: ${!this.enabled ? "enable" : this.muted ? "unmute" : "mute"}]`
-        : "")
-    );
+    return !this.enabled ? "disabled" : this.muted ? "muted" : "enabled";
   }
 
   private present(record: LogRecord): void {

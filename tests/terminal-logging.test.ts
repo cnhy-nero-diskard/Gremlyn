@@ -558,7 +558,7 @@ test("read functions clamp negative and non-finite limits to hard finite bounds"
     assert.equal(readTailRecords(db, -5).length, 0, "negative tail must not become unlimited");
     assert.equal(readTailRecords(db, Number.NaN).length, 3);
     assert.equal(readTailRecords(db, Number.POSITIVE_INFINITY).length, 3);
-    assert.deepEqual(readRecordsAfter(db, 3, -1), { records: [], lastId: 3 });
+    assert.deepEqual(readRecordsAfter(db, 3, -1), { records: [], recordIds: [], lastId: 3 });
     assert.equal(readRecordsAfter(db, 0, Number.NaN).records.length, 3);
     assert.equal(readRecordsAfter(db, -10, 2).records.length, 2);
   } finally {
@@ -602,6 +602,70 @@ test("follow mode starts from a baseline, reads new records, and disposes idempo
   session.dispose();
   session.dispose();
   assert.equal(cancelCalls, 1, "disposal must be idempotent");
+  db.close();
+});
+
+test("follow pauses on a slow consumer, resumes the bounded batch once, and retains its enqueued cursor", () => {
+  const dir = seededDataDir([["info", "baseline", {}]]);
+  const db = openReadOnlyLogDatabase(dir);
+  const writer = new Database(join(dir, "gremlyn.db"));
+  writer
+    .prepare("INSERT INTO log_entries (at, level, event) VALUES (?, ?, ?)")
+    .run(iso(0), "info", "slow row one");
+  writer
+    .prepare("INSERT INTO log_entries (at, level, event) VALUES (?, ?, ?)")
+    .run(iso(1), "info", "slow row two");
+  writer
+    .prepare("INSERT INTO log_entries (at, level, event) VALUES (?, ?, ?)")
+    .run(iso(2), "info", "slow row three");
+  writer.close();
+
+  const output: string[] = [];
+  let drain: (() => void) | undefined;
+  let drainRemovals = 0;
+  let cancelCalls = 0;
+  const session = followLogRecords(
+    db,
+    "plain",
+    (line) => {
+      output.push(line);
+      return output.length !== 1;
+    },
+    {
+      initialBaseline: 1,
+      schedule: () => Symbol("follow"),
+      cancelSchedule: () => cancelCalls++,
+      onDrain: (listener) => {
+        drain = listener;
+        return () => {
+          drain = undefined;
+          drainRemovals++;
+        };
+      },
+    },
+  );
+
+  session.poll();
+  assert.equal(output.length, 1, "the first false-returning write is accepted, then output pauses");
+  assert.match(output[0]!, /slow row one/);
+  assert.equal(session.lastEnqueuedId, 2);
+  assert.equal(session.pendingCount, 2, "only the single bounded read batch is retained");
+  session.poll();
+  assert.equal(output.length, 1, "poll ticks do not enqueue more while stdout is blocked");
+
+  drain?.();
+  assert.equal(output.length, 3);
+  assert.match(output[1]!, /slow row two/);
+  assert.match(output[2]!, /slow row three/);
+  assert.equal(session.lastEnqueuedId, 4);
+  assert.equal(session.pendingCount, 0);
+  session.poll();
+  assert.equal(output.length, 3, "drained rows are not duplicated on the next poll");
+
+  session.dispose();
+  session.dispose();
+  assert.equal(cancelCalls, 1);
+  assert.equal(drainRemovals, 1);
   db.close();
 });
 
@@ -665,6 +729,7 @@ test("runTail follows the snapshot baseline so a record appended during tail out
     ["--data-dir", dir, "--tail", "5", "--follow", "--format", "plain"],
     io,
   );
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(out.filter((line) => line.includes("orchestrator started")).length, 1);
   assert.equal(out.filter((line) => line.includes("job queued")).length, 1);
   assert.equal(out.filter((line) => line.includes("job completed")).length, 0);
@@ -680,6 +745,63 @@ test("runTail follows the snapshot baseline so a record appended during tail out
   resolveStop();
   const code = await codePromise;
   assert.equal(code, 0);
+});
+
+test("runTail cleans up a paused follow on shutdown and reports rows not yet enqueued", async () => {
+  const dir = seededDataDir([["info", "baseline", {}]]);
+  const output: string[] = [];
+  const errors: string[] = [];
+  let tick: (() => void) | undefined;
+  let drain: (() => void) | undefined;
+  let drainRemoved = 0;
+  let resolveStop!: () => void;
+  const stop = new Promise<void>((resolve) => {
+    resolveStop = resolve;
+  });
+  const codePromise = runTail(["--data-dir", dir, "--tail", "1", "--follow"], {
+    out: (chunk) => {
+      output.push(chunk);
+      return !chunk.includes("slow row one");
+    },
+    err: (chunk) => errors.push(chunk),
+    waitForStop: () => stop,
+    followSchedule: (fn) => {
+      tick = fn;
+      return Symbol("follow");
+    },
+    followCancelSchedule: () => undefined,
+    onDrain: (listener) => {
+      drain = listener;
+      return () => {
+        drain = undefined;
+        drainRemoved++;
+      };
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const writer = new Database(join(dir, "gremlyn.db"));
+  writer
+    .prepare("INSERT INTO log_entries (at, level, event) VALUES (?, ?, ?)")
+    .run(iso(1), "info", "slow row one");
+  writer
+    .prepare("INSERT INTO log_entries (at, level, event) VALUES (?, ?, ?)")
+    .run(iso(2), "info", "slow row two");
+  writer.close();
+  tick?.();
+  assert.equal(output.filter((chunk) => chunk.includes("slow row one")).length, 1);
+  assert.equal(output.filter((chunk) => chunk.includes("slow row two")).length, 0);
+  assert.equal(typeof drain, "function");
+
+  resolveStop();
+  assert.equal(await codePromise, 0);
+  assert.equal(drain, undefined, "shutdown removes the pending drain listener");
+  assert.equal(drainRemoved, 1);
+  assert.ok(errors.some((message) => /1 record\(s\) not enqueued/.test(message)));
+  const beforeLateTick = output.length;
+  tick?.();
+  drain?.();
+  assert.equal(output.length, beforeLateTick, "disposed follow never resumes after shutdown");
 });
 
 test("runTail disposes, reports and exits nonzero when the output stream errors (EPIPE)", async () => {

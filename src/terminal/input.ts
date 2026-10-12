@@ -32,6 +32,9 @@ export interface SoundInputOptions {
   muted: boolean;
   onChange: (enabled: boolean, muted: boolean) => void;
   onStop: () => void;
+  onHelp?: () => void;
+  /** Reports only after raw mode, resume and listener setup all succeed. */
+  onAvailability?: (available: boolean) => void;
   interactive: boolean;
   /** When supplied, the adapter emits readable sound-state feedback. */
   output?: SoundInputOutput;
@@ -39,6 +42,14 @@ export interface SoundInputOptions {
 
 /** The Ctrl+C control character delivered on a raw-mode stream. */
 const CTRL_C = "\u0003";
+
+function reportAvailability(options: SoundInputOptions, available: boolean): void {
+  try {
+    options.onAvailability?.(available);
+  } catch {
+    // Availability feedback is observational and cannot break raw-mode setup.
+  }
+}
 
 export interface SoundState {
   enabled: boolean;
@@ -78,7 +89,10 @@ export function installSoundInput(options: SoundInputOptions): () => void {
   const { input } = options;
   const supported =
     options.interactive && input.isTTY === true && typeof input.setRawMode === "function";
-  if (!supported) return () => undefined;
+  if (!supported) {
+    reportAvailability(options, false);
+    return () => undefined;
+  }
 
   const wasRaw = input.isRaw === true;
   const wasFlowing = input.readableFlowing === true;
@@ -133,6 +147,22 @@ export function installSoundInput(options: SoundInputOptions): () => void {
       // A Ctrl+C (or a state consumer) may have disposed the handler while this
       // chunk was being processed; nothing after a stop may change sound state.
       if (disposed) continue;
+      if (char === "q" || char === "Q") {
+        try {
+          options.onStop();
+        } catch {
+          // Shutdown remains owned by the existing stop handler.
+        }
+        continue;
+      }
+      if (char === "?" || char === "h" || char === "H") {
+        try {
+          options.onHelp?.();
+        } catch {
+          // A display toggle must never interrupt the key handler.
+        }
+        continue;
+      }
       if (char === "m" || char === "M") {
         const next = nextSoundState(enabled, muted);
         enabled = next.enabled;
@@ -151,6 +181,7 @@ export function installSoundInput(options: SoundInputOptions): () => void {
     input.setRawMode?.(true);
   } catch {
     restore();
+    reportAvailability(options, false);
     return () => undefined;
   }
   try {
@@ -158,6 +189,7 @@ export function installSoundInput(options: SoundInputOptions): () => void {
   } catch {
     removeListener();
     restore();
+    reportAvailability(options, false);
     return () => undefined;
   }
   try {
@@ -165,13 +197,16 @@ export function installSoundInput(options: SoundInputOptions): () => void {
   } catch {
     removeListener();
     restore();
+    reportAvailability(options, false);
     return () => undefined;
   }
 
+  reportAvailability(options, true);
   return () => {
     if (disposed) return;
     disposed = true;
     removeListener();
     restore();
+    reportAvailability(options, false);
   };
 }
