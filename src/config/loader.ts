@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { CREDENTIAL_SEED_FILES, OPENCODE_CREDENTIAL_FILES } from "../agent/credentials.js";
+import {
+  PRESENTATION_MODES,
+  resolveTerminalOptions,
+  type PresentationMode,
+  type TerminalOptions,
+} from "../terminal/options.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../types.js";
 
 /**
@@ -98,6 +104,12 @@ export interface AppConfig {
     maximumAgeSec: number;
     maximumTotalBytes: number;
   };
+  /**
+   * Optional terminal presentation/sound block. Absent when the configuration
+   * file carries no `terminal:` key; the loader resolves defaults into the
+   * block when one is present, and CLI flags override it at launch.
+   */
+  terminal?: TerminalOptions;
   agentRetries: number;
   allowedAuthors: string[];
   agents: Record<string, AgentDefinition>;
@@ -138,6 +150,13 @@ interface RawConfig {
     /** Backward-compatible short spellings accepted by the loader. */
     max_age_seconds?: unknown;
     max_total_bytes?: unknown;
+  };
+  terminal?: {
+    presentation?: unknown;
+    no_color?: unknown;
+    no_interaction?: unknown;
+    sound?: unknown;
+    mute?: unknown;
   };
   allowed_authors?: unknown;
   agents?: Record<
@@ -465,6 +484,53 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     );
   }
 
+  // Terminal presentation and sound. The whole block is optional; when absent
+  // AppConfig.terminal stays undefined and defaults apply at launch time.
+  // When present, the loader resolves every default so the value is a complete
+  // TerminalOptions. Command-line flags still override it (inside the daemon
+  // bootstrap, not here).
+  let terminal: TerminalOptions | undefined;
+  const rawTerminal = raw.terminal;
+  if (
+    rawTerminal !== undefined &&
+    (rawTerminal === null || typeof rawTerminal !== "object" || Array.isArray(rawTerminal))
+  ) {
+    problems.push("terminal must be a configuration object");
+  } else if (rawTerminal !== undefined) {
+    const partial: Partial<TerminalOptions> = {};
+    const presentation = asString(rawTerminal.presentation);
+    if (rawTerminal.presentation !== undefined) {
+      if (
+        presentation === undefined ||
+        !PRESENTATION_MODES.includes(presentation as PresentationMode)
+      ) {
+        problems.push(
+          `terminal.presentation must be one of ${PRESENTATION_MODES.join("|")} ` +
+            `(got ${String(rawTerminal.presentation)})`,
+        );
+      } else {
+        partial.presentation = presentation as PresentationMode;
+      }
+    }
+    for (const [key, field] of [
+      ["no_color", "noColor"],
+      ["no_interaction", "noInteraction"],
+      ["sound", "sound"],
+      ["mute", "mute"],
+    ] as const) {
+      const value = rawTerminal[key];
+      const parsed = asBoolean(value);
+      if (value !== undefined && parsed === undefined) {
+        problems.push(`terminal.${key} must be a boolean`);
+      } else if (parsed !== undefined) {
+        partial[field] = parsed;
+      }
+    }
+    // Defaults are resolved even when a field was invalid; the final problem
+    // check below still rejects the configuration as a whole.
+    terminal = resolveTerminalOptions(partial, {});
+  }
+
   // Known agents. Each declares its binary and supported effort tiers.
   const agents: Record<string, AgentDefinition> = {};
   const rawAgents = raw.agents ?? {};
@@ -544,6 +610,7 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     consoleToken: consoleToken as string,
     ...(consoleTimezone === undefined ? {} : { consoleTimezone }),
     ...(agentTimeoutSec === undefined ? {} : { agentTimeoutSec }),
+    ...(terminal === undefined ? {} : { terminal }),
     workspaceReclamation: {
       enabled: workspaceReclamationEnabled,
       minimumAgeSec: workspaceMinimumAgeSec,

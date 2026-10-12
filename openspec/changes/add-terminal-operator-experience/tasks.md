@@ -1,7 +1,7 @@
 ## 1. Presentation configuration and bootstrap
 
-- [ ] 1.1 Add optional presentation/sound configuration and parse presentation, no-color, no-interaction, sound and mute flags alongside the existing config path; verify configuration/argument tests preserve positional and environment fallback behavior and reject unknown options safely.
-- [ ] 1.2 Implement mode resolution against the actual presentation stream, CI, terminal capability and interaction settings; verify fake-stream tests cover interactive CMD/PowerShell, redirected stderr, explicit JSON/plain, unsafe forced terminal and NO_COLOR without emitting control codes in non-interactive modes.
+- [x] 1.1 Add optional presentation/sound configuration and parse presentation, no-color, no-interaction, sound and mute flags alongside the existing config path; verify configuration/argument tests preserve positional and environment fallback behavior and reject unknown options safely.
+- [x] 1.2 Implement mode resolution against the actual presentation stream, CI, terminal capability and interaction settings; verify fake-stream tests cover interactive CMD/PowerShell, redirected stderr, explicit JSON/plain, unsafe forced terminal and NO_COLOR without emitting control codes in non-interactive modes.
 - [ ] 1.3 Add an early selected-mode diagnostic reporter with bounded redacted causes and next actions; verify configuration, credentials, ownership, GitHub and version-preflight failures retain nonzero exits and do not leave terminal/lock resources acquired.
 
 ## 2. Structured logging and detail inspection
