@@ -6,9 +6,9 @@
 
 ## 2. Structured logging and detail inspection
 
-- [ ] 2.1 Introduce injectable Logger presentation sinks around the same redacted record while preserving database persistence and legacy JSON defaults; verify log-level/redaction tests and that terminal mode does not interleave routine JSON with display output.
-- [ ] 2.2 Implement bounded meaningful plain-mode transition/warning/error output through a single presentation owner; verify unchanged poll noise is suppressed and diagnostics remain visible without cursor or color sequences.
-- [ ] 2.3 Add a separate read-only log-tail entrypoint and npm script with data-directory, tail, follow and format options; verify it cannot migrate/create a database, claim daemon ownership or authenticate to GitHub, and handles missing/busy stores and follow shutdown safely.
+- [x] 2.1 Introduce injectable Logger presentation sinks around the same redacted record while preserving database persistence and legacy JSON defaults; verify log-level/redaction tests and that terminal mode does not interleave routine JSON with display output.
+- [x] 2.2 Implement bounded meaningful plain-mode transition/warning/error output through a single presentation owner; verify unchanged poll noise is suppressed and diagnostics remain visible without cursor or color sequences.
+- [x] 2.3 Add a separate read-only log-tail entrypoint and npm script with data-directory, tail, follow and format options; verify it cannot migrate/create a database, claim daemon ownership or authenticate to GitHub, and handles missing/busy stores and follow shutdown safely.
 
 ## 3. Compact terminal surface
 
