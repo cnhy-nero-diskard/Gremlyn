@@ -18,11 +18,11 @@
 
 ## 4. Committed outcome dispatch and Windows audio
 
-- [ ] 4.1 Establish the post-recovery status-event baseline and consume new committed rows in bounded ordered batches; verify historical outcomes, duplicate reads, rollback/uncommitted rows, cancelled/interrupted events and internal retries never request cues.
-- [ ] 4.2 Dispatch at most once per eligible success/failure event independently of job execution; verify downstream validation failure requests only failure, explicit retries can cue again, and restart/muted/disabled periods cannot replay consumed events.
-- [ ] 4.3 Package distinct short success/failure WAV assets and a fixed Windows PowerShell SoundPlayer helper with a no-op unsupported-platform adapter; verify asset resolution and injected process tests prevent arbitrary path or repository-string interpolation and normal tests play no actual audio.
-- [ ] 4.4 Bound playback concurrency, pending requests, expiry and helper timeout with safe rate-limited diagnostics; verify helper absence/failure/hang, queue overload and shutdown leave job results unchanged and do not retry stale cues.
-- [ ] 4.5 Add independent enable/mute state and the supported TTY sound-control key with textual feedback; verify explicit opt-in, non-interactive exclusion, pending-cue suppression on mute, raw-mode restoration and existing Ctrl+C escalation.
+- [x] 4.1 Establish the post-recovery status-event baseline and consume new committed rows in bounded ordered batches; verify historical outcomes, duplicate reads, rollback/uncommitted rows, cancelled/interrupted events and internal retries never request cues.
+- [x] 4.2 Dispatch at most once per eligible success/failure event independently of job execution; verify downstream validation failure requests only failure, explicit retries can cue again, and restart/muted/disabled periods cannot replay consumed events.
+- [x] 4.3 Package distinct short success/failure WAV assets and a fixed Windows PowerShell SoundPlayer helper with a no-op unsupported-platform adapter; verify asset resolution and injected process tests prevent arbitrary path or repository-string interpolation and normal tests play no actual audio.
+- [x] 4.4 Bound playback concurrency, pending requests, expiry and helper timeout with safe rate-limited diagnostics; verify helper absence/failure/hang, queue overload and shutdown leave job results unchanged and do not retry stale cues.
+- [x] 4.5 Add independent enable/mute state and the supported TTY sound-control key with textual feedback; verify explicit opt-in, non-interactive exclusion, pending-cue suppression on mute, raw-mode restoration and existing Ctrl+C escalation.
 
 ## 5. Lifecycle integration and acceptance
 
