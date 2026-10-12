@@ -39,8 +39,12 @@ function stateLabel(job: TerminalJobRow): string {
 
 /** A current-work row, indented under its lane label. No internal ids. */
 function workLine(job: TerminalJobRow, columns: number): string {
-  if (columns >= 80)
-    return `  ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${formatDuration(job.elapsedSec)} elapsed`;
+  if (columns >= 80) {
+    const suffix = ` PR #${job.pr} | ${stateLabel(job)} | ${formatDuration(job.elapsedSec)} elapsed`;
+    // Reserve the status suffix and renderer margin before truncating the repository.
+    const repositoryWidth = Math.max(1, columns - 1 - 2 - suffix.length);
+    return `  ${fitText(job.repository, repositoryWidth)}${suffix}`;
+  }
 
   const width = Math.max(1, columns - 1);
   const state = stateLabel(job);
@@ -113,16 +117,38 @@ function wrapText(text: string, width: number): string[] {
   return lines;
 }
 
-function helpLines(columns: number): string[] {
+function helpLines(columns: number, rowBudget: number): string[] {
   const width = Math.max(1, columns - 1);
+  const budget = Math.max(0, Math.trunc(rowBudget));
+  const details = wrapText("Details: npm run logs -- --data-dir <directory>", width);
+  const helpControl = wrapText("? / h Return to dashboard", width);
+  const quitControl = wrapText("q Graceful shutdown", width);
+  const compactControls = wrapText("? / h back | q quit", width);
+  const fullControls = [...helpControl, ...quitControl];
+  const controls = details.length + fullControls.length <= budget ? fullControls : compactControls;
+  // Keep the detail command and both navigation actions ahead of optional guidance.
+  const essential = [...details, ...controls];
+  let spare = Math.max(0, budget - essential.length);
+  const optional = [
+    wrapText("Gremlyn | Help", width),
+    wrapText("Read-only display; no job actions are available here.", width),
+    wrapText("m Enable sound or toggle mute", width),
+    wrapText("Ctrl+C Stop; repeat requests retain escalation", width),
+  ];
+  const included: boolean[] = [];
+  for (const [index, group] of optional.entries()) {
+    if (group.length > spare) continue;
+    included[index] = true;
+    spare -= group.length;
+  }
+
   return [
-    "Gremlyn | Help",
-    ...wrapText("Read-only display; no job actions are available here.", width),
-    ...wrapText("? / h  Return to dashboard", width),
-    ...wrapText("m      Enable sound or toggle mute", width),
-    ...wrapText("q      Graceful shutdown", width),
-    ...wrapText("Ctrl+C Stop; repeat requests retain escalation", width),
-    ...wrapText("Details: npm run logs -- --data-dir <directory>", width),
+    ...(included[0] ? (optional[0] ?? []) : []),
+    ...details,
+    ...(included[1] ? (optional[1] ?? []) : []),
+    ...controls,
+    ...(included[2] ? (optional[2] ?? []) : []),
+    ...(included[3] ? (optional[3] ?? []) : []),
   ];
 }
 
@@ -425,7 +451,7 @@ export class TerminalPresentation {
         });
         const { columns, rows } = this.renderer?.dimensions ?? { columns: 80, rows: 24 };
         const lines = this.helpVisible
-          ? helpLines(columns)
+          ? helpLines(columns, rows - 2)
           : snapshotLines(
               snapshot,
               this.soundLabel(),

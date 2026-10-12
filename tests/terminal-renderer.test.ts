@@ -22,6 +22,10 @@ class FakeStream extends EventEmitter {
   }
 }
 
+function updatedRows(output: string): string[] {
+  return [...output.matchAll(/\x1b\[2K([^\r]*)\r\x1b\[\d+B/g)].map((match) => match[1] ?? "");
+}
+
 test("anchored refresh is bounded, change-only, ASCII-safe and never full-screen", () => {
   const stream = new FakeStream();
   let now = 0;
@@ -469,6 +473,48 @@ test("rendered narrow work and completion lines preserve status, PR and completi
   }
 });
 
+test("wide rendered work truncates colliding repository names before status and elapsed fields", () => {
+  const sharedRepositoryPrefix = "same-long-repository-prefix-".padEnd(70, "x");
+  const snapshot = terminalSnapshot({
+    activeCount: 1,
+    queuedCount: 1,
+    rows: [
+      snapshotRow(1, "active", {
+        repository: `${sharedRepositoryPrefix}alpha`,
+        pr: 1234,
+        stage: "running",
+        elapsedSec: 3_661,
+      }),
+      snapshotRow(2, "queued", {
+        repository: `${sharedRepositoryPrefix}bravo`,
+        pr: 5678,
+        stage: "validating",
+        outcome: "agent-succeeded",
+        elapsedSec: 61,
+      }),
+    ],
+  });
+
+  for (const columns of [80, 100]) {
+    const stream = new FakeStream();
+    stream.columns = columns;
+    const renderer = new AnchoredRenderer(stream, () => assert.fail());
+    renderer.render(snapshotLines(snapshot, "disabled", 20, columns, true, true));
+
+    const renderedLines = stream.output[0]!.split("\n").filter(Boolean);
+    const running = renderedLines.find((line) => line.includes("PR #1234"));
+    const validating = renderedLines.find((line) => line.includes("PR #5678"));
+    assert.ok(running, `${columns} columns retain the first PR row`);
+    assert.ok(validating, `${columns} columns retain the colliding repository row`);
+    assert.match(running!, /PR #1234 \| running \| 1h 01m elapsed$/);
+    assert.match(validating!, /PR #5678 \| validating \(agent-succeeded\) \| 1m 01s elapsed$/);
+    assert.match(running!, /\.\.\. PR #1234/);
+    assert.match(validating!, /\.\.\. PR #5678/);
+    assert.ok(renderedLines.every((line) => line.length <= columns - 1));
+    renderer.dispose();
+  }
+});
+
 test("help view puts the long read-only detail command on demand and no-color remains plain", () => {
   const stream = new FakeStream();
   const store = new Store({ dataDir: "unused", file: ":memory:" });
@@ -488,6 +534,8 @@ test("help view puts the long read-only detail command on demand and no-color re
     const help = stream.output.join("");
     assert.match(help, /npm run logs -- --data-dir <directory>/);
     assert.match(help, /Read-only display/);
+    assert.match(help, /\? \/ h Return to dashboard/);
+    assert.match(help, /q Graceful shutdown/);
     assert.doesNotMatch(help, /\x1b\[(?:1|31|32|33)m/);
     now = 500;
     presentation.toggleHelp();
@@ -495,6 +543,47 @@ test("help view puts the long read-only detail command on demand and no-color re
   } finally {
     presentation.dispose();
     store.close();
+  }
+});
+
+test("help keeps the detail command and help/quit controls visible at short physical heights", () => {
+  for (const columns of [80, 30, 20]) {
+    for (let height = 6; height <= 12; height++) {
+      const stream = new FakeStream();
+      stream.columns = columns;
+      stream.rows = height;
+      const store = new Store({ dataDir: "unused", file: ":memory:" });
+      let now = 0;
+      const presentation = new TerminalPresentation(
+        { ...DEFAULT_TERMINAL_OPTIONS, presentation: "terminal", noColor: true },
+        stream,
+        { TERM: "xterm" },
+        [],
+        () => now,
+      );
+      try {
+        presentation.attach(store.db, 60);
+        presentation.setSoundControlAvailable(true);
+        now = 250;
+        presentation.toggleHelp();
+
+        const visible = updatedRows(stream.output.at(-1) ?? "");
+        assert.ok(visible.length > 0, `${columns}x${height} rendered the help view`);
+        assert.ok(visible.length <= height - 2, `${columns}x${height} respects the row budget`);
+        assert.match(
+          visible.join(" "),
+          /Details: npm run logs -- --data-dir <directory>/,
+          `${columns}x${height} keeps the complete detail command discoverable`,
+        );
+        const controls = visible.join(" | ");
+        assert.match(controls, /\? \/ h/);
+        assert.match(controls, /\b(?:dashboard|back)\b/);
+        assert.match(controls, /q (?:Graceful shutdown|quit)/);
+      } finally {
+        presentation.dispose();
+        store.close();
+      }
+    }
   }
 });
 
