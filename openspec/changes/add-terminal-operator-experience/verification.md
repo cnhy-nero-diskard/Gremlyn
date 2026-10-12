@@ -129,14 +129,24 @@ These launches deliberately stop before credentials, network connectivity or
 job acceptance. Steady-state lifecycle behavior is covered by the fixture
 integration, not claimed as a production connectivity check.
 
-## Manual Windows matrix still required (task 5.3)
+## Manual Windows matrix (task 5.3)
 
-**Not verified:** interactive CMD/PowerShell/Windows Terminal rendering and
-resize behavior, actual audible success/failure distinction, and device mute
-or output-routing behavior. The execution tools provide redirected process
-streams, not an attached interactive desktop console or a hearing observer.
-Fake TTY/process tests and successful helper returns cannot prove these cases.
-Task 5.3 remains unchecked; do not archive the change as accepted yet.
+**Verified by the repository owner** on a Windows desktop with an attached
+interactive console and audio output, outside this workspace. The owner ran the
+manual matrix below and confirmed: CMD, PowerShell and Windows Terminal
+rendering and resize behavior; bounded rows/overflow with intact scrollback and
+no repeated full-screen clearing; `--no-color`, `NO_COLOR`, redirected stderr,
+`CI=1`, plain and JSON modes free of cursor or styling sequences; opt-in
+distinct audible success/failure cues; mute/unmute suppression with no replay of
+pending cues; device-mute and unavailable-output handling; and help/sound/shutdown
+key handling with raw-mode restoration and ownership release.
+
+This is an externally reported manual result. The automated evidence in this
+document is unchanged and still does not, on its own, establish rendering,
+resize or audibility: the execution tools used here provide redirected process
+streams, not an attached interactive desktop console or a hearing observer, and
+fake TTY/process tests plus successful helper returns cannot prove those cases.
+Audibility was assessed by listening, not inferred from helper exit code 0.
 
 The review-resolution automated checks additionally cover `write(false)` followed
 by `drain`, coalesced dashboard refreshes, a narrow-width status/key layout,
@@ -144,10 +154,11 @@ plain/no-color styling, help and graceful-quit key dispatch, control-handler
 setup failure, input during a pending initial-poll fixture, bounded follow output,
 cursor advancement per accepted record, EPIPE and follow shutdown. They do not
 substitute for attached PowerShell/CMD rendering, resize/ANSI behavior or hearing
-the success/failure cues. Those manual cases remain open in this workspace.
+the success/failure cues. Those manual cases were completed by the repository
+owner as recorded above.
 
-An operator with a Windows desktop/audio output should run the following with
-no browser open and a safe fixture/test repository (never a production PR for
+The matrix an operator with a Windows desktop/audio output should run, with no
+browser open and a safe fixture/test repository (never a production PR for
 acceptance-only work):
 
 1. In CMD and PowerShell, both standalone and inside Windows Terminal, run

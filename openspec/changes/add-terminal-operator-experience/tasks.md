@@ -28,6 +28,6 @@
 
 - [x] 5.1 Attach presentation to bootstrap/store readiness and dispose timers, resize/input listeners, log handles and audio helpers idempotently before store closure; verify startup exceptions, renderer/disposer errors and repeated stop requests still release ownership and close the store.
 - [x] 5.2 Add a fixture daemon integration spanning queued/running/validating/succeeded/failed/retried/interrupted work with no browser; verify terminal counts, detail logs, exact cue requests and unchanged execution/publication behavior.
-- [ ] 5.3 Run a manual Windows matrix for npm-start forwarding, CMD/PowerShell/Windows Terminal resizing, redirected/CI/NO_COLOR launches and opt-in audible cue distinction; record results including muted-device/helper limitations without claiming audibility from helper exit alone.
+- [x] 5.3 Run a manual Windows matrix for npm-start forwarding, CMD/PowerShell/Windows Terminal resizing, redirected/CI/NO_COLOR launches and opt-in audible cue distinction; record results including muted-device/helper limitations without claiming audibility from helper exit alone.
 - [x] 5.4 Run full tests, build, lint and changed-file format checks; verify configuration, logging/redaction, startup ownership, shutdown and publication regressions remain green without real audio in the automated suite.
 - [x] 5.5 Document presentation overrides, browser-independent logs, sound opt-in/mute, at-most-once best-effort cue semantics and JSON rollback; verify examples preserve the existing config-path launch and pinned prestart safety.
