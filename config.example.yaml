@@ -10,6 +10,15 @@ data_dir: .gremlyn
 # debug | info | warn | error
 log_level: info
 
+# Optional browser-independent terminal presentation. CLI flags override these.
+# Auto selects an interactive stderr surface; redirected/CI output stays JSON.
+terminal:
+  presentation: auto # auto | terminal | plain | json
+  no_color: false # Also honors a non-empty NO_COLOR environment variable.
+  no_interaction: false # Disables dashboard interaction / sound-control key.
+  sound: false # Explicit opt-in; never plays a startup test cue.
+  mute: false # Consume outcomes without saving cues for later replay.
+
 # How often each enabled repository is polled for new review comments.
 poll_interval_seconds: 60
 

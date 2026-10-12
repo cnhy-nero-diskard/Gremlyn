@@ -99,9 +99,13 @@ export class DataDirectoryLock {
   private constructor(
     private readonly path: string,
     private readonly descriptor: number,
+    private readonly diagnostic: (event: string, fields: Record<string, unknown>) => void = report,
   ) {}
 
-  static acquire(dataDir: string): DataDirectoryLock {
+  static acquire(
+    dataDir: string,
+    diagnostic: (event: string, fields: Record<string, unknown>) => void = report,
+  ): DataDirectoryLock {
     mkdirSync(dataDir, { recursive: true });
     const path = dataDirectoryLockPath(dataDir);
     for (;;) {
@@ -122,10 +126,14 @@ export class DataDirectoryLock {
           );
         }
 
-        report(
-          "reclaiming abandoned Gremlyn data directory claim",
-          owner === undefined ? { path, reason: "unparseable-owner" } : { path, pid: owner.pid },
-        );
+        try {
+          diagnostic(
+            "reclaiming abandoned Gremlyn data directory claim",
+            owner === undefined ? { path, reason: "unparseable-owner" } : { path, pid: owner.pid },
+          );
+        } catch {
+          /* A presentation defect cannot change ownership recovery. */
+        }
         try {
           unlinkSync(path);
         } catch (reclaimError) {
@@ -135,12 +143,21 @@ export class DataDirectoryLock {
         }
         continue;
       }
-      writeFileSync(
-        descriptor,
-        `${JSON.stringify({ pid: process.pid, claimedAtMs: Date.now() })}\n`,
-        "utf8",
-      );
-      return new DataDirectoryLock(path, descriptor);
+      try {
+        writeFileSync(
+          descriptor,
+          `${JSON.stringify({ pid: process.pid, claimedAtMs: Date.now() })}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        try {
+          closeSync(descriptor);
+        } finally {
+          unlinkSync(path);
+        }
+        throw error;
+      }
+      return new DataDirectoryLock(path, descriptor, diagnostic);
     }
   }
 
@@ -150,7 +167,7 @@ export class DataDirectoryLock {
     try {
       closeSync(this.descriptor);
     } catch (error) {
-      report("failed to close Gremlyn data directory claim", {
+      this.report("failed to close Gremlyn data directory claim", {
         path: this.path,
         error: errorMessage(error),
       });
@@ -159,11 +176,19 @@ export class DataDirectoryLock {
       unlinkSync(this.path);
     } catch (error) {
       if (!isMissingError(error)) {
-        report("failed to remove Gremlyn data directory claim", {
+        this.report("failed to remove Gremlyn data directory claim", {
           path: this.path,
           error: errorMessage(error),
         });
       }
+    }
+  }
+
+  private report(event: string, fields: Record<string, unknown>): void {
+    try {
+      this.diagnostic(event, fields);
+    } catch {
+      /* Diagnostics cannot strand ownership. */
     }
   }
 }

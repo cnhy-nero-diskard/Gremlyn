@@ -25,12 +25,12 @@ The daemon SHALL offer automatic, terminal, plain and JSON presentation modes wh
 
 ### Requirement: Terminal health and jobs reflect observed state
 
-The terminal SHALL show startup readiness/connection state, configured/enabled repository counts, latest observed poll and freshness, active/queued counts, and a bounded set of lifecycle rows identifying repository, PR, stage, elapsed duration and last outcome. Health SHALL be derived from observations rather than optimistic readiness claims. Updates SHALL redraw only changed display content at a bounded cadence, adapt to terminal size, and avoid routine polling/log noise, excessive output or a full-screen application.
+The terminal SHALL show startup readiness/connection state, configured/enabled repository counts, latest observed poll and freshness, active/queued counts, a small bounded set of current active/queued lifecycle rows identifying repository, PR, stage and elapsed duration, and at most one most-recently-finished completion. Repository labels SHALL use the repository name unless two displayed repositories share a name, in which case `owner/name` SHALL disambiguate. Internal job ids and stage-identical outcome repetition SHALL NOT be rendered. Current-work overflow SHALL be summarized explicitly without counting terminal history, which SHALL remain available through the read-only detail logs rather than the dashboard. A newer completion SHALL supersede an older failure rather than re-surfacing stale rows. Health SHALL be derived from observations rather than optimistic readiness claims. Updates SHALL redraw only changed display content at a bounded cadence, adapt to terminal size, and avoid routine polling/log noise, excessive output or a full-screen application.
 
 #### Scenario: Queue and lifecycle change
 
 - **WHEN** committed jobs become queued, running, validating or terminal
-- **THEN** counts and corresponding rows update accurately with scan-friendly textual states and durations
+- **THEN** counts and corresponding current rows update accurately with scan-friendly textual states and durations
 
 #### Scenario: Poll becomes stale
 
@@ -40,7 +40,27 @@ The terminal SHALL show startup readiness/connection state, configured/enabled r
 #### Scenario: Terminal is narrow or resized
 
 - **WHEN** the terminal cannot fit all configured rows/columns or changes size
-- **THEN** the surface truncates/wraps safely with overflow information and remains usable without repeated full-screen clears
+- **THEN** the surface truncates/wraps safely with current-work overflow information and remains usable without repeated full-screen clears
+
+#### Scenario: Idle daemon with extensive history
+
+- **WHEN** no active or queued jobs exist but many completions are stored
+- **THEN** the surface shows an idle waiting line and at most one latest completion, with no historical rows and no history counted as overflow
+
+#### Scenario: Current-work overflow
+
+- **WHEN** active/queued jobs exceed the bounded row set
+- **THEN** the surface labels the omitted current-work count clearly and does not include terminal history in that count
+
+#### Scenario: Colliding repository names
+
+- **WHEN** two displayed repositories share a repository name
+- **THEN** `owner/name` disambiguates the colliding rows while unique names stay short
+
+#### Scenario: Stale failure superseded by success
+
+- **WHEN** a newer job finishes successfully after an older job failed
+- **THEN** the surface's single latest completion is the newer outcome and does not re-highlight the older failure
 
 ### Requirement: Human presentation preserves detailed logs and safe diagnostics
 

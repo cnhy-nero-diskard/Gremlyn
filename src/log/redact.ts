@@ -19,3 +19,22 @@ export function createRedactor(secrets: readonly string[]): Redactor {
     return out;
   };
 }
+
+/** Redact strings as strings, not JSON syntax (credentials may contain quotes/control characters). */
+export function redactStructuredFields(
+  fields: Record<string, unknown>,
+  redact: Redactor,
+): Record<string, unknown> {
+  const copy: unknown = JSON.parse(JSON.stringify(fields));
+  const visit = (value: unknown): unknown => {
+    if (typeof value === "string") return redact(value);
+    if (Array.isArray(value)) return value.map(visit);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [redact(key), visit(item)]),
+      );
+    }
+    return value;
+  };
+  return visit(copy) as Record<string, unknown>;
+}

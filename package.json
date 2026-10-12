@@ -14,6 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "probe:agent": "node --import tsx src/agent/probe.ts",
+    "logs": "node --import tsx src/log/tail.ts",
     "setup": "node --import tsx src/setup/cli.ts setup",
     "add-repo": "node --import tsx src/setup/cli.ts add-repo",
     "verify:config": "node --import tsx src/setup/cli.ts verify",
