@@ -21,8 +21,8 @@
 
 ## 4. Job workflow identity and observed delegation
 
-- [ ] 4.1 Render captured workflow and current actual-primary identity prominently near the job title with a new-jobs/retries explanation when settings differ; verify a pre-activation default/native job never displays the current managed team as its captured runner, unstarted/unknown identity remains explicit, and prior attempt identities remain available in history.
-- [ ] 4.2 Place concise observed-delegation status beside job workflow identity while retaining existing expandable attempt/invocation trees; verify healthy zero, active/completed children, partial/unavailable observation, default/native delegation, parent exclusion, unsupported executors, and live node updates without fabricating child execution from activation.
+- [x] 4.1 Render captured workflow and current actual-primary identity prominently near the job title with a new-jobs/retries explanation when settings differ; verify a pre-activation default/native job never displays the current managed team as its captured runner, unstarted/unknown identity remains explicit, and prior attempt identities remain available in history.
+- [x] 4.2 Place concise observed-delegation status beside job workflow identity while retaining existing expandable attempt/invocation trees; verify healthy zero, active/completed children, partial/unavailable observation, default/native delegation, parent exclusion, unsupported executors, and live node updates without fabricating child execution from activation.
 
 ## 5. Integrated acceptance and handoff
 
