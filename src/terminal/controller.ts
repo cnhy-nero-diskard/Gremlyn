@@ -38,8 +38,16 @@ function stateLabel(job: TerminalJobRow): string {
 }
 
 /** A current-work row, indented under its lane label. No internal ids. */
-function workLine(job: TerminalJobRow): string {
-  return `  ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${formatDuration(job.elapsedSec)} elapsed`;
+function workLine(job: TerminalJobRow, columns: number): string {
+  if (columns >= 80)
+    return `  ${job.repository} PR #${job.pr} | ${stateLabel(job)} | ${formatDuration(job.elapsedSec)} elapsed`;
+
+  const width = Math.max(1, columns - 1);
+  const state = stateLabel(job);
+  const full = `${state} #${job.pr}`;
+  const stage = `${job.stage} #${job.pr}`;
+  const line = full.length <= width ? full : stage.length <= width ? stage : `#${job.pr}`;
+  return `${line} | ${job.repository} | ${formatDuration(job.elapsedSec)} elapsed`;
 }
 
 function fitText(text: string, width: number): string {
@@ -54,6 +62,28 @@ function completionLine(job: TerminalJobRow, columns: number): string {
     job.completionAgeSec === null ? "" : ` | completed ${formatDuration(job.completionAgeSec)} ago`;
   const prefix = "Latest outcome: ";
   const suffix = ` PR #${job.pr} | ${stateLabel(job)} | job ${formatDuration(job.elapsedSec)}${completionAge}`;
+  if (columns < 80) {
+    const width = Math.max(1, columns - 1);
+    const state = stateLabel(job);
+    const shortState = `${job.stage}`;
+    const status = `#${job.pr} ${state}`;
+    const compactStatus = `#${job.pr} ${shortState}`;
+    let line = status.length <= width ? status : compactStatus;
+    if (job.completionAgeSec !== null) {
+      const age = formatDuration(job.completionAgeSec);
+      const withAge = `${line} ${age} ago`;
+      const withShortAge = `${line} ${age}`;
+      const compactAge = age.replace(/ \d{2}(?:s|m)$/, "");
+      const withCompactAge = `${line} ${compactAge}`;
+      if (withAge.length <= width) line = withAge;
+      else if (withShortAge.length <= width) line = withShortAge;
+      else if (withCompactAge.length <= width) line = withCompactAge;
+    }
+    const labeled = `Result ${line}`;
+    if (labeled.length <= width) line = labeled;
+    if (`${line} | ${job.repository}`.length <= width) line += ` | ${job.repository}`;
+    return line;
+  }
   const repositoryWidth = Math.max(1, columns - 1 - prefix.length - suffix.length);
   return `${prefix}${fitText(job.repository, repositoryWidth)}${suffix}`;
 }
@@ -107,7 +137,7 @@ function headerLines(
   const poll =
     snapshot.pollAgeSec === null ? "not observed" : `${formatDuration(snapshot.pollAgeSec)} ago`;
   const wide = columns >= 52;
-  const keys = controlsAvailable ? "Keys: ? help  m sound  q quit" : "Ctrl+C to stop";
+  const keys = shortcutLines(columns, controlsAvailable);
   const lines = [
     `Gremlyn | ${snapshot.readiness}`,
     `Health: ${snapshot.connection.toUpperCase()}`,
@@ -123,12 +153,65 @@ function headerLines(
     `Poll: ${poll}`,
     `Sound: ${sound}`,
   ];
-  if (controlsReady) {
-    if (controlsAvailable && columns < 28) lines.push("? help", "m sound / q quit");
-    else if (controlsAvailable && columns < 38) lines.push("? help  m sound  q quit");
-    else lines.push(keys);
-  }
+  if (controlsReady) lines.push(...keys);
   return lines;
+}
+
+function shortcutLines(columns: number, controlsAvailable: boolean): string[] {
+  if (!controlsAvailable) return ["Ctrl+C to stop"];
+  if (columns < 28) return ["? help", "m sound / q quit"];
+  return [columns < 38 ? "? help  m sound  q quit" : "Keys: ? help  m sound  q quit"];
+}
+
+/** One-line current-work summary for a short, ready interactive surface. */
+function compactWorkLine(snapshot: TerminalSnapshot, columns: number): string {
+  const currentCount = snapshot.activeCount + snapshot.queuedCount;
+  const job = snapshot.rows[0];
+  if (job === undefined) {
+    if (currentCount > 0) return `+${currentCount} active/queued`;
+    if (snapshot.latestCompletion !== null)
+      return completionLine(snapshot.latestCompletion, columns);
+    return "Idle. Waiting.";
+  }
+
+  const width = Math.max(1, columns - 1);
+  const full = `${stateLabel(job)} #${job.pr}`;
+  const stage = `${job.stage} #${job.pr}`;
+  let line = full.length <= width ? full : stage.length <= width ? stage : `#${job.pr}`;
+  const omitted = Math.max(0, currentCount - 1);
+  if (omitted > 0) {
+    const detailed = `${line} +${omitted} more`;
+    const compact = `${line} +${omitted}`;
+    if (detailed.length <= width) line = detailed;
+    else if (compact.length <= width) line = compact;
+  }
+  return line;
+}
+
+/** Keep work and the shortcut hint visible before optional status detail. */
+function compactSnapshotLines(
+  snapshot: TerminalSnapshot,
+  sound: string,
+  budget: number,
+  columns: number,
+  controlsAvailable: boolean,
+): string[] {
+  const keys = shortcutLines(columns, controlsAvailable);
+  const primary = compactWorkLine(snapshot, columns);
+  const lines = [`Gremlyn | ${snapshot.readiness}`, primary];
+  const optional = [
+    `Health: ${snapshot.connection.toUpperCase()}`,
+    ...(snapshot.latestCompletion !== null && snapshot.rows.length > 0
+      ? [completionLine(snapshot.latestCompletion, columns)]
+      : []),
+    `Work: ${snapshot.activeCount} active | ${snapshot.queuedCount} queued`,
+    `Poll: ${snapshot.pollAgeSec === null ? "not observed" : `${formatDuration(snapshot.pollAgeSec)} ago`}`,
+    `Sound: ${sound}`,
+  ];
+  const spare = Math.max(0, budget - lines.length - keys.length);
+  lines.push(...optional.slice(0, spare));
+  lines.push(...keys);
+  return lines.slice(0, budget);
 }
 
 export function snapshotLines(
@@ -141,12 +224,16 @@ export function snapshotLines(
 ): string[] {
   const budget = Math.max(0, Math.trunc(rowBudget));
   const header = headerLines(snapshot, sound, columns, controlsAvailable, controlsReady);
+  const active = snapshot.rows.filter((job) => job.lane === "active");
+  const queued = snapshot.rows.filter((job) => job.lane === "queued");
+  const totalRows = snapshot.rows.length;
+  const minimumWorkCost =
+    totalRows === 0 ? 1 : 1 + (snapshot.activeCount + snapshot.queuedCount > 1 ? 2 : 1);
+  if (controlsReady && budget < header.length + minimumWorkCost)
+    return compactSnapshotLines(snapshot, sound, budget, columns, controlsAvailable);
   if (budget <= header.length) return header.slice(0, budget);
 
   const available = budget - header.length;
-  const totalRows = snapshot.rows.length;
-  const active = snapshot.rows.filter((job) => job.lane === "active");
-  const queued = snapshot.rows.filter((job) => job.lane === "queued");
   const completion = snapshot.latestCompletion;
   const body: string[] = [];
 
@@ -173,7 +260,7 @@ export function snapshotLines(
       body.push(`Active (${snapshot.activeCount})`);
       for (const job of active) {
         if (emitted >= shown) break;
-        body.push(workLine(job));
+        body.push(workLine(job, columns));
         emitted += 1;
       }
     }
@@ -181,7 +268,7 @@ export function snapshotLines(
       body.push(`Queued (${snapshot.queuedCount})`);
       for (const job of queued) {
         if (emitted >= shown) break;
-        body.push(workLine(job));
+        body.push(workLine(job, columns));
         emitted += 1;
       }
     }

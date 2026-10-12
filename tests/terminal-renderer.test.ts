@@ -139,6 +139,37 @@ test("write backpressure preserves the accepted render and coalesces until drain
   renderer.dispose();
 });
 
+test("diagnostics share bounded drain-aware output and shutdown drops pending messages", () => {
+  const stream = new FakeStream();
+  stream.blocked = true;
+  const renderer = new AnchoredRenderer(stream, () => assert.fail());
+  renderer.render(["Gremlyn", "Health: HEALTHY"]);
+  for (let index = 0; index < 32; index++) renderer.diagnostic(`WARN repeated ${index}`);
+  renderer.diagnostic("ERROR critical fixture");
+  assert.equal(stream.output.length, 1, "blocked diagnostics do not enqueue more writes");
+
+  stream.blocked = false;
+  stream.emit("drain");
+  const recovered = stream.output.join("");
+  assert.match(recovered, /ERROR critical fixture/);
+  assert.match(recovered, /additional terminal diagnostics omitted during backpressure/);
+  assert.match(stream.output.at(-1)!, /Gremlyn\nHealth: HEALTHY/);
+  assert.ok(stream.output.length <= 11, "diagnostic backlog and restoration stay bounded");
+  renderer.dispose();
+
+  const shutdownStream = new FakeStream();
+  shutdownStream.blocked = true;
+  const shutdownRenderer = new AnchoredRenderer(shutdownStream, () => assert.fail());
+  shutdownRenderer.render(["Gremlyn", "running"]);
+  shutdownRenderer.diagnostic("ERROR pending at shutdown");
+  const writesAtShutdown = shutdownStream.output.length;
+  shutdownRenderer.dispose();
+  shutdownStream.blocked = false;
+  shutdownStream.emit("drain");
+  assert.equal(shutdownStream.output.length, writesAtShutdown);
+  assert.equal(shutdownStream.listenerCount("drain"), 0);
+});
+
 test("meaningful health and latest-outcome colors are optional and retain their text labels", () => {
   const stream = new FakeStream();
   const renderer = new AnchoredRenderer(stream, () => assert.fail());
@@ -359,6 +390,85 @@ test("status groups and keyboard hints adapt to narrow widths without hiding hea
   );
 });
 
+test("short physical heights keep current work and shortcut hints in the rendered surface", () => {
+  const snapshot = terminalSnapshot({
+    activeCount: 2,
+    queuedCount: 3,
+    rows: [
+      snapshotRow(1, "active", { stage: "running" }),
+      snapshotRow(2, "active", { stage: "validating" }),
+      snapshotRow(3, "queued"),
+    ],
+    overflow: 2,
+    latestCompletion: snapshotRow(9, "recent", {
+      stage: "failed",
+      outcome: "failed",
+    }),
+  });
+
+  for (let height = 6; height <= 12; height++) {
+    const stream = new FakeStream();
+    stream.columns = 80;
+    stream.rows = height;
+    const renderer = new AnchoredRenderer(stream, () => assert.fail());
+    const { columns, rows } = renderer.dimensions;
+    const lines = snapshotLines(snapshot, "enabled", rows - 2, columns, true, true);
+    renderer.render(lines);
+
+    const rendered = stream.output.join("");
+    assert.match(rendered, /Keys: \? help\s+m sound\s+q quit/, `height ${height} keeps shortcuts`);
+    assert.match(rendered, /running #1|widgets PR #1 \| running/, `height ${height} shows work`);
+    assert.match(
+      rendered,
+      /\+4 more|4 more active\/queued/,
+      `height ${height} accounts for overflow`,
+    );
+    assert.ok(lines.length <= height - 2, `height ${height} respects the renderer budget`);
+    renderer.dispose();
+  }
+});
+
+test("rendered narrow work and completion lines preserve status, PR and completion age", () => {
+  const snapshot = terminalSnapshot({
+    activeCount: 1,
+    rows: [
+      snapshotRow(1, "active", {
+        repository: "widgets-with-a-long-colliding-name",
+        pr: 1234,
+        stage: "running",
+        elapsedSec: 3_661,
+      }),
+    ],
+    latestCompletion: snapshotRow(2, "recent", {
+      repository: "another-long-colliding-name",
+      pr: 5678,
+      stage: "failed",
+      outcome: "failed",
+      elapsedSec: 3_661,
+      completionAgeSec: 1_192,
+    }),
+  });
+
+  for (const columns of [20, 30, 40, 60]) {
+    const stream = new FakeStream();
+    stream.columns = columns;
+    const renderer = new AnchoredRenderer(stream, () => assert.fail());
+    renderer.render(snapshotLines(snapshot, "disabled", 20, columns, true, true));
+
+    const renderedLines = stream.output.join("").split("\n").filter(Boolean);
+    assert.ok(
+      renderedLines.some((line) => /running #1234/.test(line)),
+      `${columns} columns keep the active stage and PR before the repository name`,
+    );
+    const completion = renderedLines.find((line) => line.includes("5678"));
+    assert.ok(completion, `${columns} columns render the latest result`);
+    assert.match(completion!, /failed/, `${columns} columns keep the failed outcome`);
+    assert.match(completion!, /19m/, `${columns} columns retain the completion age`);
+    assert.ok(renderedLines.every((line) => line.length <= columns - 1));
+    renderer.dispose();
+  }
+});
+
 test("help view puts the long read-only detail command on demand and no-color remains plain", () => {
   const stream = new FakeStream();
   const store = new Store({ dataDir: "unused", file: ":memory:" });
@@ -388,7 +498,7 @@ test("help view puts the long read-only detail command on demand and no-color re
   }
 });
 
-test("a narrow row budget truncates current work but still labels the backlog exactly", () => {
+test("a narrow row budget keeps one current job and summarizes the remaining backlog", () => {
   const snapshot = terminalSnapshot({
     activeCount: 3,
     queuedCount: 20,
@@ -400,29 +510,28 @@ test("a narrow row budget truncates current work but still labels the backlog ex
     ],
     overflow: 19,
   });
-  // One body line cannot hold a label, a row and the summary, so the surface
-  // reports the full 3 + 20 backlog instead of an off-by-one.
+  // The compact layout spends its one current-work line on a representative
+  // active job and the exact number of other active/queued jobs.
   const lines = snapshotLines(snapshot, "disabled", 8);
-  assert.equal(lines.length, 8);
-  assert.doesNotMatch(lines[7]!, /^Active \(3\)$/);
-  assert.match(lines[7]!, /^\.\.\. 23 more active\/queued$/);
+  assert.ok(lines.length <= 8);
+  assert.ok(lines.some((line) => /running #1 \+22 more/.test(line)));
+  assert.doesNotMatch(lines.join("\n"), /^Active \(3\)$/m);
   assert.doesNotMatch(lines.join("\n"), /recent/);
 });
 
-test("an extremely tight budget shows the exact summary and never an orphan heading", () => {
+test("an extremely tight budget shows current work without an orphan heading", () => {
   const snapshot = terminalSnapshot({
     activeCount: 3,
     queuedCount: 0,
     rows: [snapshotRow(1, "active"), snapshotRow(2, "active"), snapshotRow(3, "active")],
     latestCompletion: snapshotRow(9, "recent", { stage: "succeeded", outcome: "succeeded" }),
   });
-  // available = 8 - 7 = 1: only the summary fits, so the "Active (3)" heading
-  // must not be shown without its rows, and the count is exact (3 active).
+  // The compact surface uses one line for a representative job and exact
+  // remaining count, rather than showing an orphan lane heading.
   const lines = snapshotLines(snapshot, "disabled", 8);
-  assert.equal(lines.length, 8);
-  assert.doesNotMatch(lines[7]!, /^Active \(3\)$/);
-  assert.match(lines[7]!, /^\.\.\. 3 more active\/queued$/);
-  assert.doesNotMatch(lines.join("\n"), /Latest outcome:/);
+  assert.ok(lines.length <= 8);
+  assert.ok(lines.some((line) => /running #1 \+2 more/.test(line)));
+  assert.doesNotMatch(lines.join("\n"), /^Active \(3\)$/m);
 });
 
 test("a tight budget keeps exact per-lane counts when multiple lanes are truncated", () => {

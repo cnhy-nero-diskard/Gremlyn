@@ -1,5 +1,7 @@
 import { sanitizeTerminalText } from "./projection.js";
 
+const MAX_PENDING_DIAGNOSTICS = 8;
+
 export interface PresentationStream {
   isTTY?: boolean;
   columns?: number;
@@ -17,7 +19,10 @@ function colorForLine(index: number, line: string): string | undefined {
     if (state === "failed") return "\x1b[31m";
     if (state === "stale" || state === "unknown") return "\x1b[33m";
   }
-  if (line.startsWith("Latest outcome:")) {
+  if (line.startsWith("Latest outcome:") || line.startsWith("Result #") || /^#\d+\s/.test(line)) {
+    if (/\bfailed\b/i.test(line)) return "\x1b[31m";
+    if (/\b(?:cancelled|interrupted)\b/i.test(line)) return "\x1b[33m";
+    if (/\bsucceeded\b/i.test(line)) return "\x1b[32m";
     if (/\|\s*succeeded(?:\s|\||\()/i.test(line)) return "\x1b[32m";
     if (/\|\s*failed(?:\s|\||\()/i.test(line)) return "\x1b[31m";
     if (/\|\s*(?:cancelled|interrupted)(?:\s|\||\()/i.test(line)) return "\x1b[33m";
@@ -31,6 +36,9 @@ export class AnchoredRenderer {
   private stopped = false;
   private waitingForDrain = false;
   private pendingRender: { content: readonly string[]; color: boolean } | undefined;
+  private readonly pendingDiagnostics: string[] = [];
+  private omittedDiagnostics = 0;
+  private lastColor = false;
   private lastWrite = -Infinity;
   private force = false;
   private readonly resize = (): void => {
@@ -42,12 +50,7 @@ export class AnchoredRenderer {
   private readonly drain = (): void => {
     if (this.stopped) return;
     this.waitingForDrain = false;
-    const pending = this.pendingRender;
-    this.pendingRender = undefined;
-    if (pending !== undefined) {
-      this.force = true;
-      this.render(pending.content, pending.color);
-    }
+    this.flushPendingOutput();
   };
 
   constructor(
@@ -111,26 +114,25 @@ export class AnchoredRenderer {
     }
     if (this.write(output)) {
       this.lines = next;
+      this.lastColor = color;
       this.lastWrite = this.now();
     }
   }
 
   diagnostic(text: string): void {
     if (this.stopped) return;
-    const previous = this.lines;
-    const output = this.clearRegion() + sanitizeTerminalText(text, 500) + "\n";
-    this.lines = [];
-    if (this.write(output)) {
-      this.lastWrite = -Infinity;
-      // Strings were sanitized on entry; strip optional style before rebuilding.
-      this.render(previous.map((line) => sanitizeTerminalText(line, 500)));
-    }
+    this.rememberRender();
+    this.enqueueDiagnostic(sanitizeTerminalText(text, 500));
+    this.flushPendingOutput();
   }
 
   dispose(): void {
     if (this.stopped) return;
     this.stopped = true;
     this.detach();
+    this.pendingRender = undefined;
+    this.pendingDiagnostics.length = 0;
+    this.omittedDiagnostics = 0;
     // Leave the final display in scrollback; the cursor is already at its anchor.
     this.lines = [];
   }
@@ -153,6 +155,58 @@ export class AnchoredRenderer {
     }
   }
 
+  private rememberRender(): void {
+    if (this.pendingRender !== undefined) return;
+    this.pendingRender = {
+      content: this.lines.map((line) => sanitizeTerminalText(line, 500)),
+      color: this.lastColor,
+    };
+  }
+
+  private enqueueDiagnostic(text: string): void {
+    if (this.pendingDiagnostics.length >= MAX_PENDING_DIAGNOSTICS) {
+      // Keep at least one queued error when warnings are flooding a blocked
+      // stream; otherwise discard the oldest item and preserve recent context.
+      const oldestNonError = this.pendingDiagnostics.findIndex(
+        (diagnostic) => !/\bERROR\b/.test(diagnostic),
+      );
+      this.pendingDiagnostics.splice(oldestNonError >= 0 ? oldestNonError : 0, 1);
+      this.omittedDiagnostics += 1;
+    }
+    this.pendingDiagnostics.push(text);
+  }
+
+  private flushPendingOutput(): void {
+    if (this.stopped || this.waitingForDrain) return;
+    while (!this.stopped && !this.waitingForDrain) {
+      const diagnostic = this.pendingDiagnostics.shift();
+      const nextDiagnostic =
+        diagnostic ??
+        (this.omittedDiagnostics > 0
+          ? `WARN ${this.omittedDiagnostics} additional terminal diagnostics omitted during backpressure`
+          : undefined);
+      if (diagnostic === undefined && nextDiagnostic !== undefined) this.omittedDiagnostics = 0;
+
+      if (nextDiagnostic !== undefined) {
+        const output = this.clearRegion() + nextDiagnostic + "\n";
+        this.lines = [];
+        if (!this.write(output)) return;
+        if (this.waitingForDrain) return;
+        this.lastWrite = -Infinity;
+        continue;
+      }
+
+      const pending = this.pendingRender;
+      this.pendingRender = undefined;
+      if (pending !== undefined) {
+        this.force = true;
+        this.lastWrite = -Infinity;
+        this.render(pending.content, pending.color);
+      }
+      return;
+    }
+  }
+
   private fail(): void {
     if (this.stopped) return;
     this.stopped = true;
@@ -164,6 +218,8 @@ export class AnchoredRenderer {
     }
     this.detach();
     this.pendingRender = undefined;
+    this.pendingDiagnostics.length = 0;
+    this.omittedDiagnostics = 0;
     this.lines = [];
     try {
       this.onFailure();
