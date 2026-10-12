@@ -57,7 +57,10 @@ function workLine(job: TerminalJobRow, columns: number): string {
 function fitText(text: string, width: number): string {
   if (text.length <= width) return text;
   if (width <= 3) return text.slice(0, width);
-  return `${text.slice(0, width - 3)}...`;
+  const contentWidth = width - 3;
+  const prefixWidth = Math.ceil(contentWidth / 2);
+  const suffixWidth = Math.floor(contentWidth / 2);
+  return `${text.slice(0, prefixWidth)}...${suffixWidth > 0 ? text.slice(-suffixWidth) : ""}`;
 }
 
 /** The single most recent completion. */

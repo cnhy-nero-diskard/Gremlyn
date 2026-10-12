@@ -508,8 +508,64 @@ test("wide rendered work truncates colliding repository names before status and 
     assert.ok(validating, `${columns} columns retain the colliding repository row`);
     assert.match(running!, /PR #1234 \| running \| 1h 01m elapsed$/);
     assert.match(validating!, /PR #5678 \| validating \(agent-succeeded\) \| 1m 01s elapsed$/);
-    assert.match(running!, /\.\.\. PR #1234/);
-    assert.match(validating!, /\.\.\. PR #5678/);
+    assert.match(running!, /\.\.\.x+alpha PR #1234/);
+    assert.match(validating!, /\.\.\.x+bravo PR #5678/);
+    assert.ok(renderedLines.every((line) => line.length <= columns - 1));
+    renderer.dispose();
+  }
+});
+
+test("wide rendered work and latest outcomes preserve repository suffixes when truncated", () => {
+  const sharedRepositoryPrefix = "same-long-repository-prefix-".padEnd(70, "x");
+  const snapshot = terminalSnapshot({
+    activeCount: 2,
+    recentCount: 1,
+    rows: [
+      snapshotRow(1, "active", {
+        repository: `${sharedRepositoryPrefix}alpha`,
+        pr: 18,
+        stage: "running",
+        elapsedSec: 61,
+      }),
+      snapshotRow(2, "active", {
+        repository: `${sharedRepositoryPrefix}bravo`,
+        pr: 18,
+        stage: "running",
+        elapsedSec: 61,
+      }),
+    ],
+    latestCompletion: snapshotRow(3, "recent", {
+      repository: `${sharedRepositoryPrefix}latest-alpha`,
+      pr: 18,
+      stage: "failed",
+      outcome: "failed",
+      elapsedSec: 61,
+      completionAgeSec: 30,
+    }),
+  });
+
+  for (const columns of [80, 100]) {
+    const stream = new FakeStream();
+    stream.columns = columns;
+    const renderer = new AnchoredRenderer(stream, () => assert.fail());
+    renderer.render(snapshotLines(snapshot, "disabled", 20, columns, true, true));
+
+    const renderedLines = stream.output[0]!.split("\n").filter(Boolean);
+    const workRows = renderedLines.filter(
+      (line) => line.includes("PR #18") && line.includes("elapsed"),
+    );
+    assert.equal(workRows.length, 2, `${columns} columns render both active rows`);
+    assert.match(workRows[0]!, /alpha PR #18 \| running \| 1m 01s elapsed$/);
+    assert.match(workRows[1]!, /bravo PR #18 \| running \| 1m 01s elapsed$/);
+    assert.notEqual(
+      workRows[0],
+      workRows[1],
+      `${columns} columns keep repository identity distinct`,
+    );
+
+    const latest = renderedLines.find((line) => line.startsWith("Latest outcome:"));
+    assert.ok(latest, `${columns} columns render the latest outcome`);
+    assert.match(latest!, /alpha PR #18 \| failed \| job 1m 01s/);
     assert.ok(renderedLines.every((line) => line.length <= columns - 1));
     renderer.dispose();
   }
