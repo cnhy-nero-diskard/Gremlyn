@@ -1,8 +1,8 @@
 ## 1. Authoritative workflow and runtime projections
 
-- [ ] 1.1 Add a redacted, executor-alias-aware repository workflow projection for no team, inactive team, active managed team, and unavailable selected team; verify fixtures cover default/native/managed sources, corrupt/missing definitions, zero enabled children, and non-OpenCode executors without changing stored selections.
-- [ ] 1.2 Add a bounded batched latest-launched-invocation query scoped through each repository's jobs and attempts, with deterministic launch-time/ID ordering and a job link; verify that a newer unlaunched preparation failure is excluded, a newest unknown identity never borrows older known evidence, repositories cannot share histories, and identities remain redacted/escaped.
-- [ ] 1.3 Project the current attempt's captured-versus-actual job workflow and differences from current repository settings, reusing trustworthy legacy capture and delegation projections; verify queued jobs, preparing retries, native/default resolution, managed revision changes, explicit-primary discrepancies, and unsupported/unknown identities preserve historical evidence.
+- [x] 1.1 Add a redacted, executor-alias-aware repository workflow projection for no team, inactive team, active managed team, and unavailable selected team; verify fixtures cover default/native/managed sources, corrupt/missing definitions, zero enabled children, and non-OpenCode executors without changing stored selections.
+- [x] 1.2 Add a bounded batched latest-launched-invocation query scoped through each repository's jobs and attempts, with deterministic launch-time/ID ordering and a job link; verify that a newer unlaunched preparation failure is excluded, a newest unknown identity never borrows older known evidence, repositories cannot share histories, and identities remain redacted/escaped.
+- [x] 1.3 Project the current attempt's captured-versus-actual job workflow and differences from current repository settings, reusing trustworthy legacy capture and delegation projections; verify queued jobs, preparing retries, native/default resolution, managed revision changes, explicit-primary discrepancies, and unsupported/unknown identities preserve historical evidence.
 
 ## 2. Atomic activation store and authenticated API
 
