@@ -962,20 +962,30 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
     // a server crash and not a silent fallback to the default workflow. The
     // profile document and the selection/revision baselines are read from one
     // consistent snapshot so the editor reviews a coherent pair of counters.
-    let snapshot: {
-      record: ReturnType<typeof readOpenCodeProfile>;
-      selection: ReturnType<typeof readOpenCodeSelection>;
-    };
-    try {
-      snapshot = options.db.transaction(() => ({
-        record: readOpenCodeProfile(options.db, id),
+    const snapshot = options.db.transaction(() => {
+      const context = readOpenCodeActivationContext(options.db, id);
+      return {
+        context,
+        record: context?.profileCorrupt ? null : readOpenCodeProfile(options.db, id),
         selection: readOpenCodeSelection(options.db, id),
-      }))();
-    } catch {
+      };
+    })();
+    if (snapshot.context?.profileCorrupt) {
+      const context = snapshot.context;
       return reply
         .header("cache-control", "no-store")
         .code(422)
-        .send({ error: "opencode-profile-corrupt", repoId: id });
+        .send({
+          error: "opencode-profile-corrupt",
+          repoId: id,
+          recovery: true,
+          revision: context.profileRevision,
+          profileRevision: context.profileRevision,
+          selection: activationSelectionSummary(context, context),
+          selectionRevision: context.selectionRevision,
+          active: false,
+          defaultProfile: defaultOpenCodeAgentProfile(),
+        });
     }
     const { record, selection } = snapshot;
     if (!record) return reply.code(404).send({ error: "repository-not-found" });

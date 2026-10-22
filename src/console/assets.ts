@@ -1933,7 +1933,16 @@ export const clientScript = `
     const raw = workflow && workflow.dataset ? workflow.dataset.selectionRevision : '';
     return raw === undefined || raw === '' ? null : Number(raw);
   };
+  const openCodeCanRecover = (response, payload) => response.status === 422
+    && payload.error === 'opencode-profile-corrupt' && payload.recovery === true
+    && Number.isInteger(payload.revision) && payload.revision >= 0
+    && Number.isInteger(payload.selectionRevision) && payload.selectionRevision >= 0
+    && payload.selection && ['default', 'native', 'managed'].includes(payload.selection.source)
+    && Boolean(payload.defaultProfile && payload.defaultProfile.primary);
   const openCodeEditorHtml = (repoId, state) => {
+    const recoveryWarning = state.recovering
+      ? '<p class="agent-notice" role="alert">The saved team is corrupt and cannot be read. This replacement draft starts from the default workflow. Nothing changes until you review and confirm replacement. Replacing discards the corrupt definition; existing jobs and retries keep their recorded team.</p>'
+      : '';
     const revisionNote = state.revision > 0
       ? '<span class="chip">draft from revision ' + String(state.revision) + '</span>'
       : '<span class="chip">no saved profile</span>';
@@ -1946,19 +1955,23 @@ export const clientScript = `
       // (save-only keeps the current source; save-and-activate commits this
       // reviewed profile as managed). An active team only offers save, and its
       // consequence is spelled out because saving changes what new jobs capture.
-      const consequence = state.activeSaved
+      const consequence = state.recovering && state.activeSaved
+        ? 'Replacing repairs the selected managed team. Newly created jobs use the replacement revision; existing jobs and retries keep their recorded team.'
+        : state.activeSaved
         ? 'Saving updates the active team this repository already uses. Newly created managed jobs capture the new revision, and existing jobs and retries keep the team recorded when they were created.'
-        : 'Save team persists the reviewed profile without changing what new jobs use, so the team stays inactive. Save and activate commits this same profile and makes it control new managed jobs.';
+        : state.recovering
+          ? 'Replace team overwrites the corrupt definition without changing the selected source; the replacement stays inactive. Replace and activate overwrites it and selects this reviewed team for new jobs.'
+          : 'Save team persists the reviewed profile without changing what new jobs use, so the team stays inactive. Save and activate commits this same profile and makes it control new managed jobs.';
       const busy = state.busy ? ' disabled' : '';
       const locked = state.busy || state.needReload === true;
       // A stale-baseline conflict keeps the draft and the operation intent and
       // disables both submit paths until the operator explicitly reloads
       // baselines, so a submission never auto-retries the stale pair.
       const submitDisabled = locked ? ' disabled' : '';
-      const saveLabel = state.busy ? 'Working…' : 'Save team';
+      const saveLabel = state.busy ? 'Working…' : state.recovering ? 'Replace team' : 'Save team';
       const activateButton = state.activeSaved
         ? ''
-        : '<button type="button" class="primary" data-agent-action="save-and-activate"' + submitDisabled + '>' + (state.busy ? 'Working…' : 'Save and activate') + '</button>';
+        : '<button type="button" class="primary" data-agent-action="save-and-activate"' + submitDisabled + '>' + (state.busy ? 'Working…' : state.recovering ? 'Replace and activate' : 'Save and activate') + '</button>';
       // Reload baselines fetches the newer stored state (coherent GET) and
       // advances only the CAS baselines, never replacing the draft.
       const reloadButton = state.needReload
@@ -1967,7 +1980,7 @@ export const clientScript = `
       return '<div class="agent-editor" data-agent-editor data-repo-id="' + String(repoId) + '">' +
         '<div class="agent-editor-head"><h4>Review OpenCode agents</h4>' + revisionNote +
         '<span class="actions"><button type="button" data-agent-action="back"' + busy + '>Keep editing</button><button type="button" class="danger" data-agent-action="cancel"' + busy + '>Cancel</button></span></div>' +
-        (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
+        recoveryWarning + (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
         openCodeReviewHtml(repoId, state) +
         '<div class="agent-actions"><button type="button" data-agent-action="save"' + submitDisabled + '>' + saveLabel + '</button>' + activateButton + reloadButton + '</div>' +
         '<p class="agent-consequence muted">' + openCodeEscapeHtml(consequence) + '</p></div>';
@@ -1983,7 +1996,7 @@ export const clientScript = `
       '<div class="agent-editor-head"><h4>Configure OpenCode agents</h4>' + revisionNote +
       '<span class="actions">' + resetButton + '<button type="button" class="danger" data-agent-action="cancel"' + editingLocked + '>Cancel</button></span></div>' +
       '<p class="muted">Reset loads the shared starter workflow into this draft; nothing changes until you review and save. The primary runs the repository selected model; children inherit it unless they carry an explicit provider/model override. Children default to read-only; external-directory access and nested delegation are always denied. Changes apply to jobs created after the save.</p>' +
-      (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
+      recoveryWarning + (openCodeErrorsSummary(state) || openCodeNoticeHtml(state)) + feedback +
       openCodePrimaryHtml(repoId, state) +
       '<section class="agent-card"><div class="agent-editor-head"><h5>Subagents</h5><span class="actions"><button type="button" data-agent-action="add"' + editingLocked + '>Add subagent</button></span></div>' +
       children + '</section>' +
@@ -2010,7 +2023,8 @@ export const clientScript = `
       const response = await fetch('/repos/' + String(repoId) + '/opencode-profile');
       const payload = await response.json().catch(() => ({}));
       if (openCodeSessionExpiry(response, payload)) return;
-      if (!response.ok) {
+      const recovering = openCodeCanRecover(response, payload);
+      if (!response.ok && !recovering) {
         container.innerHTML = '<p class="agent-notice" role="alert">The saved agent profile could not be opened (status ' + String(response.status) + ').</p>';
         return;
       }
@@ -2029,7 +2043,7 @@ export const clientScript = `
       // The editor GET's active flag is authoritative. Only a response that
       // predates the field may fall back to the rendered workflow state, so a
       // stale active-managed fragment can never override an explicit false.
-      const activeSaved = typeof payload.active === 'boolean'
+      const activeSaved = recovering ? payload.selection.source === 'managed' : typeof payload.active === 'boolean'
         ? payload.active
         : openCodeWorkflowStateOf(mounted) === 'active-managed';
       const state = {
@@ -2047,6 +2061,7 @@ export const clientScript = `
         baseSelectionRevision: selectionRevision,
         selectionRevision,
         activeSaved,
+        recovering,
         container: mounted,
       };
       state.modelProviders = openCodeModelProviders(state);
@@ -2260,7 +2275,8 @@ export const clientScript = `
       });
       const payload = await response.json().catch(() => ({}));
       if (openCodeSessionExpiry(response, payload)) return;
-      if (!response.ok) {
+      const recovering = openCodeCanRecover(response, payload);
+      if (!response.ok && !recovering) {
         state.busy = false;
         state.notice = 'The stored team could not be reloaded (status ' + String(response.status) + '). Your draft and its operation intent were kept; the conflict still requires review.';
         openCodeRenderEditor(mountedAt(), repoId);
@@ -2276,7 +2292,8 @@ export const clientScript = `
       state.revision = profileRevision;
       state.baseSelectionRevision = selectionRevision;
       state.selectionRevision = selectionRevision;
-      state.activeSaved = payload.active === true;
+      state.recovering = recovering;
+      state.activeSaved = recovering ? payload.selection.source === 'managed' : payload.active === true;
       state.notice = 'Baselines reloaded from the stored team (profile revision ' + String(profileRevision) + ', selection revision ' + String(selectionRevision) + ', primary ' + primaryId + '). Your unsaved draft is intact; review it against the newer stored team, then save or activate deliberately.';
       state.needReload = false;
       state.busy = false;
@@ -2414,6 +2431,7 @@ export const clientScript = `
     baseSelectionRevision: state.baseSelectionRevision,
     selectionRevision: state.selectionRevision,
     activeSaved: state.activeSaved,
+    recovering: state.recovering === true,
     needReload: state.needReload === true,
   }));
   const openCodeRepositoriesRoot = (root) => {
@@ -2467,6 +2485,7 @@ export const clientScript = `
           ? entry.selectionRevision
           : (typeof entry.baseSelectionRevision === 'number' ? entry.baseSelectionRevision : 0),
         activeSaved: entry.activeSaved === true,
+        recovering: entry.recovering === true,
         needReload: entry.needReload === true,
         summaryHtml: container.innerHTML,
         container,
@@ -3239,6 +3258,7 @@ export const clientScript = `
       heading,
       isInactive,
       visualState,
+      rosterActive: input.rosterActive,
       notice,
       sourceSentence: activationSourceSentence(input.source, input.nativeId, profileRevision, input.primaryId),
       actionsHtml: activationActionRow(String(input.repoId || ''), input.dataset || {}, { teamState, profileRevision, selectionRevision }),
@@ -3252,7 +3272,10 @@ export const clientScript = `
     if (agents && agents.dataset) agents.dataset.active = active ? '1' : '0';
     if (!card || typeof card.querySelectorAll !== 'function') return;
     [...card.querySelectorAll('[data-availability]')].forEach((chip) => {
-      const label = chip && chip.dataset ? String(chip.dataset.availability) : 'disabled';
+      if (!chip || !chip.dataset) return;
+      const enabled = chip.dataset.availability === 'available' || chip.dataset.availability === 'saved';
+      const label = enabled ? (active ? 'available' : 'saved') : 'disabled';
+      chip.dataset.availability = label;
       chip.textContent = label === 'available' ? 'Available to orchestrator' : label === 'saved' ? 'Enabled in saved team' : 'Disabled';
     });
   };

@@ -20,6 +20,7 @@ import { runInNewContext } from "node:vm";
 import { buildConsoleServer, type ConsoleOptions } from "../src/console/server.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
+import { defaultOpenCodeAgentProfile } from "../src/config/opencode-profile.js";
 import { JobStore } from "../src/store/jobs.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
 import { saveOpenCodeSelection } from "../src/store/opencode-selections.js";
@@ -1166,6 +1167,13 @@ test("a corrupt dormant profile yields scoped errors but never blocks a selectio
   assert.deepEqual(editor.json(), {
     error: "opencode-profile-corrupt",
     repoId: fixture.opencodeRepoId,
+    recovery: true,
+    revision: 1,
+    profileRevision: 1,
+    selection: { source: "default", nativeAgentId: null, revision: 1, profileRevision: null },
+    selectionRevision: 1,
+    active: false,
+    defaultProfile: defaultOpenCodeAgentProfile(),
   });
   await app.close();
   fixture.store.close();

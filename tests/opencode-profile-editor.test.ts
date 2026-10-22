@@ -554,7 +554,8 @@ interface AgentEditorSurface {
   editors: Map<number, Record<string, unknown>>;
   mount: (container: unknown, repoId: number) => Promise<void>;
   render: (container: unknown, repoId: number) => void;
-  save: (repoId: number) => Promise<void>;
+  save: (repoId: number, operation?: string) => Promise<void>;
+  reloadBaselines: (repoId: number) => Promise<void>;
   cancel: (repoId: number) => void;
   apply: (repoId: number) => void;
   addSubagent: (repoId: number) => void;
@@ -599,6 +600,7 @@ function fakeContainer(initialHtml = "", repoId = 7): FakeContainer {
 
 interface AgentEditorEnvironment {
   document: {
+    querySelector: (selector: string) => unknown;
     addEventListener: (name: string, callback: unknown) => void;
     listeners: Record<string, Array<unknown>>;
   };
@@ -640,6 +642,139 @@ function runAgentEditor(fetchImpl: (url: string, options?: unknown) => Promise<u
   assert.ok(agent, "editor helpers are exposed on window.gremlynConsole.agentEditor");
   assert.ok(environment.surface, "the editor draft registers with the shared reconciler");
   return { agent, environment };
+}
+
+test("a corrupt-profile refusal without authoritative recovery context cannot open a replacement draft", async () => {
+  const container = fakeContainer();
+  const { agent, environment } = runAgentEditor(async () => ({
+    ok: false,
+    status: 422,
+    json: async () => ({
+      error: "opencode-profile-corrupt",
+      recovery: true,
+      defaultProfile: defaultOpenCodeAgentProfile(),
+    }),
+  }));
+  environment.document.querySelector = () => container;
+  await agent.mount(container, 7);
+  assert.equal(agent.editors.has(7), false);
+  assert.match(container.innerHTML, /could not be opened/u);
+});
+
+for (const [source, operation] of [
+  ["default", "save"],
+  ["managed", "save"],
+  ["default", "save-and-activate"],
+] as const) {
+  test(`corrupt ${source} team supports reviewed ${operation} replacement with conflict recovery`, async () => {
+    const { store, options, opencodeRepoId: repoId } = openStore();
+    const app = buildConsoleServer(options);
+    const candidate = defaultOpenCodeAgentProfile();
+    saveOpenCodeAgentProfile(store.db, { repoId, expectedRevision: 0, candidate });
+    if (source === "managed") {
+      const activated = await app.inject({
+        method: "POST",
+        url: `/repos/${repoId}/opencode-team-activation`,
+        headers: AUTH,
+        payload: {
+          mode: "activate-saved",
+          expectedProfileRevision: 1,
+          expectedSelectionRevision: 0,
+        },
+      });
+      assert.equal(activated.statusCode, 200);
+    }
+    const corrupt =
+      source === "managed"
+        ? JSON.stringify({ version: 99, private: "PRIVATE_CORRUPT_PAYLOAD" })
+        : 'PRIVATE_CORRUPT_PAYLOAD{"broken"';
+    store.db
+      .prepare(
+        "UPDATE opencode_agent_profiles SET profile_json = ?, revision = 7 WHERE repo_id = ?",
+      )
+      .run(corrupt, repoId);
+    const auditCount = () =>
+      (store.db.prepare("SELECT COUNT(*) AS n FROM operator_actions").get() as { n: number }).n;
+    const before = auditCount();
+    const stored = () =>
+      store.db
+        .prepare("SELECT profile_json FROM opencode_agent_profiles WHERE repo_id = ?")
+        .get(repoId) as { profile_json: string };
+    let container = fakeContainer("<a data-repo-agents-configure>Repair team</a>", repoId);
+    const { agent, environment } = runAgentEditor(async (url, init) => {
+      const request = init as { method?: string; body?: string } | undefined;
+      const response = await app.inject({
+        method: request?.method === "POST" ? "POST" : "GET",
+        url,
+        headers: AUTH,
+        ...(request?.body ? { payload: JSON.parse(request.body) } : {}),
+      });
+      assert.ok(!response.body.includes("PRIVATE_CORRUPT_PAYLOAD"));
+      return {
+        ok: response.statusCode < 400,
+        status: response.statusCode,
+        json: async () => response.json(),
+      };
+    });
+    environment.document.querySelector = () => container;
+    try {
+      const denied = await app.inject({ method: "GET", url: `/repos/${repoId}/opencode-profile` });
+      assert.equal(denied.statusCode, 401);
+      const context = await app.inject({
+        method: "GET",
+        url: `/repos/${repoId}/opencode-profile`,
+        headers: AUTH,
+      });
+      assert.equal(context.statusCode, 422);
+      assert.equal(context.headers["cache-control"], "no-store");
+      assert.equal(context.json().revision, 7);
+      assert.equal(context.json().selection.source, source);
+      await agent.mount(container, repoId);
+      assert.equal(agent.editors.get(repoId)?.recovering, true);
+      assert.match(container.innerHTML, /replacement draft starts from the default workflow/u);
+      assert.equal(auditCount(), before);
+      agent.cancel(repoId);
+      assert.equal(stored().profile_json, corrupt);
+      await agent.mount(container, repoId);
+      agent.handleInput(repoId, "primary.description", "Reviewed replacement");
+      const captured = agent.capture();
+      container = fakeContainer("<p>Fresh SSE summary</p>", repoId);
+      agent.restore({ querySelector: () => container }, captured);
+      agent.apply(repoId);
+      assert.match(container.innerHTML, />Replace team</u);
+      assert.match(container.innerHTML, /Replacing discards the corrupt definition/u);
+      assert.equal(container.innerHTML.includes(">Replace and activate<"), source === "default");
+      store.db
+        .prepare("UPDATE opencode_agent_profiles SET revision = 8 WHERE repo_id = ?")
+        .run(repoId);
+      await agent.save(repoId, operation);
+      assert.equal(agent.editors.get(repoId)?.needReload, true);
+      assert.equal(stored().profile_json, corrupt);
+      assert.equal(auditCount(), before);
+      await agent.reloadBaselines(repoId);
+      assert.equal(agent.editors.get(repoId)?.revision, 8);
+      assert.equal(agent.editors.get(repoId)?.recovering, true);
+      assert.match(container.innerHTML, /Reviewed replacement/u);
+      await agent.save(repoId, operation);
+      assert.equal(agent.editors.has(repoId), false);
+      assert.equal(readOpenCodeProfile(store.db, repoId)?.revision, 9);
+      assert.equal(
+        readOpenCodeProfile(store.db, repoId)?.profile?.primary.description,
+        "Reviewed replacement",
+      );
+      assert.equal(auditCount(), before + 1);
+      const page = await app.inject({ method: "GET", url: "/", headers: AUTH });
+      assert.match(
+        page.body,
+        source === "managed" || operation === "save-and-activate"
+          ? /Team: ACTIVE FOR NEW JOBS/u
+          : /Saved team: INACTIVE/u,
+      );
+    } finally {
+      await app.close();
+      store.close();
+    }
+  });
 }
 
 function profileWithChildren(): Record<string, unknown> {

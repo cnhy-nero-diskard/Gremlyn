@@ -1,5 +1,32 @@
 # Agent activation acceptance
 
+## PR 19 review follow-up (2026-10-23)
+
+Both findings from review 5617417367 are addressed:
+
+- Workflow presentation now forwards the roster's active flag, and immediate
+  activation/source changes update enabled-child labels and availability tokens
+  together. Disabled children stay disabled, without waiting for SSE.
+- A corrupt profile still returns a scoped HTTP 422, with coherent revision and
+  selection context plus a replacement template. The editor explicitly warns
+  that replacement discards the corrupt definition, requires review and a
+  **Replace team** or **Replace and activate** confirmation, and preserves the
+  selected source for replacement-only saves. Opening/canceling writes nothing.
+  Raw corrupt bytes are never returned. Conflicts preserve the draft and require
+  deliberate baseline reload; live updates retain the replacement warning.
+
+Five new regressions cover both roster transitions, refusal without authoritative
+recovery context, and corrupt default/managed replacement with save-only or
+combined activation, authentication, cancellation, conflicts, and live swaps.
+The final editor/dashboard batch passed **77/77** tests, and the selection-console
+suite passed **29/29**. The full suite passed **1,239 tests, 3 skipped, 0 failed**
+(1,242 total). Build, lint, scoped Prettier, strict OpenSpec validation, and
+whitespace checks passed.
+
+No browser was connected in this session, so visual acceptance was not repeated.
+The new flows execute the shipped client script against an offline Fastify server
+and temporary stores; they do not establish live provider/delegation acceptance.
+
 ## Scope and fixtures
 
 Acceptance uses temporary SQLite stores, fixture agent definitions, and an

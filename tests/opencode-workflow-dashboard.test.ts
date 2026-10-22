@@ -2025,6 +2025,37 @@ test("a committed source switch away immediately marks the retained team inactiv
   assert.equal(workflow.dataset.selectionRevision, "3");
 });
 
+test("roster badges follow activation and switching away immediately without SSE", () => {
+  const { activation } = runActivation();
+  const workflow = fakeWorkflow({ repoId: "7", profileRevision: "2", teamState: "inactive-team" });
+  const agents = { dataset: { active: "0" } };
+  const enabled = { dataset: { availability: "saved" }, textContent: "Enabled in saved team" };
+  const disabled = { dataset: { availability: "disabled" }, textContent: "Disabled" };
+  const card = {
+    querySelector: (selector: string) =>
+      selector === "[data-opencode-workflow]" ? workflow : agents,
+    querySelectorAll: () => [enabled, disabled],
+  };
+  Object.assign(workflow, { closest: () => card });
+  const container = { closest: () => card, querySelector: () => null, dataset: { repoId: "7" } };
+  for (const source of ["managed", "default", "managed", "native"]) {
+    activation.syncWorkflow(container, {
+      savedSource: source,
+      savedRevision: 3,
+      savedProfileRevision: 2,
+    });
+    const active = source === "managed";
+    assert.equal(agents.dataset.active, active ? "1" : "0");
+    assert.equal(enabled.dataset.availability, active ? "available" : "saved");
+    assert.equal(
+      enabled.textContent,
+      active ? "Available to orchestrator" : "Enabled in saved team",
+    );
+    assert.equal(disabled.dataset.availability, "disabled");
+    assert.equal(disabled.textContent, "Disabled");
+  }
+});
+
 test("a committed switch to managed marks the retained team active", () => {
   const { activation } = runActivation();
   const workflow = fakeWorkflow({
