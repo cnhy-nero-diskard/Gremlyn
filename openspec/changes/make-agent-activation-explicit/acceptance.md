@@ -1,5 +1,36 @@
 # Agent activation acceptance
 
+## PR 19 source-selection follow-up (2026-10-23)
+
+Both findings from review 5617636946 are addressed:
+
+- Source switches to managed now parse and validate the complete saved profile
+  inside the selection transaction, after checking the reviewed revisions.
+  Corrupt definitions return a safe HTTP 422 without changing the selection,
+  profile bytes, or audit, and without notifying the runtime. The source picker
+  preserves the refused draft and offers team replacement or another source.
+- Runtime notification failures after a source change commits now return
+  success with authoritative selection/revision context and a scoped refresh
+  warning. The client reconciles the saved baseline, reports the refresh
+  problem, and leaves Apply disabled until another deliberate edit; it does
+  not claim the save failed or require a stale resubmission.
+
+Three new regressions exercise malformed and schema-invalid profiles under
+default/native sources, the dashboard source-picker refusal flow for both
+sources, and rejecting runtime notification for default/native/managed changes.
+The selection/store/client batch passed **44/44**, and the related workflow,
+activation, job-capture, and profile-console batch passed **98/98**.
+The full suite passed **1,242 tests, 3 skipped, 0 failed** (1,245 total).
+Build, lint, scoped Prettier, strict OpenSpec validation, and whitespace checks
+passed. No GitHub Actions runs or commit status checks were attached to the
+reviewed PR head; validation results are local.
+
+Browser acceptance and live provider delegation were not repeated for this
+follow-up. The client-flow tests run the shipped script against an offline
+Fastify server and temporary stores. The retained checkout also contains
+pre-existing uncommitted CLI-pin updates in `README.md` and `src/agent/cline.ts`;
+those changes are preserved and excluded from this follow-up.
+
 ## PR 19 review follow-up (2026-10-23)
 
 Both findings from review 5617417367 are addressed:

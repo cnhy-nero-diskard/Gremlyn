@@ -2776,6 +2776,7 @@ export const clientScript = `
       'discovery-unavailable': 'Existing-agent discovery is unavailable for this repository.',
       'discovery-failed': 'Existing-agent discovery failed for this repository.',
       'no-profile': 'No managed team is saved for this repository yet.',
+      'opencode-profile-corrupt': 'The saved managed team is corrupt. Open the team editor to review and replace it, or choose another source.',
       'profile-revision-required': 'Reload the managed team before activating it.',
       'profile-conflict': 'The managed team changed in another session.',
       'not-opencode': 'This repository does not run the OpenCode executor.',
@@ -2922,7 +2923,10 @@ export const clientScript = `
       state.baseProfileRevision = state.savedProfileRevision;
       state.source = state.savedSource;
       state.nativeId = state.savedNativeId;
-      state.feedback = 'Primary source saved. New jobs will use it.';
+      const refreshFailed = payload.refreshError === 'notification-failed' || payload.notification === 'failed';
+      state.feedback = refreshFailed
+        ? 'Primary source saved. Runtime refresh failed; reload to check the current workflow. Existing jobs and retries keep their recorded selection.'
+        : 'Primary source saved. New jobs will use it.';
       state.feedbackError = false;
       selectionRender(state.container || container, state);
       // A committed source switch immediately marks a retained saved team

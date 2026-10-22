@@ -316,6 +316,53 @@ test("managed activation requires a saved profile and a matching profile revisio
   store.close();
 });
 
+test("managed source switches refuse malformed and schema-invalid saved teams without writes", () => {
+  for (const source of ["default", "native"] as const) {
+    for (const profileJson of ["{ private corrupt bytes", JSON.stringify({ version: 999 })]) {
+      const store = openStore();
+      try {
+        const repoId = insertRepository(store.db);
+        const profileRevision = saveProfile(store.db, repoId);
+        const selection = source === "native" ? { source, agentId: "reviewer" } : { source };
+        assert.equal(
+          saveOpenCodeSelection(store.db, { repoId, expectedRevision: 0, candidate: selection }).ok,
+          true,
+        );
+        store.db
+          .prepare("UPDATE opencode_agent_profiles SET profile_json = ? WHERE repo_id = ?")
+          .run(profileJson, repoId);
+        const before = readOpenCodeSelection(store.db, repoId);
+        const auditBefore = new OperatorActionStore(store.db).list();
+
+        assert.deepEqual(
+          saveOpenCodeSelection(store.db, {
+            repoId,
+            expectedRevision: 1,
+            candidate: { source: "managed" },
+            expectedProfileRevision: profileRevision,
+          }),
+          {
+            ok: false,
+            reason: "corrupt-profile",
+            currentRevision: 1,
+            currentProfileRevision: profileRevision,
+          },
+        );
+        assert.deepEqual(readOpenCodeSelection(store.db, repoId), before);
+        assert.deepEqual(new OperatorActionStore(store.db).list(), auditBefore);
+        assert.deepEqual(
+          store.db
+            .prepare("SELECT profile_json, revision FROM opencode_agent_profiles WHERE repo_id = ?")
+            .get(repoId),
+          { profile_json: profileJson, revision: profileRevision },
+        );
+      } finally {
+        store.close();
+      }
+    }
+  }
+});
+
 test("native/default switches preserve a dormant profile and dormant edits do not activate it", () => {
   const store = openStore();
   const repoId = insertRepository(store.db);

@@ -801,16 +801,30 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
           : { expectedProfileRevision: expectedProfileRevision as number }),
       });
       if (result.ok) {
-        await options.actions?.repositorySettingsChanged?.(id);
+        const notifier = options.actions?.repositorySettingsChanged;
+        let notification: "delivered" | "skipped" | "failed" = "skipped";
+        if (notifier) {
+          try {
+            await notifier(id);
+            notification = "delivered";
+          } catch {
+            // The source and audit already committed. A refresh failure must
+            // not report a failed save or force a stale resubmission.
+            notification = "failed";
+          }
+        }
+        const committed = readOpenCodeSelection(options.db, id);
         // The selection is already committed; a corrupt dormant profile must
         // not turn a successful save into a 500. It simply reports no revision.
         const profile = tryReadOpenCodeProfile(options.db, id);
         return reply.send({
           ok: true,
           repoId: id,
-          revision: result.revision,
-          selection: result.selection,
+          revision: committed?.revision ?? result.revision,
+          selection: committed?.selection ?? result.selection,
           profileRevision: savedProfileRevision(profile),
+          notification,
+          ...(notification === "failed" ? { refreshError: "notification-failed" } : {}),
         });
       }
       switch (result.reason) {
@@ -831,6 +845,13 @@ export function buildConsoleServer(options: ConsoleOptions): ConsoleServer {
         case "no-profile":
           return reply.code(409).send({
             error: "no-profile",
+            currentRevision: result.currentRevision,
+            currentProfileRevision: result.currentProfileRevision,
+          });
+        case "corrupt-profile":
+          return reply.code(422).send({
+            error: "opencode-profile-corrupt",
+            repoId: id,
             currentRevision: result.currentRevision,
             currentProfileRevision: result.currentProfileRevision,
           });
