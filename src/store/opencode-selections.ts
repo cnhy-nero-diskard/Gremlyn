@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { parseOpenCodeAgentProfile } from "../config/opencode-profile.js";
 import {
   OPENCODE_EXECUTOR_ID,
   type OpenCodePrimarySelection,
@@ -69,7 +70,7 @@ export type SaveOpenCodeSelectionResult =
   | { ok: false; reason: "conflict"; currentRevision: number }
   | {
       ok: false;
-      reason: "no-profile";
+      reason: "no-profile" | "corrupt-profile";
       currentRevision: number;
       currentProfileRevision: number;
     }
@@ -240,6 +241,18 @@ export function saveOpenCodeSelection(
         return {
           ok: false,
           reason: "profile-conflict",
+          currentRevision: revisionNow,
+          currentProfileRevision,
+        };
+      }
+      try {
+        // Source switching can activate a team just like activate-saved. Use
+        // the same complete profile validator before committing either path.
+        parseOpenCodeAgentProfile(JSON.parse(profileRow.profileJson));
+      } catch {
+        return {
+          ok: false,
+          reason: "corrupt-profile",
           currentRevision: revisionNow,
           currentProfileRevision,
         };

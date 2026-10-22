@@ -241,7 +241,7 @@ test("an OpenCode repository renders the readable agent team and its direct Conf
   assert.match(html, /tools: edit workspace, run shell/u);
   assert.match(html, /step limit 120/u);
   assert.match(html, /<code>researcher<\/code>/u);
-  assert.match(html, /disabled/u);
+  assert.match(html, /Disabled/u);
   assert.match(html, /model: inherits opencode\/claude-sonnet-5/u);
   assert.match(html, /tools: read-only/u);
   assert.match(html, /revision 2/u);

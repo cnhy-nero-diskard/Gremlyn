@@ -95,6 +95,12 @@ Save-only success SHALL say whether the resulting team remains inactive or is an
 - **WHEN** an operator cancels a profile draft
 - **THEN** the persisted profile and primary source remain unchanged and the draft is discarded
 
+#### Scenario: Replace a corrupt saved team deliberately
+
+- **WHEN** an operator opens the editor for a corrupt saved profile
+- **THEN** the console offers a default-based replacement draft with authoritative profile and selection revisions, explains that replacement discards the corrupt definition, and requires review and explicit replacement confirmation; opening or canceling the draft changes nothing
+- **AND** a stale replacement conflicts without changing either resource, live refresh retains the replacement draft and warning, and deliberate baseline reload permits review against the newer stored state
+
 #### Scenario: Another session changes the profile
 
 - **WHEN** an operator tries to save a draft whose saved profile baseline has changed

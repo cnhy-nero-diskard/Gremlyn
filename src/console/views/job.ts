@@ -1,11 +1,13 @@
 import type {
   AttemptDetail,
   CapturedOpenCodeSelectionSummary,
+  CurrentOpenCodeWorkflowSummary,
   DelegationAttemptDetail,
   DelegationConfiguredAgent,
   DelegationInvocationView,
   DelegationNodeView,
   JobDetail,
+  JobWorkflowSummary,
   ManagedChildSessionSummary,
   OpenCodeInvocationSummary,
   ValidationRun,
@@ -175,8 +177,9 @@ function jobHeader(model: JobDetail): string {
   const prUrl = `https://github.com/${repo}/pull/${String(pr)}`;
   const outcomeClass = model.job.status === "succeeded" ? " job-outcome-success" : "";
   const title = `<div class="job-title"><h1 data-focus-fallback tabindex="-1">${escapeHtml(`${owner}/${name}`)} <span class="job-pr">PR #${String(pr)}</span></h1>${statusPill(model.job.status)}<span class="chip" title="Triggering command"><code>${escapeHtml(model.job.command)}</code></span>${capturedAgentChip(model)}<span class="muted job-id">job ${String(model.job.id)}</span>${actionControls(model)}</div>`;
+  const workflow = jobWorkflowBand(model);
   const links = `<p class="job-links"><a href="${prUrl}">Pull request #${String(pr)} ↗</a><a href="${prUrl}#discussion_r${String(comment)}">Triggering comment discussion_r${String(comment)} ↗</a></p>`;
-  return `<header class="page-head presentation-peak${outcomeClass}" data-presentation="peak" data-job-outcome="${escapeHtml(model.job.status)}"><div class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></div>${title}${links}${statStrip(model)}</header>`;
+  return `<header class="page-head presentation-peak${outcomeClass}" data-presentation="peak" data-job-outcome="${escapeHtml(model.job.status)}"><div class="crumbs"><a href="/">Dashboard</a><span aria-hidden="true">/</span><span>${escapeHtml(`${owner}/${name}`)}</span><span aria-hidden="true">/</span><span>PR #${String(pr)}</span></div>${title}${workflow}${links}${statStrip(model)}</header>`;
 }
 
 /**
@@ -211,12 +214,210 @@ function capturedSelectionSentence(captured: CapturedOpenCodeSelectionSummary): 
   return "OpenCode default";
 }
 
+/* ------------------------------------------------------------------ *
+ * Job workflow identity (tasks 4.1/4.2; design D4/D5)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The prominent captured-versus-actual identity near the job title: what this
+ * job requested at creation, what the current attempt's newest launched
+ * invocation actually ran as, and how today's repository settings differ for
+ * new jobs and retries. The facts come from the authoritative `workflow`
+ * projection (`JobDetail.workflow`, task 1.3) so history is never decorated
+ * with the current team roster; the view only names the states and explains
+ * the boundary.
+ */
+
+/** One readable sentence naming the repository's current primary source. */
+function currentSettingsSentence(current: CurrentOpenCodeWorkflowSummary): string {
+  if (current.source === "managed" && current.teamUnavailable) {
+    // Managed source points at a missing or unreadable saved team: naming a
+    // revision would imply a usable workflow. Say it is unavailable instead.
+    return "the selected Gremlyn-managed team, which is currently unavailable";
+  }
+  if (current.source === "native") {
+    return current.nativeAgentId
+      ? `Existing OpenCode agent <code>${escapeHtml(current.nativeAgentId)}</code>`
+      : "an existing OpenCode agent";
+  }
+  if (current.source === "managed") {
+    return current.profileRevision === null
+      ? "the Gremlyn-managed team"
+      : `the Gremlyn-managed team at revision ${escapeHtml(String(current.profileRevision))}`;
+  }
+  return "OpenCode default";
+}
+
+/** A short phrase for the job's captured selection, used inside explanations. */
+function jobWorkflowCapturedPhrase(workflow: JobWorkflowSummary): string {
+  const captured = workflow.captured;
+  if (captured === null) return "no captured primary source";
+  if (captured.source === "native") {
+    return captured.nativeAgentId
+      ? `native agent <code>${escapeHtml(captured.nativeAgentId)}</code>`
+      : "native agent (the captured id is missing)";
+  }
+  if (captured.source === "managed") {
+    return captured.profileRevision === null
+      ? "managed team"
+      : `managed team revision ${escapeHtml(String(captured.profileRevision))}`;
+  }
+  return "OpenCode default";
+}
+
+/**
+ * The requested-runner cell: the immutable captured source, named with the
+ * captured managed primary id when the job's own snapshot identifies one. A
+ * default/native capture never borrows the current team.
+ */
+function jobWorkflowCapturedCell(workflow: JobWorkflowSummary): string {
+  const captured = workflow.captured;
+  if (captured === null) {
+    return '<span class="muted">No captured primary source recorded for this job.</span>';
+  }
+  if (captured.source === "native") {
+    return captured.nativeAgentId
+      ? `Existing OpenCode agent <code>${escapeHtml(captured.nativeAgentId)}</code>`
+      : "Existing OpenCode agent (the captured id is missing)";
+  }
+  if (captured.source === "managed") {
+    const primary = workflow.capturedTeam?.primaryId ?? null;
+    const named = primary === null ? "" : ` <code>${escapeHtml(primary)}</code>`;
+    const revision =
+      captured.profileRevision === null
+        ? ""
+        : ` · revision ${escapeHtml(String(captured.profileRevision))}`;
+    return `Gremlyn-managed team${named}${revision}`;
+  }
+  return "OpenCode default";
+}
+
+type JobActualState = "not-started" | "not-observed" | "observed";
+
+/** How the current attempt's runtime identity reads, explicitly when unproven. */
+function jobActualState(workflow: JobWorkflowSummary): JobActualState {
+  const current = workflow.currentAttempt;
+  if (current === null || !current.launched) return "not-started";
+  return current.actualPrimaryAgent === null ? "not-observed" : "observed";
+}
+
+/** The actual-primary cell: identity, explicit not-started/not-observed, or model. */
+function jobWorkflowActualCell(workflow: JobWorkflowSummary): {
+  state: JobActualState;
+  html: string;
+} {
+  const current = workflow.currentAttempt;
+  const state = jobActualState(workflow);
+  if (state === "not-started") {
+    return { state, html: '<span data-job-actual-state="not-started">Not started</span>' };
+  }
+  if (state === "not-observed") {
+    return {
+      state,
+      html: '<span class="muted" data-job-actual-state="not-observed">Not observed</span>',
+    };
+  }
+  const primary = current?.actualPrimaryAgent ?? "unknown";
+  const model = current?.actualModel ?? null;
+  const modelHtml = model === null ? "" : ` · model <code>${escapeHtml(model)}</code>`;
+  return {
+    state,
+    html: `<code data-job-actual-state="observed" data-job-actual-primary="${escapeHtml(primary)}">${escapeHtml(primary)}</code>${modelHtml}`,
+  };
+}
+
+/**
+ * The new-jobs/retry explanation, or null when current settings still match
+ * the job's capture. Stated only when the projection proves they differ —
+ * never inferred from the current team roster. An unavailable selected team
+ * cannot be described as the workflow new jobs will use; the historical
+ * capture stays valid either way.
+ */
+function jobWorkflowDifferenceNote(workflow: JobWorkflowSummary): string | null {
+  if (!workflow.settingsDiffer || workflow.captured === null) return null;
+  const current = workflow.currentSettings;
+  if (current === null) return null;
+  const consequence =
+    workflow.difference === "managed-team-unavailable"
+      ? "New jobs cannot safely use the selected team until it is repaired or the source is changed"
+      : "New jobs use the current settings";
+  return `Current repository settings now select ${currentSettingsSentence(
+    current,
+  )}; this job keeps its captured ${jobWorkflowCapturedPhrase(
+    workflow,
+  )}. ${consequence}; retrying this job keeps its recorded selection.`;
+}
+
+/**
+ * A visible discrepancy note when an explicitly requested native/managed
+ * primary ran as something else. Default resolution is never a discrepancy.
+ */
+function jobWorkflowDiscrepancyNote(workflow: JobWorkflowSummary): string | null {
+  const current = workflow.currentAttempt;
+  if (current === null || !current.discrepancy) return null;
+  if (current.requestedPrimaryId === null || current.actualPrimaryAgent === null) return null;
+  return `The observed primary <code>${escapeHtml(current.actualPrimaryAgent)}</code> differs from the requested <code>${escapeHtml(current.requestedPrimaryId)}</code>.`;
+}
+
+/** The concise observed-delegation cell beside the workflow identity (task 4.2). */
+function jobWorkflowDelegationCell(model: JobDetail): string {
+  const latest = model.attempts.at(-1);
+  const delegation = latest?.delegation;
+  if (delegation === undefined) return "";
+  const headline = delegationAttemptHeadline(delegation);
+  return `<div><dt>Delegation</dt><dd class="job-delegation-status" data-delegation-availability="${escapeHtml(delegation.availability)}">${escapeHtml(headline)}</dd></div>`;
+}
+
+/** Whether a job has any OpenCode workflow evidence worth the prominent band. */
+function jobWorkflowHasEvidence(model: JobDetail): boolean {
+  const workflow = model.workflow;
+  if (workflow !== undefined && workflow.captured !== null) return true;
+  return model.attempts.some((attempt) => (attempt.invocations?.length ?? 0) > 0);
+}
+
+/**
+ * The prominent identity band under the job title: requested runner, the
+ * current attempt's actual primary (not started / not observed / identity),
+ * and the concise delegation status, plus the new-jobs/retry and discrepancy
+ * notes. Absent for jobs without OpenCode workflow evidence so non-OpenCode
+ * jobs are unchanged. Never substitutes the current team for a historical
+ * capture, and never represents activation as evidence a child ran.
+ */
+function jobWorkflowBand(model: JobDetail): string {
+  const workflow = model.workflow;
+  if (workflow === undefined) return "";
+  if (!jobWorkflowHasEvidence(model)) return "";
+  const current = workflow.currentAttempt;
+  const provenance =
+    current === null || current.latestInvocation === null
+      ? ""
+      : ` <span class="muted">attempt ${String(current.attemptNumber)} · invocation ${String(current.latestInvocation.ordinal)}</span>`;
+  const actual = jobWorkflowActualCell(workflow);
+  const notes: string[] = [];
+  const difference = jobWorkflowDifferenceNote(workflow);
+  if (difference !== null) {
+    notes.push(
+      `<p class="agent-notice job-workflow-differs" data-job-settings-differ>${difference}</p>`,
+    );
+  }
+  const discrepancy = jobWorkflowDiscrepancyNote(workflow);
+  if (discrepancy !== null) {
+    notes.push(`<p class="muted job-workflow-discrepancy" data-job-discrepancy>${discrepancy}</p>`);
+  }
+  const identity =
+    `<dl class="kv job-workflow-identity">` +
+    `<div><dt>Requested runner</dt><dd>${jobWorkflowCapturedCell(workflow)}</dd></div>` +
+    `<div><dt>Actual primary${provenance}</dt><dd>${actual.html}</dd></div>` +
+    `${jobWorkflowDelegationCell(model)}</dl>`;
+  return `<div class="job-workflow" data-job-workflow data-live-key="job-workflow">${identity}${notes.join("")}</div>`;
+}
+
 /**
  * One OpenCode parent invocation's requested-versus-effective evidence. The
  * requested source is the captured policy; the effective primary is the actual
  * runtime identity when observed, or an explicit "unknown" when it was not.
  */
-function invocationRow(invocation: OpenCodeInvocationSummary): string {
+function invocationRow(invocation: OpenCodeInvocationSummary, attemptNumber: number): string {
   const requested =
     invocation.requestedSource === "native" && invocation.requestedNativeAgentId
       ? `native <code>${escapeHtml(invocation.requestedNativeAgentId)}</code>`
@@ -235,7 +436,7 @@ function invocationRow(invocation: OpenCodeInvocationSummary): string {
     invocation.parentSessionId === null
       ? '<span class="muted">no parent session captured</span>'
       : `<code class="session-id">${escapeHtml(invocation.parentSessionId)}</code>`;
-  return `<li class="opencode-invocation" data-invocation-ordinal="${String(invocation.ordinal)}"><span class="chip">invocation ${String(invocation.ordinal)}</span><span class="chip">requested ${requested}</span><span class="opencode-invocation-effective">effective ${actual}${model}</span><span class="muted">${parent} · ${escapeHtml(invocation.status)}/${escapeHtml(invocation.ownershipState)}</span></li>`;
+  return `<li class="opencode-invocation" data-invocation-ordinal="${String(invocation.ordinal)}"><span class="chip">attempt ${String(attemptNumber)}</span><span class="chip">invocation ${String(invocation.ordinal)}</span><span class="chip">requested ${requested}</span><span class="opencode-invocation-effective">effective ${actual}${model}</span><span class="muted">${parent} · ${escapeHtml(invocation.status)}/${escapeHtml(invocation.ownershipState)}</span></li>`;
 }
 
 /**
@@ -247,7 +448,12 @@ function invocationRow(invocation: OpenCodeInvocationSummary): string {
  */
 function opencodeSelectionPanel(model: JobDetail): string {
   const captured = model.job.opencodeSelection ?? null;
-  const invocations = model.attempts.flatMap((attempt) => attempt.invocations ?? []);
+  const invocations = model.attempts.flatMap((attempt) =>
+    (attempt.invocations ?? []).map((invocation) => ({
+      attemptNumber: attempt.attempt_number,
+      invocation,
+    })),
+  );
   if (captured === null && invocations.length === 0) return "";
   const capturedLine =
     captured === null
@@ -259,7 +465,9 @@ function opencodeSelectionPanel(model: JobDetail): string {
       : "";
   const rows =
     invocations.length > 0
-      ? `<ul class="opencode-invocations">${invocations.map(invocationRow).join("")}</ul>`
+      ? `<ul class="opencode-invocations">${invocations
+          .map((entry) => invocationRow(entry.invocation, entry.attemptNumber))
+          .join("")}</ul>`
       : '<p class="muted">No OpenCode invocation evidence recorded; effective identity is unknown.</p>';
   return `<section class="panel presentation-inset span-all" data-presentation="inset" aria-label="OpenCode primary source and invocation identity"><h2>OpenCode primary source</h2>${capturedLine}${note}${rows}</section>`;
 }

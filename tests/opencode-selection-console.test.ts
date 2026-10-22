@@ -20,6 +20,7 @@ import { runInNewContext } from "node:vm";
 import { buildConsoleServer, type ConsoleOptions } from "../src/console/server.js";
 import { OperatorActionStore } from "../src/store/actions.js";
 import { Store } from "../src/store/db.js";
+import { defaultOpenCodeAgentProfile } from "../src/config/opencode-profile.js";
 import { JobStore } from "../src/store/jobs.js";
 import { saveOpenCodeAgentProfile } from "../src/store/opencode-profiles.js";
 import { saveOpenCodeSelection } from "../src/store/opencode-selections.js";
@@ -317,6 +318,7 @@ test("a native primary is saved with one audit action and one runtime notificati
     revision: 1,
     selection: { source: "native", agentId: "native-reviewer" },
     profileRevision: null,
+    notification: "delivered",
   });
   assert.equal(fixture.settingsChanges, 1);
   const row = fixture.store.db
@@ -749,8 +751,11 @@ test("the Run with agent control renders default/native/unavailable/managed stat
 
 function selectionScript(): string {
   const start = clientScript.indexOf("// BEGIN_OPENCODE_SELECTION");
-  const end = clientScript.lastIndexOf("// END_OPENCODE_SELECTION");
-  assert.ok(start >= 0 && end > start, "selection block is present in the client script");
+  const end = clientScript.lastIndexOf("// END_OPENCODE_ACTIVATION");
+  assert.ok(
+    start >= 0 && end > start,
+    "selection and workflow helpers are present in the client script",
+  );
   return clientScript.slice(start, end);
 }
 
@@ -832,7 +837,7 @@ function runSelection(
 
 test("the selection draft survives a live update while rejecting a stale apply", () => {
   const { surface, registered } = runSelection();
-  assert.deepEqual(registered, ["opencode-selection"]);
+  assert.deepEqual(registered, ["opencode-selection", "opencode-activation"]);
   const container = fakeSelectionContainer({
     repoId: "7",
     savedSource: "default",
@@ -1125,7 +1130,180 @@ test("a corrupt stored profile never takes down the dashboard projection", () =>
   fixture.store.close();
 });
 
-test("a corrupt dormant profile yields scoped errors but never blocks a selection save", async () => {
+test("Change agent refuses a corrupt managed team and keeps the dashboard draft and saved source", async () => {
+  for (const source of ["default", "native"] as const) {
+    const fixture = openStore();
+    corruptProfile(fixture, fixture.opencodeRepoId);
+    if (source === "native") {
+      saveOpenCodeSelection(fixture.store.db, {
+        repoId: fixture.opencodeRepoId,
+        expectedRevision: 0,
+        candidate: { source, agentId: CHOICE.id },
+      });
+    }
+    const app = buildConsoleServer(fixture.options);
+    try {
+      const repo = readDashboard(fixture.store.db, []).repositories.find(
+        (entry) => entry.id === fixture.opencodeRepoId,
+      );
+      assert.ok(repo?.opencodeSelection);
+      const selection = repo.opencodeSelection;
+      const html = repositoryCards([repo], bundledProviderCatalog(), AGENTS);
+      assert.match(html, /data-opencode-change-agent/u);
+      assert.match(html, /data-profile-revision="1"/u);
+      const feedback = {
+        textContent: "",
+        classList: { toggle: () => undefined },
+        setAttribute: () => undefined,
+      };
+      const container = {
+        dataset: {
+          repoId: String(repo.id),
+          savedSource: selection.source,
+          savedNativeId: selection.nativeAgentId ?? "",
+          selectionRevision: String(selection.revision),
+          profileRevision: String(selection.profileRevision),
+          updateUrl: `/repos/${repo.id}/opencode-selection`,
+        },
+        querySelector: (selector: string) =>
+          selector === "[data-opencode-selection-feedback]" ? feedback : null,
+      };
+      let requests = 0;
+      const { surface } = runSelection(async (url, options) => {
+        requests += 1;
+        const response = await app.inject({
+          method: "POST",
+          url,
+          headers: AUTH,
+          payload: JSON.parse((options as { body: string }).body),
+        });
+        assert.equal(response.statusCode, 422);
+        assert.equal(response.json().error, "opencode-profile-corrupt");
+        assert.doesNotMatch(response.body, /this is not a valid profile/u);
+        return { ok: false, status: response.statusCode, json: async () => response.json() };
+      });
+      const beforeAudit = new OperatorActionStore(fixture.store.db).list();
+      const state = surface.stateFrom(container);
+      state.source = "managed";
+      await surface.apply(container, state);
+      assert.equal(requests, 1);
+      assert.equal(state.savedSource, source);
+      assert.equal(state.source, "managed", "the refused draft is retained");
+      assert.equal(state.baseRevision, selection.revision);
+      assert.equal(state.baseProfileRevision, 1);
+      assert.equal(state.feedbackError, true);
+      assert.match(feedback.textContent, /corrupt.*(repair|replace)/iu);
+      assert.equal(fixture.settingsChanges, 0);
+      assert.deepEqual(new OperatorActionStore(fixture.store.db).list(), beforeAudit);
+      assert.equal(
+        readDashboard(fixture.store.db, []).repositories.find((entry) => entry.id === repo.id)
+          ?.opencodeSelection?.source,
+        source,
+      );
+    } finally {
+      await app.close();
+      fixture.store.close();
+    }
+  }
+});
+
+test("Change agent reports committed source changes with a refresh warning when notification rejects", async () => {
+  for (const source of ["default", "native", "managed"] as const) {
+    const fixture = openStore();
+    const repoId = fixture.opencodeRepoId;
+    const profile = saveOpenCodeAgentProfile(fixture.store.db, {
+      repoId,
+      expectedRevision: 0,
+      candidate: defaultOpenCodeAgentProfile(),
+    });
+    assert.equal(profile.ok, true);
+    if (source === "default") {
+      saveOpenCodeSelection(fixture.store.db, {
+        repoId,
+        expectedRevision: 0,
+        candidate: { source: "native", agentId: CHOICE.id },
+      });
+    }
+    const before = readDashboard(fixture.store.db, []).repositories.find(
+      (repo) => repo.id === repoId,
+    )?.opencodeSelection;
+    assert.ok(before);
+    const auditBefore = new OperatorActionStore(fixture.store.db).list().length;
+    const notified: Array<{
+      repoId: number;
+      source: string | undefined;
+      revision: number | undefined;
+    }> = [];
+    fixture.options.actions = {
+      repositorySettingsChanged: async (id) => {
+        fixture.settingsChanges += 1;
+        const current = readDashboard(fixture.store.db, []).repositories.find(
+          (repo) => repo.id === id,
+        )?.opencodeSelection;
+        notified.push({ repoId: id, source: current?.source, revision: current?.revision });
+        throw new Error(SECRET);
+      },
+    };
+    const app = buildConsoleServer(fixture.options);
+    try {
+      let requests = 0;
+      const { surface } = runSelection(async (url, options) => {
+        requests += 1;
+        const response = await app.inject({
+          method: "POST",
+          url,
+          headers: AUTH,
+          payload: JSON.parse((options as { body: string }).body),
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(response.json().notification, "failed");
+        assert.equal(response.json().refreshError, "notification-failed");
+        assert.doesNotMatch(response.body, new RegExp(SECRET, "u"));
+        return { ok: true, status: response.statusCode, json: async () => response.json() };
+      });
+      const container = fakeSelectionContainer({
+        repoId: String(repoId),
+        savedSource: before.source,
+        savedNativeId: before.nativeAgentId ?? "",
+        selectionRevision: String(before.revision),
+        profileRevision: "1",
+        updateUrl: `/repos/${repoId}/opencode-selection`,
+      });
+      const state = surface.stateFrom(container);
+      state.source = source;
+      state.nativeId = source === "native" ? CHOICE.id : "";
+      await surface.apply(container, state);
+      assert.equal(state.savedSource, source);
+      assert.equal(state.savedRevision, before.revision + 1);
+      assert.equal(state.baseRevision, state.savedRevision);
+      assert.equal(state.savedProfileRevision, 1);
+      assert.equal(state.baseProfileRevision, 1);
+      assert.equal(surface.isDirty(state), false);
+      assert.equal(surface.applyDisabled(state), true);
+      assert.match(state.feedback, /Primary source saved.*refresh.*(failed|unavailable)/iu);
+      assert.equal(state.feedbackError, false, "a refresh warning does not claim the save failed");
+      await surface.apply(container, state);
+      assert.equal(requests, 1, "the committed draft cannot be blindly resubmitted");
+      assert.equal(fixture.settingsChanges, 1);
+      assert.deepEqual(
+        notified,
+        [{ repoId, source, revision: before.revision + 1 }],
+        "notification follows persistence",
+      );
+      assert.equal(new OperatorActionStore(fixture.store.db).list().length, auditBefore + 1);
+      assert.equal(
+        readDashboard(fixture.store.db, []).repositories.find((repo) => repo.id === repoId)
+          ?.opencodeSelection?.source,
+        source,
+      );
+    } finally {
+      await app.close();
+      fixture.store.close();
+    }
+  }
+});
+
+test("a corrupt dormant profile yields scoped errors but never blocks switching to default", async () => {
   const fixture = openStore();
   corruptProfile(fixture, fixture.opencodeRepoId);
   const app = buildConsoleServer(fixture.options);
@@ -1166,6 +1344,13 @@ test("a corrupt dormant profile yields scoped errors but never blocks a selectio
   assert.deepEqual(editor.json(), {
     error: "opencode-profile-corrupt",
     repoId: fixture.opencodeRepoId,
+    recovery: true,
+    revision: 1,
+    profileRevision: 1,
+    selection: { source: "default", nativeAgentId: null, revision: 1, profileRevision: null },
+    selectionRevision: 1,
+    active: false,
+    defaultProfile: defaultOpenCodeAgentProfile(),
   });
   await app.close();
   fixture.store.close();

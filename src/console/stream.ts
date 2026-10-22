@@ -143,9 +143,31 @@ export class SharedChangeTicker {
         }
       }
       const scopedIds = [...scopedAttemptIds].slice(0, 200);
+      // Launch and late identity evidence can change without any job/log or
+      // delegation write. Watch the same bounded attempt scope so repository
+      // and job workflow summaries refresh independently of those other rows.
+      const invocationSignature =
+        scopedIds.length === 0
+          ? []
+          : this.db
+              .prepare(
+                `SELECT id, attempt_id, invocation_ordinal, status, ownership_state,
+                        requested_source, requested_native_agent_id, requested_profile_revision,
+                        parent_session_id, actual_primary_agent, actual_model, launched_at, settled_at
+                 FROM opencode_invocations
+                 WHERE attempt_id IN (${scopedIds.map(() => "?").join(",")})
+                 ORDER BY id DESC LIMIT 200`,
+              )
+              .all(...scopedIds);
       const delegationSignature = delegationObservationSignature(this.db, scopedIds);
       const freshDelegations = this.freshDelegationCount(scopedIds);
-      return JSON.stringify({ ...row, files, delegationSignature, freshDelegations });
+      return JSON.stringify({
+        ...row,
+        files,
+        invocationSignature,
+        delegationSignature,
+        freshDelegations,
+      });
     } catch {
       return "closed";
     }

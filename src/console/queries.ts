@@ -70,6 +70,15 @@ export interface RepositorySummary {
    * when it is no longer discoverable so the saved choice stays authoritative.
    */
   opencodeSelection?: OpenCodeSelectionSummary | null;
+  /**
+   * The typed repository agent-workflow summary (design D1). Projected for
+   * every repository read by {@link readDashboard}: executor kind, stored
+   * selection, safe saved-team summary, and the most recent launched parent
+   * invocation evidence. The declared type is optional only so existing view
+   * tests can keep constructing literal `RepositorySummary` rows; console
+   * reads always populate it.
+   */
+  agentWorkflow?: RepositoryWorkflowSummary;
 }
 
 /** The three mutually exclusive OpenCode primary sources (design D1). */
@@ -163,6 +172,179 @@ export interface OpenCodeProfileSummary {
   primaryStepLimit: number | null;
   /** Ordered subagent projections; enabled children are callable. */
   subagents: OpenCodeSubagentSummary[];
+}
+
+/**
+ * The prominent repository agent-workflow state (design D1). It is derived
+ * from the resolved executor kind, the stored selection and the saved profile
+ * together — never from the presence of a profile, a primary's name, enabled
+ * children or a displayed draft.
+ */
+export type RepositoryWorkflowState =
+  /** No usable saved team and default/native source: ordinary, not an error. */
+  | "no-team"
+  /** A saved team exists but the source is default/native, so new jobs ignore it. */
+  | "inactive-team"
+  /** Managed source with a readable saved team: the team controls new jobs. */
+  | "active-managed"
+  /** Managed source points at a missing or unreadable saved team. */
+  | "unavailable-managed"
+  /** The repository's resolved executor is not OpenCode. */
+  | "unsupported-executor";
+
+/**
+ * Privacy-safe summary of the dashboard-managed saved team inside a repository
+ * workflow. Primary id/purpose and counts only — never child instructions.
+ */
+export interface RepositoryTeamSummary {
+  /** Saved profile revision of the team. */
+  revision: number;
+  /** The primary agent id, redacted. */
+  primaryId: string;
+  /** The primary's purpose, redacted. */
+  primaryDescription: string;
+  /** Total subagents in the saved team (enabled or not). */
+  subagentCount: number;
+  /** Enabled (callable) subagents; a selected team can have zero. */
+  enabledSubagentCount: number;
+  /** Whether this saved team currently controls new jobs (managed selected). */
+  active: boolean;
+}
+
+/**
+ * The most recent launched OpenCode parent invocation for one repository
+ * (design D4). Scoped through the repository's own jobs/attempts, ordered by
+ * recorded launch time with a stable invocation-id tie-breaker. Launch evidence
+ * only — an unlaunched preparation failure is never represented here.
+ */
+export interface RepositoryLastLaunchSummary {
+  jobId: number;
+  /** `href="/jobs/{jobId}"` link to the launching job. */
+  jobHref: string;
+  attemptId: number;
+  invocationOrdinal: number;
+  /** ISO launch timestamp, or null when the recorded row has none. */
+  launchedAt: string | null;
+  requestedSource: string;
+  requestedNativeAgentId: string | null;
+  requestedProfileRevision: number | null;
+  /** Attributed actual primary, or null when it was not observed. */
+  actualPrimaryAgent: string | null;
+  actualModel: string | null;
+  status: string;
+}
+
+/**
+ * One repository's consolidated agent workflow: what new jobs use, whether the
+ * saved team is active, whether that team is readable, and the historical
+ * actual primary of the most recent launched parent invocation. Projected for
+ * every repository; `applicable` says whether OpenCode primary-source
+ * semantics exist at all (executor-alias aware).
+ */
+export interface RepositoryWorkflowSummary {
+  /** Resolved executor kind for the configured agent alias, or null when unknown. */
+  executorKind: string | null;
+  /** True when the resolved executor owns OpenCode primary-source semantics. */
+  applicable: boolean;
+  /** The coarse prominent state for the summary sentence. */
+  state: RepositoryWorkflowState;
+  /** What new jobs use; mirrors {@link OpenCodeSelectionSummary.source}. */
+  source: OpenCodePrimarySourceName;
+  /** Stored selection revision; 0 when no durable selection row exists. */
+  selectionRevision: number;
+  /** Retained native agent id for native source (redacted), else null. */
+  nativeAgentId: string | null;
+  /** The readable saved team, or null when missing/unreadable. */
+  team: RepositoryTeamSummary | null;
+  /** True when stored profile bytes exist but do not parse. */
+  teamCorrupt: boolean;
+  /** True when managed selection points at a missing/unreadable team. */
+  teamUnavailable: boolean;
+  /** Latest launched parent invocation evidence, or null when none recorded. */
+  lastLaunch: RepositoryLastLaunchSummary | null;
+}
+
+/** How a job's captured selection compares to the repository's current settings. */
+export type JobWorkflowDifference =
+  | "none"
+  | "source-changed"
+  | "native-changed"
+  | "managed-revision-changed"
+  | "managed-team-unavailable";
+
+/**
+ * The repository's current primary source and saved team, projected for
+ * comparison against a job's immutable capture (design D4). Never decorates a
+ * historical job with a current roster; it exists to explain the new-jobs /
+ * retry boundary.
+ */
+export interface CurrentOpenCodeWorkflowSummary {
+  source: OpenCodePrimarySourceName;
+  revision: number;
+  /** Whether a durable selection row exists (deliberate or migration-seeded). */
+  explicit: boolean;
+  /** Retained native agent id, redacted; non-null only for native source. */
+  nativeAgentId: string | null;
+  /** Saved profile revision controlling the current team, or null. */
+  profileRevision: number | null;
+  /** Current saved team primary when the current team parses, else null. */
+  primaryId: string | null;
+  /** True when the current team is missing or unreadable. */
+  teamUnavailable: boolean;
+}
+
+/**
+ * The current attempt's captured-versus-actual workflow identity (design D4).
+ * `latestInvocation` is the current attempt's newest *launched* invocation;
+ * before the first launch it is null so the view says "not started", and after
+ * launch without attributable identity the actual stays null ("not observed").
+ * Earlier attempts and invocations remain in `JobDetail.attempts` history.
+ */
+export interface JobCurrentAttemptWorkflow {
+  attemptId: number;
+  attemptNumber: number;
+  /** True once the current attempt has launched at least one invocation. */
+  launched: boolean;
+  /** The newest launched invocation of the current attempt, or null. */
+  latestInvocation: OpenCodeInvocationSummary | null;
+  /**
+   * The explicitly requested primary (native id, or the captured managed
+   * primary when the invoked revision still matches), else null for default.
+   */
+  requestedPrimaryId: string | null;
+  /** Actual primary from the latest launched invocation; null = not observed. */
+  actualPrimaryAgent: string | null;
+  actualModel: string | null;
+  /**
+   * True when an explicitly requested native/managed primary differs from the
+   * actually observed primary. Default resolution is never a discrepancy.
+   */
+  discrepancy: boolean;
+}
+
+/**
+ * A job's captured-versus-actual workflow projection (design D4). Captured
+ * selection/team come from the job's own immutable rows; `currentAttempt`
+ * carries runtime identity evidence; `currentSettings` compares the repository
+ * today; `difference`/`settingsDiffer` name the new-jobs/retry boundary.
+ */
+export interface JobWorkflowSummary {
+  /** Resolved executor kind of the recorded execution, or null when unknown. */
+  executorKind: string | null;
+  /** True when the recorded execution belongs to the OpenCode executor. */
+  applicable: boolean;
+  /** The captured primary source resolved from the job's own row, or null. */
+  captured: CapturedOpenCodeSelectionSummary | null;
+  /** The captured managed team summary, or null. */
+  capturedTeam: OpenCodeProfileSummary | null;
+  /** The current attempt's runtime identity, or null when no attempts exist. */
+  currentAttempt: JobCurrentAttemptWorkflow | null;
+  /** The repository's current settings for comparison. */
+  currentSettings: CurrentOpenCodeWorkflowSummary | null;
+  /** How captured settings compare to current settings. */
+  difference: JobWorkflowDifference;
+  /** True when current settings differ in a way that affects new jobs/retries. */
+  settingsDiffer: boolean;
 }
 
 export interface JobSummary {
@@ -434,6 +616,12 @@ export interface JobDetail {
   logs: LogRow[];
   /** Total entries for this job; `logs` holds only the newest JOB_LOG_TAIL. */
   logTotal: number;
+  /**
+   * Captured-versus-actual workflow projection (design D4): the immutable
+   * captured selection/team, the current attempt's runtime identity evidence,
+   * and how the repository's current settings differ for new jobs/retries.
+   */
+  workflow: JobWorkflowSummary;
 }
 
 export interface HealthModel {
@@ -684,33 +872,45 @@ export function readDashboard(
       revision: row.revision,
     });
   }
-  const repositories = db
+  const rawRepositories = db
     .prepare(
       `SELECT id, owner, name, enabled, source_path, workspace_root, agent,
               model, provider, effort, validation_commands, agent_instructions,
               allowed_models, timeout_seconds
        FROM repositories ORDER BY owner, name`,
     )
-    .all()
-    .map((raw) => {
-      const row = raw as Record<string, unknown>;
-      const safe = redactRow(row, redact) as unknown as RepositorySummary;
-      const profile = opencodeProfiles.get(row.id as number);
-      return {
-        ...safe,
-        // A corrupt stored profile must never take down the whole dashboard or
-        // an SSE fragment: it fails closed to *no* projected team rather than
-        // throwing out of the render.
-        opencodeProfile: safeSummarizeOpenCodeProfile(profile, redact),
-        opencodeSelection: summarizeOpenCodeSelection(
-          opencodeSelections.get(row.id as number),
-          profile,
-          redact,
-        ),
-        validationCommands: parseValidationCommands(safe.validation_commands),
-        allowedModels: parseAllowedModels(safe.allowed_models),
-      };
-    });
+    .all() as Record<string, unknown>[];
+  const lastLaunches = readRepositoryLastLaunches(
+    db,
+    rawRepositories.map((row) => row.id as number),
+    redact,
+  );
+  const repositories = rawRepositories.map((raw) => {
+    const row = raw;
+    const safe = redactRow(row, redact) as unknown as RepositorySummary;
+    const id = row.id as number;
+    const profile = opencodeProfiles.get(id);
+    const profileResult = summarizeProfileFailClosed(profile, redact);
+    const selection = summarizeOpenCodeSelection(opencodeSelections.get(id), profile, redact);
+    return {
+      ...safe,
+      // A corrupt stored profile must never take down the whole dashboard or
+      // an SSE fragment: it fails closed to *no* projected team rather than
+      // throwing out of the render. `agentWorkflow` still names the selected
+      // team unavailable so the console can offer repair or a source change.
+      opencodeProfile: profileResult.summary,
+      opencodeSelection: selection,
+      agentWorkflow: summarizeRepositoryWorkflow({
+        executorKind: resolveExecutorKind(typeof row.agent === "string" ? row.agent : undefined),
+        selection,
+        team: profileResult.summary,
+        teamCorrupt: profileResult.state === "corrupt",
+        lastLaunch: lastLaunches.get(id),
+      }),
+      validationCommands: parseValidationCommands(safe.validation_commands),
+      allowedModels: parseAllowedModels(safe.allowed_models),
+    };
+  });
   const repositoryAgents = new Map<number, string | undefined>();
   const jobs = db
     .prepare(
@@ -757,20 +957,25 @@ export function readDashboard(
  * retrieves the full profile when the operator opens the editor.
  */
 /**
- * Summarize a stored profile fail-closed: a payload that no longer parses (or
- * no stored payload at all) projects `null`, so one corrupt row cannot throw
- * out of the dashboard or an SSE fragment. The dedicated editor route remains
- * the surface that reports the corruption explicitly.
+ * Summarize a stored profile fail-closed while preserving *why* null was
+ * returned. A profile that is missing entirely stays `missing`; stored bytes
+ * that no longer parse are `corrupt` (the workflow projection reports an
+ * unavailable selected team). One corrupt row never throws out of a render.
  */
-function safeSummarizeOpenCodeProfile(
+function summarizeProfileFailClosed(
   profile: { revision: number; profileJson: string | null } | undefined,
   redact: Redactor,
-): OpenCodeProfileSummary | null {
-  if (profile === undefined || profile.profileJson === null) return null;
+): { summary: OpenCodeProfileSummary | null; state: "missing" | "valid" | "corrupt" } {
+  if (profile === undefined || profile.profileJson === null) {
+    return { summary: null, state: "missing" };
+  }
   try {
-    return summarizeOpenCodeProfile(profile.profileJson, profile.revision, redact);
+    return {
+      summary: summarizeOpenCodeProfile(profile.profileJson, profile.revision, redact),
+      state: "valid",
+    };
   } catch {
-    return null;
+    return { summary: null, state: "corrupt" };
   }
 }
 
@@ -838,6 +1043,261 @@ function summarizeOpenCodeSelection(
     // dormant so the picker can CAS a deliberate managed activation. The source
     // still says whether that team currently controls new jobs.
     profileRevision: savedRevision,
+  };
+}
+
+/**
+ * Read, for a set of repositories, each repository's most recently *launched*
+ * OpenCode parent invocation in one bounded batched query (design D4). The
+ * row scope runs through the repository's own jobs and attempts, so histories
+ * can never cross repositories. Only records with a recorded launch time count;
+ * a newer journaled invocation that failed before launching (preparation
+ * failure) is excluded, and the newest unknown identity never borrows older
+ * known evidence. Ordering is launch time with a stable invocation-id
+ * tie-breaker. Every string is redacted; a storage failure fails closed with
+ * an empty map, mirroring the delegation projection.
+ */
+function readRepositoryLastLaunches(
+  db: Database.Database,
+  repoIds: readonly number[],
+  redact: Redactor,
+): Map<number, RepositoryLastLaunchSummary> {
+  const result = new Map<number, RepositoryLastLaunchSummary>();
+  if (repoIds.length === 0) return result;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT repo_id, job_id, attempt_id, invocation_ordinal, launched_at,
+                requested_source, requested_native_agent_id, requested_profile_revision,
+                actual_primary_agent, actual_model, status
+         FROM (
+           SELECT repositories.id AS repo_id, jobs.id AS job_id, attempts.id AS attempt_id,
+                  opencode_invocations.invocation_ordinal, opencode_invocations.launched_at,
+                  opencode_invocations.requested_source,
+                  opencode_invocations.requested_native_agent_id,
+                  opencode_invocations.requested_profile_revision,
+                  opencode_invocations.actual_primary_agent,
+                  opencode_invocations.actual_model,
+                  opencode_invocations.status,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY repositories.id
+                    ORDER BY opencode_invocations.launched_at DESC, opencode_invocations.id DESC
+                  ) AS rn
+           FROM opencode_invocations
+           JOIN attempts ON attempts.id = opencode_invocations.attempt_id
+           JOIN jobs ON jobs.id = attempts.job_id
+           JOIN repositories ON repositories.id = jobs.repo_id
+           WHERE repositories.id IN (${repoIds.map(() => "?").join(",")})
+             AND opencode_invocations.launched_at IS NOT NULL
+         ) WHERE rn = 1`,
+      )
+      .all(...repoIds) as Array<{
+      repo_id: number;
+      job_id: number;
+      attempt_id: number;
+      invocation_ordinal: number;
+      launched_at: string | null;
+      requested_source: string;
+      requested_native_agent_id: string | null;
+      requested_profile_revision: number | null;
+      actual_primary_agent: string | null;
+      actual_model: string | null;
+      status: string;
+    }>;
+    for (const row of rows) {
+      result.set(row.repo_id, {
+        jobId: row.job_id,
+        jobHref: `/jobs/${String(row.job_id)}`,
+        attemptId: row.attempt_id,
+        invocationOrdinal: row.invocation_ordinal,
+        launchedAt: row.launched_at === null ? null : redact(row.launched_at),
+        requestedSource: redact(row.requested_source),
+        requestedNativeAgentId:
+          row.requested_native_agent_id === null ? null : redact(row.requested_native_agent_id),
+        requestedProfileRevision: row.requested_profile_revision,
+        actualPrimaryAgent:
+          row.actual_primary_agent === null ? null : redact(row.actual_primary_agent),
+        actualModel: row.actual_model === null ? null : redact(row.actual_model),
+        status: redact(row.status),
+      });
+    }
+  } catch {
+    // Fail closed: no launch evidence rather than a broken dashboard.
+  }
+  return result;
+}
+
+/**
+ * Derive the prominent repository agent-workflow state from the resolved
+ * executor kind, stored selection, and saved-team summary. The state never
+ * infers activation from a profile's presence, a primary's name, enabled
+ * children, or a displayed draft.
+ */
+function summarizeRepositoryWorkflow(input: {
+  executorKind: string | undefined;
+  selection: OpenCodeSelectionSummary;
+  team: OpenCodeProfileSummary | null;
+  teamCorrupt: boolean;
+  lastLaunch: RepositoryLastLaunchSummary | undefined;
+}): RepositoryWorkflowSummary {
+  const executorKind = input.executorKind ?? null;
+  const applicable = input.executorKind === OPENCODE_EXECUTOR_ID;
+  let state: RepositoryWorkflowState;
+  if (!applicable) {
+    state = "unsupported-executor";
+  } else if (input.selection.source === "managed") {
+    state = input.team === null ? "unavailable-managed" : "active-managed";
+  } else {
+    // Default/native with stored bytes that no longer parse still names a
+    // saved (unreadable) team so the console can flag it for repair.
+    state = input.team === null && !input.teamCorrupt ? "no-team" : "inactive-team";
+  }
+  return {
+    executorKind,
+    applicable,
+    state,
+    source: input.selection.source,
+    selectionRevision: input.selection.revision,
+    nativeAgentId: input.selection.source === "native" ? input.selection.nativeAgentId : null,
+    team:
+      input.team === null
+        ? null
+        : {
+            revision: input.team.revision,
+            primaryId: input.team.primaryId,
+            primaryDescription: input.team.primaryDescription,
+            subagentCount: input.team.subagents.length,
+            enabledSubagentCount: input.team.subagents.filter((subagent) => subagent.enabled)
+              .length,
+            active: input.selection.source === "managed",
+          },
+    teamCorrupt: input.teamCorrupt,
+    teamUnavailable: input.selection.source === "managed" && input.team === null,
+    lastLaunch: input.lastLaunch ?? null,
+  };
+}
+
+/**
+ * The newest *launched* invocation of an attempt: recorded launch time
+ * descending with a stable ordinal tie-breaker. A journaled invocation that
+ * never launched (preparation failure) is skipped, and an unknown actual
+ * identity never falls back to an older invocation's known identity.
+ */
+function latestLaunchedInvocation(
+  invocations: readonly OpenCodeInvocationSummary[],
+): OpenCodeInvocationSummary | null {
+  let best: OpenCodeInvocationSummary | null = null;
+  for (const invocation of invocations) {
+    if (invocation.launchedAt === null) continue;
+    if (
+      best === null ||
+      best.launchedAt === null ||
+      invocation.launchedAt > best.launchedAt ||
+      (invocation.launchedAt === best.launchedAt && invocation.ordinal > best.ordinal)
+    ) {
+      best = invocation;
+    }
+  }
+  return best;
+}
+
+/** Compare a job's immutable capture to the repository's current settings. */
+function compareCapturedToCurrent(
+  captured: CapturedOpenCodeSelectionSummary | null,
+  current: OpenCodeSelectionSummary,
+  currentTeamUnavailable: boolean,
+): JobWorkflowDifference {
+  if (captured === null) return "none";
+  if (captured.source !== current.source) return "source-changed";
+  if (captured.source === "native") {
+    return captured.nativeAgentId === current.nativeAgentId ? "none" : "native-changed";
+  }
+  if (captured.source === "managed") {
+    if (currentTeamUnavailable) return "managed-team-unavailable";
+    return captured.profileRevision === current.profileRevision
+      ? "none"
+      : "managed-revision-changed";
+  }
+  return "none";
+}
+
+/**
+ * Project the current attempt's captured-versus-actual workflow (design D4).
+ * The captured selection/team come from the job's own immutable rows (legacy
+ * jobs derive managed from their captured profile); the current attempt's
+ * latest launched invocation carries runtime identity; current settings are
+ * compared only to explain the new-jobs/retry boundary. An explicit
+ * native/managed request observed as a different primary is a discrepancy;
+ * default resolution to an observed primary never is.
+ */
+function summarizeJobWorkflow(input: {
+  executorKind: string | undefined;
+  applicable: boolean;
+  captured: CapturedOpenCodeSelectionSummary | null;
+  capturedTeam: OpenCodeProfileSummary | null;
+  attempts: readonly AttemptDetail[];
+  currentSelection: OpenCodeSelectionSummary;
+  currentTeam: OpenCodeProfileSummary | null;
+  currentTeamUnavailable: boolean;
+}): JobWorkflowSummary {
+  const currentAttempt =
+    input.attempts.length === 0 ? null : (input.attempts[input.attempts.length - 1] ?? null);
+  const latestInvocation =
+    currentAttempt === null ? null : latestLaunchedInvocation(currentAttempt.invocations);
+  let requestedPrimaryId: string | null = null;
+  if (latestInvocation !== null && latestInvocation.actualPrimaryAgent !== null) {
+    if (latestInvocation.requestedSource === "native") {
+      requestedPrimaryId = latestInvocation.requestedNativeAgentId;
+    } else if (
+      latestInvocation.requestedSource === "managed" &&
+      input.capturedTeam !== null &&
+      (latestInvocation.requestedProfileRevision === null ||
+        latestInvocation.requestedProfileRevision === input.capturedTeam.revision)
+    ) {
+      // Only an exact captured revision can borrow the captured primary name;
+      // an invocation of a different revision has no attributable primary id.
+      requestedPrimaryId = input.capturedTeam.primaryId;
+    }
+  }
+  const discrepancy =
+    requestedPrimaryId !== null &&
+    latestInvocation !== null &&
+    latestInvocation.actualPrimaryAgent !== null &&
+    requestedPrimaryId !== latestInvocation.actualPrimaryAgent;
+  const difference = compareCapturedToCurrent(
+    input.captured,
+    input.currentSelection,
+    input.currentTeamUnavailable,
+  );
+  return {
+    executorKind: input.executorKind ?? null,
+    applicable: input.applicable,
+    captured: input.captured,
+    capturedTeam: input.capturedTeam,
+    currentAttempt:
+      currentAttempt === null
+        ? null
+        : {
+            attemptId: currentAttempt.id,
+            attemptNumber: currentAttempt.attempt_number,
+            launched: latestInvocation !== null,
+            latestInvocation,
+            requestedPrimaryId,
+            actualPrimaryAgent: latestInvocation?.actualPrimaryAgent ?? null,
+            actualModel: latestInvocation?.actualModel ?? null,
+            discrepancy,
+          },
+    currentSettings: {
+      source: input.currentSelection.source,
+      revision: input.currentSelection.revision,
+      explicit: input.currentSelection.explicit,
+      nativeAgentId: input.currentSelection.nativeAgentId,
+      profileRevision: input.currentSelection.profileRevision,
+      primaryId: input.currentTeam?.primaryId ?? null,
+      teamUnavailable: input.currentTeamUnavailable,
+    },
+    difference,
+    settingsDiffer: difference !== "none",
   };
 }
 
@@ -1428,6 +1888,53 @@ export function readJobDetail(
     typeof jobRow.repository_agent === "string" ? jobRow.repository_agent : undefined,
     resolveExecutorKind,
   );
+  const repoId = jobRow.repo_id as number;
+  const currentSelectionRow = db
+    .prepare(
+      `SELECT repo_id, source, native_agent_id, revision
+       FROM opencode_primary_selections WHERE repo_id = ?`,
+    )
+    .get(repoId) as
+    | { repo_id: number; source: string; native_agent_id: string | null; revision: number }
+    | undefined;
+  const currentProfileRow = db
+    .prepare(
+      "SELECT repo_id, revision, profile_json FROM opencode_agent_profiles WHERE repo_id = ?",
+    )
+    .get(repoId) as { repo_id: number; revision: number; profile_json: string | null } | undefined;
+  const currentProfile =
+    currentProfileRow === undefined
+      ? undefined
+      : { revision: currentProfileRow.revision, profileJson: currentProfileRow.profile_json };
+  const currentProfileResult = summarizeProfileFailClosed(currentProfile, redact);
+  const currentSelection = summarizeOpenCodeSelection(
+    currentSelectionRow === undefined
+      ? undefined
+      : {
+          source: currentSelectionRow.source,
+          nativeAgentId: currentSelectionRow.native_agent_id,
+          revision: currentSelectionRow.revision,
+        },
+    currentProfile,
+    redact,
+  );
+  const workflow = summarizeJobWorkflow({
+    executorKind: jobExecutorKind(
+      attemptRows
+        .map((row) => (typeof row.agent === "string" ? row.agent : undefined))
+        .filter((agent): agent is string => agent !== undefined),
+      typeof jobRow.repository_agent === "string" ? jobRow.repository_agent : undefined,
+      resolveExecutorKind,
+    ),
+    applicable: isOpenCodeJob,
+    captured: readCapturedOpenCodeSelection(jobRow, redact, isOpenCodeJob),
+    capturedTeam: capturedProfile,
+    attempts,
+    currentSelection,
+    currentTeam: currentProfileResult.summary,
+    currentTeamUnavailable:
+      currentSelection.source === "managed" && currentProfileResult.summary === null,
+  });
   return {
     job: {
       ...safeJob,
@@ -1439,6 +1946,7 @@ export function readJobDetail(
     validation,
     logs,
     logTotal,
+    workflow,
   };
 }
 
