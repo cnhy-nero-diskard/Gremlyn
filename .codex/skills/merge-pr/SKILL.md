@@ -53,12 +53,20 @@ Otherwise:
 
 1. Check out the PR's head branch so the sync/archive edits land on the branch being
    merged. If that branch is already checked out in a separate worktree, switch to
-   that worktree directory instead:
+   that worktree directory instead. Before editing, fetch and fast-forward the branch
+   so the sync/archive edits land on top of the latest remote state — do not proceed
+   on a stale branch:
    ```bash
    git checkout <head-branch>
+   git fetch origin
+   git pull --ff-only
    # or, when using a worktree:
    cd <path-to-worktree>
+   git fetch origin
+   git pull --ff-only
    ```
+   If `git pull --ff-only` fails (local and remote diverged), stop and report before
+   continuing.
 2. Run `openspec status --change "<name>" --json` to inspect delta specs.
 3. If the change is still active and has delta specs → run `openspec-sync-specs`
    (agent-driven) to sync them into `openspec/specs/`, then commit and push; then run
@@ -69,7 +77,6 @@ Otherwise:
 
 Commit and push after **each** sync and **each** archive occurrence — they are separate
 operations and each must be recorded on the branch:
-
 ```bash
 git add openspec/
 git commit -m "chore: sync specs for <name>"
@@ -79,15 +86,22 @@ git commit -m "chore: archive <name> change"
 git push
 ```
 
-### 4. Merge
+### 4. Merge (queue behind CI)
+
+`master` enforces required CI status checks with auto-merge enabled, so queue the
+merge rather than merging immediately — GitHub then waits for every required check:
 
 ```bash
-gh pr merge <number> --merge --delete-branch
+gh pr merge <number> --auto --merge --delete-branch
 ```
 
-- Use `--squash` or `--rebase` if the user asks.
+- Use `--squash` or `--rebase` instead of `--merge` only if the user asks.
 - The base branch is `master` (this repo's default branch).
-- Report the merge result.
+- Before queueing, review CI state with `gh pr checks <number>`; after queueing,
+  report that auto-merge is pending — GitHub merges automatically once every
+  required check passes.
+- If any required check fails, the PR stays blocked: report the failure instead of
+  retrying with an immediate (non-`--auto`) merge.
 
 ## Mode B — Bump a version
 
@@ -110,9 +124,12 @@ gh pr merge <number> --merge --delete-branch
 ## Guardrails
 
 - Never merge without resolving which PR (prompt when ambiguous).
+- Never sync/archive or merge on a stale head branch; always fetch + `--ff-only` first, and stop if the branch diverged.
 - Do not skip the sync + archive gate unless the prompt explicitly marks the unarchive
   as deliberate.
 - Always target `master`; never merge into a feature branch.
 - Do not force-push, delete remote branches, or rewrite history.
 - If the working tree is dirty, stop and ask before checking out `master`.
 - Report clearly what was synced, archived, merged, or tagged.
+- Always queue merges with `--auto` — it merges at once when CI is already green;
+  never merge without it to sidestep pending CI.
