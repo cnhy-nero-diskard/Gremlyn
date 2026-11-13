@@ -26,6 +26,7 @@ pnpm-debug.log*
 # Gremlyn local runtime (config.example.yaml stays tracked as the template)
 .gremlyn/
 gremlyn.yaml
+gremlyn.macos.yaml
 
 # Python skill-script caches (e.g. .agents / .claude skills)
 __pycache__/

@@ -645,7 +645,12 @@ export async function checkPrerequisites(
   } else {
     for (const definition of Object.values(agents)) {
       try {
-        verifyCredentials(definition.id, definition.credentialSource, definition.credentialFiles);
+        verifyCredentials(
+          definition.id,
+          definition.credentialSource,
+          definition.credentialFiles,
+          definition.kind,
+        );
         prerequisites.push({
           id: `agent-credentials:${definition.id}`,
           met: true,

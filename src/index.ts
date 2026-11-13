@@ -155,6 +155,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         definition.id,
         definition.credentialSource,
         definition.credentialFiles,
+        definition.kind,
       );
     }
     const logger = new Logger({

@@ -1,5 +1,7 @@
 import {
   chmodSync,
+  accessSync,
+  constants,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -45,8 +47,9 @@ export const CREDENTIAL_SEED_FILES = ["secrets.json", "settings/providers.json"]
 export type CredentialSeedFile = (typeof CREDENTIAL_SEED_FILES)[number];
 
 /**
- * OpenCode's legacy credential file, retained as the profile marker and for
- * older installations. OpenCode 2 keeps active provider connections in its
+ * OpenCode's legacy credential file, retained for older installations.
+ * Startup also accepts opencode.db for fresh OpenCode 2 profiles.
+ * OpenCode 2 keeps active provider connections in its
  * database, so the executor uses the configured OpenCode service instead of
  * copying this file into each attempt.
  */
@@ -101,6 +104,7 @@ export function verifyCredentialSource(
   agentId: string,
   sourceDir: string,
   files: readonly string[] = CREDENTIAL_SEED_FILES,
+  kind: string = agentId,
 ): void {
   if (!existsSync(sourceDir)) {
     throw new Error(
@@ -126,6 +130,24 @@ export function verifyCredentialSource(
   } catch (error) {
     throw new Error(
       `credential source for agent "${agentId}" is not readable: ${sourceDir} — ${error instanceof Error ? error.message : String(error)} (conventional default: ~/.cline/data)`,
+    );
+  }
+  // OpenCode 2 uses its shared service/database rather than per-attempt seeds.
+  // Fresh installations need not retain the legacy auth.json profile marker.
+  // Custom credential file lists still require exactly the declared files.
+  if (kind === "opencode" && files.length === 1 && files[0] === "auth.json") {
+    for (const file of ["auth.json", "opencode.db"]) {
+      try {
+        const candidate = join(sourceDir, file);
+        if (!statSync(candidate).isFile()) continue;
+        accessSync(candidate, constants.R_OK);
+        return;
+      } catch {
+        // Try the other supported credential store before refusing startup.
+      }
+    }
+    throw new Error(
+      `credential source for agent "${agentId}" is missing a readable credential store (auth.json or opencode.db): ${sourceDir}`,
     );
   }
   for (const file of files) {

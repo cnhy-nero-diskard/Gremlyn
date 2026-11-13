@@ -23,7 +23,7 @@ left untouched and cloned instead. Adopted attempts are marked in the console.
 
 ## Requirements
 
-- Windows 10/11 with PowerShell (WSL is not required)
+- Windows 10/11 with PowerShell (WSL is not required), or [macOS setup](docs/macos.md)
 - Node.js 22 or newer and npm 10 or newer
 - Git 2.x
 - Cline CLI 3.0.74, already authenticated with the provider used by your configured model

@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { normalize, resolve, win32 } from "node:path";
+import { basename, dirname, normalize, resolve, win32 } from "node:path";
 import type { AgentDefinition, RepoConfig } from "../config/loader.js";
 import { git } from "../workspace/gitops.js";
 import { parseOriginUrl } from "./infer.js";
@@ -53,10 +53,23 @@ export function resolveComparablePath(path: string): string {
   const windowsStyle = isWindowsStyle(path);
   const absolute = windowsStyle ? win32.resolve(path) : resolve(path);
   let resolved = absolute;
-  try {
-    resolved = realpathSync(path);
-  } catch {
-    // A workspace root may not exist yet; its lexical absolute path is enough.
+  // Windows config paths can be inspected on POSIX, but not realpathed there.
+  if (!windowsStyle || process.platform === "win32") {
+    let ancestor = absolute;
+    const missing: string[] = [];
+    for (;;) {
+      try {
+        resolved = resolve(realpathSync(ancestor), ...missing);
+        break;
+      } catch {
+        // A new workspace may be beneath a symlinked parent (/var on macOS).
+        // Canonicalize its closest existing ancestor before adding the suffix.
+        const parent = dirname(ancestor);
+        if (parent === ancestor) break;
+        missing.unshift(basename(ancestor));
+        ancestor = parent;
+      }
+    }
   }
   return normalizePathForComparison(resolved, windowsStyle);
 }
