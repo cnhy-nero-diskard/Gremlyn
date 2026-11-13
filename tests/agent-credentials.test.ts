@@ -485,3 +485,32 @@ test("a genuine unauthorized payload still classifies as authentication, not bil
 test("an unrelated OpenCode error event (UnknownError) is not read as billing", () => {
   assert.equal(isAgentBillingFailure({ stdout: REAL_OPENCODE_UNKNOWN_ERROR, stderr: "" }), false);
 });
+
+test("OpenCode startup accepts legacy auth and fresh database profiles, including aliases", () => {
+  for (const file of ["auth.json", "opencode.db"]) {
+    const source = mkdtempSync(join(tmpdir(), "gremlyn-opencode-profile-"));
+    writeFileSync(join(source, file), "profile-marker");
+    assert.doesNotThrow(() =>
+      verifyCredentialSource("worker", source, OPENCODE_CREDENTIAL_FILES, "opencode"),
+    );
+  }
+});
+
+test("OpenCode startup refuses absent stores and directories masquerading as stores", () => {
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-opencode-empty-"));
+  mkdirSync(join(source, "opencode.db"));
+  assert.throws(
+    () => verifyCredentialSource("opencode", source, OPENCODE_CREDENTIAL_FILES),
+    /missing a readable credential store/u,
+  );
+});
+
+test("database profiles do not bypass Cline seeds or explicit OpenCode file requirements", () => {
+  const source = mkdtempSync(join(tmpdir(), "gremlyn-opencode-custom-"));
+  writeFileSync(join(source, "opencode.db"), "profile-marker");
+  assert.throws(() => verifyCredentialSource("cline", source), /missing required file/u);
+  assert.throws(
+    () => verifyCredentialSource("worker", source, ["custom.json"], "opencode"),
+    /missing required file "custom.json"/u,
+  );
+});

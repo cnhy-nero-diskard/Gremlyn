@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  realpathSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type RepoConfig } from "../src/config/loader.js";
@@ -499,6 +508,24 @@ test("verification returns data for every registration check", async () => {
     assert.ok(result.message.length > 0);
   }
 });
+
+test(
+  "new workspace paths resolve symlinked ancestors before containment checks",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = tempRoot();
+    try {
+      const source = join(realpathSync(root), "source");
+      mkdirSync(source);
+      const alias = join(root, "alias");
+      symlinkSync(source, alias);
+      assert.equal(isPathInside(join(alias, "new", "workspace"), source), true);
+      assert.equal(isPathInside(join(root, "outside", "workspace"), source), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("real verification environment passes a temporary git repository", async () => {
   const repo = await createTempRepo();
